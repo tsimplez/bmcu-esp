@@ -1,0 +1,1159 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>团子 BMCU</title>
+<style>
+:root{--bg:#12141a;--card:#1b1e27;--line:#272b36;--fg:#e8eaf0;--dim:#8b93a7;--acc:#4da3ff;--ok:#3ecf8e;--err:#ff6b6b;--warn:#f5c451}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif}
+header{padding:14px 16px 0;background:#171a22;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+h1{margin:0;font-size:17px;font-weight:600}
+h1 small{color:var(--dim);font-weight:400;font-size:12px;margin-left:8px}
+nav{display:flex;gap:4px;margin-top:12px;overflow-x:auto}
+nav button{background:none;border:0;border-bottom:2px solid transparent;color:var(--dim);padding:8px 14px;font-size:14px;cursor:pointer;white-space:nowrap}
+nav button.on{color:var(--fg);border-bottom-color:var(--acc)}
+main{padding:16px;max-width:920px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+.card h2{margin:0 0 10px;font-size:14px;color:var(--dim);font-weight:600}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px dashed #23273260}
+.kv:last-child{border-bottom:0}
+.kv span{color:var(--dim)}
+.kv b{font-weight:600;text-align:right;word-break:break-all}
+input,select{background:#0e1015;border:1px solid #2c313d;color:var(--fg);border-radius:8px;padding:9px 11px;font-size:14px;font-family:inherit;width:100%}
+input:focus,select:focus{outline:0;border-color:var(--acc)}
+button{background:#262b36;border:1px solid #333a48;color:var(--fg);border-radius:8px;padding:9px 14px;font-size:14px;font-family:inherit;cursor:pointer}
+button:hover{background:#2f3543}
+button.primary{background:var(--acc);border-color:var(--acc);color:#08131f;font-weight:600}
+button.danger{color:var(--err)}
+button.on{background:var(--acc);border-color:var(--acc);color:#08131f;font-weight:600}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.row>*{width:auto}
+.row .grow{flex:1;min-width:120px;width:auto}
+.spacer{flex:1}
+.hide{display:none!important}
+.hint{color:var(--dim);font-size:12px;margin-top:8px}
+.done{background:#122a1f;border:1px solid #2b6b4a;border-radius:8px;padding:12px;margin-bottom:14px}
+.done b{color:var(--ok);word-break:break-all}
+.done a{display:inline-block;margin-top:8px;background:var(--ok);color:#08131f;border-radius:8px;padding:9px 14px;text-decoration:none;font-weight:600}
+.upbar{margin:10px -16px 0;padding:10px 16px;background:#2a2413;border-top:1px solid #5d4d17;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px}
+.upbar b{color:var(--warn)}
+.upbar button{padding:6px 12px;font-size:13px}
+button:disabled{opacity:.45;cursor:not-allowed}
+.scanlist{max-height:190px;overflow:auto;margin:10px 0;border:1px solid var(--line);border-radius:8px}
+.scanlist:empty{display:none}
+.scanlist div{padding:8px 11px;cursor:pointer;display:flex;justify-content:space-between;border-bottom:1px solid #23273260}
+.scanlist div:hover{background:#242935}
+.scanlist div:last-child{border-bottom:0}
+.scanlist i{color:var(--dim);font-style:normal;font-size:12px}
+.logbox{white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12px;line-height:1.5;height:60vh;overflow:auto;background:#0c0e13;border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0 0}
+.logfilters{display:flex;gap:6px 12px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.logfilter{display:inline-flex;align-items:center;gap:4px;color:var(--fg);font-size:12px;white-space:nowrap;cursor:pointer}
+.logfilter input{width:auto;margin:0;padding:0;accent-color:var(--acc);cursor:pointer}
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#262b36;border:1px solid #3a4250;border-radius:8px;padding:10px 18px;font-size:13px;opacity:0;visibility:hidden;transition:opacity .25s,visibility .25s;pointer-events:none;max-width:86vw;text-align:center;cursor:pointer}
+.toast.on{opacity:1;visibility:visible;pointer-events:auto}
+.tbl{width:100%;border-collapse:collapse}
+.tbl details summary{cursor:pointer;color:var(--acc);padding:8px 0}
+.io-config{margin-top:12px;border-top:1px solid var(--line);padding-top:4px}
+.io-config .tbl{margin-top:8px}
+.io-config h3{font-size:14px;font-weight:500;margin:12px 0 8px}
+.io-config select{min-width:92px}
+.io-warning{color:#f0b34b;font-size:14px;margin-left:4px;cursor:help}
+.io-config select.bad{border-color:#e15b64}
+.hint.error{color:#e15b64}
+.tbl th,.tbl td{padding:6px 4px;text-align:left;border-bottom:1px solid #23273260;font-weight:400}
+.tbl th{color:var(--dim);font-size:12px}
+.tbl input,.tbl select{padding:6px 8px;font-size:13px}
+.tbl td:first-child{color:var(--dim);width:35px}
+.tbl button{padding:4px 10px;font-size:13px}
+.channel-table th:last-child,.channel-table td:last-child{width:1%;white-space:nowrap}
+.acts{display:flex;align-items:center;gap:6px;min-width:110px}
+.acts button{flex-shrink:0}
+.motor-state{width:0;min-width:100%;margin-top:4px;white-space:nowrap;overflow-x:auto;scrollbar-width:none}
+.motor-state:empty{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>团子 BMCU 控制台<small id="hdr">-</small></h1>
+  <div id="printer" class="hint" role="status">正在读取打印机状态…</div>
+  <nav>
+    <button data-tab="status" class="on">状态</button>
+    <button data-tab="wifi">配网</button>
+    <button data-tab="settings">设置</button>
+    <button data-tab="update">固件更新</button>
+    <button data-tab="logs">日志</button>
+  </nav>
+  <div id="upbar" class="upbar hide">
+    <span id="upbar-txt">发现新固件</span>
+    <span class="spacer"></span>
+    <button class="primary" onclick="gotoUpdate()">去更新</button>
+    <button onclick="hideUpbar()">忽略</button>
+  </div>
+</header>
+<main>
+
+<!-- ================= 状态 ================= -->
+<div id="t-status">
+  <div class="card">
+    <h2>运行状态</h2>
+    <div class="kv"><span>WiFi 模式</span><b id="s-mode">-</b></div>
+    <div class="kv"><span>IP 地址</span><b id="s-ip">-</b></div>
+    <div class="kv"><span>当前网络</span><b id="s-ssid">-</b></div>
+    <div class="kv"><span>信号强度</span><b id="s-rssi">-</b></div>
+    <div class="kv"><span>MAC</span><b id="s-mac">-</b></div>
+    <div class="kv"><span>运行时长</span><b id="s-uptime">-</b></div>
+    <div class="kv"><span>空闲内存/总内存</span><b id="s-heap">-</b></div>
+    <div class="kv"><span>芯片</span><b id="s-chip">-</b></div>
+    <div class="kv"><span>RS485 模式</span><b id="s-rs485">-</b></div>
+    <div class="kv"><span>固件版本</span><b id="s-fw">-</b></div>
+    <div class="kv"><span>编译时间</span><b id="s-build">-</b></div>
+  </div>
+  <div class="card">
+    <div class="row" style="margin-bottom:10px">
+      <h2 style="margin:0">通道参数与手动进退料</h2>
+      <span class="spacer"></span>
+      <label class="row"><span style="color:var(--dim)">同时运行电机上限</span>
+      <select id="motor-limit" style="width:70px" onchange="saveField(this,'motor_limit')"></select></label>
+      <label class="row"><span style="color:var(--dim)">微动辅助进料</span>
+      <select id="auto-ms" style="width:104px" onchange="saveField(this,'auto_ms')">
+        <option value="0">关闭</option>
+        <option value="1000">1s</option>
+        <option value="3000">3s</option>
+        <option value="5000">5s</option>
+        <option value="8000">8s</option>
+        <option value="10000">10s</option>
+      </select></label>
+      <label class="row"><span style="color:var(--dim)">手动进退料时间</span>
+      <select id="manual-ms" style="width:104px" onchange="saveField(this,'manual_ms')">
+        <option value="300">300ms</option>
+        <option value="500">500ms</option>
+        <option value="800">800ms</option>
+        <option value="1000">1s</option>
+        <option value="3000">3s</option>
+        <option value="6000">6s</option>
+        <option value="10000">10s</option>
+        <option value="15000">15s</option>
+      </select></label>
+    </div>
+    <table class="tbl channel-table">
+      <thead><tr><th>通道</th><th>状态(自动: 需要微动)</th><th>退料超时(秒)</th><th>手动进退料</th></tr></thead>
+      <tbody id="chbody"></tbody>
+    </table>
+    <div id="manual-state" class="hint">正在读取设备状态…</div>
+  </div>
+</div>
+
+<!-- ================= 配网 ================= -->
+<div id="t-wifi" class="hide">
+  <div class="card">
+    <h2>WiFi 配网</h2>
+    <div id="wifi-done" class="done hide">
+      <div>✅ 配网成功，设备 IP：<b id="wd-ip">-</b></div>
+      <div class="hint" id="wd-state" style="margin-top:6px">设备正在重启…</div>
+      <a id="wd-link" href="#" target="_blank">手动打开新控制台</a>
+      <div class="hint">新控制台会开在<b>新标签页</b>，本页（192.168.4.1）保留不动。
+        如果一直没跳过去：把手机/电脑的 WiFi 切回原来的网络即可；
+        也可以访问 <b>http://bmcu.local/</b>，或在路由器后台查设备 IP。</div>
+    </div>
+    <div class="row">
+      <input id="w-ssid" class="grow" placeholder="WiFi 名称 (SSID)" autocomplete="off">
+      <button onclick="doScan()">扫描</button>
+    </div>
+    <div id="scanlist" class="scanlist"></div>
+    <input id="w-pass" type="password" placeholder="WiFi 密码" autocomplete="new-password">
+    <div class="row" style="margin-top:10px">
+      <button class="primary" onclick="saveWifi()">保存并连接</button>
+      <button onclick="doForget()">忘记网络</button>
+    </div>
+    <div class="hint">仅支持 2.4GHz 网络。连接成功后设备会自动重启并切到路由器网络。</div>
+  </div>
+</div>
+
+<!-- ================= 设置 ================= -->
+<div id="t-settings" class="hide">
+  <div class="card">
+    <h2>BambuBus 接线与 RS485 收发方式</h2>
+    <div class="row">
+      <button id="r1" onclick="setRs485(1)">模式 1：只用 RXD / TXD</button>
+      <button id="r2" onclick="setRs485(2)">模式 2：RO / DI / RE / DE</button>
+    </div>
+    <div class="hint">
+      模式 1 (默认) 适合只有 RXD / TXD 的自动收发模块，固件不再驱动 DE 引脚<br>
+      模式 2 由 DE 引脚控制收发方向（RE 与 DE 并在一起）
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label for="bus-rx">RX（接模块 RO/TXD）</label><select id="bus-rx" style="max-width:260px" onchange="updateBusLabels()" disabled></select>
+      <label for="bus-tx">TX（接模块 DI/RXD）</label><select id="bus-tx" style="max-width:260px" onchange="updateBusLabels()" disabled></select>
+    </div>
+    <div class="row hide" id="bus-de-row" style="margin-top:8px">
+      <label for="bus-de">DE（接 RE / DE）</label><select id="bus-de" style="max-width:260px" onchange="updateBusLabels()" disabled></select>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="save-bus" class="primary" onclick="saveBus()" disabled>保存总线配置并重启</button>
+      <span id="bus-state" class="hint" role="status">正在读取总线配置…</span>
+    </div>
+    <div class="hint">主控 RX 接模块的数据输出，TX 接模块的数据输入，请核对模块标注。模式与接线一起保存，重启生效；修改后请断电换线。模式 1 不占用 DE 引脚。</div>
+  </div>
+  <div class="card">
+    <h2>BambuBus 与 IO 引脚配置</h2>
+    <div class="io-config" id="card-pcf">
+      <h3>PCF8575 接线</h3>
+      <div class="row">
+        <span style="color:var(--dim);width:90px">扩展芯片</span>
+        <button id="pcf-en1" onclick="setPcfEnable(1)">启用 PCF8575：开</button>
+        <button id="pcf-en0" onclick="setPcfEnable(0)">关闭 PCF8575</button>
+      </div>
+      <div class="row">
+        <label for="pcf-sda">SDA（数据）</label><select id="pcf-sda" style="max-width:260px" onchange="updatePcfLabels()" disabled></select>
+        <label for="pcf-scl">SCL（时钟）</label><select id="pcf-scl" style="max-width:260px" onchange="updatePcfLabels()" disabled></select>
+        <button id="save-pcf" class="primary" onclick="savePcf()" disabled>保存并重启</button>
+      </div>
+      <div class="hint">关闭时 4 通道直连 GPIO，不占用 I2C；启用后通道可改用 PCF8575 扩展脚（在下方按 AMS 数量选 PCF8575 Px），I2C 占用所选 GPIO。
+        切换开关只清掉在新状态下不能用的引脚（启用时是与 SDA/SCL 冲突的，关闭时是扩展脚），其余接线保留；保存后重启，请先断电换线。</div>
+      <div class="hint" id="pcf-state" role="status">正在读取接线配置…</div>
+    </div>
+    <div class="row">
+      <span style="color:var(--dim);width:90px">AMS 数量</span>
+      <select id="p-ams" onchange="previewAms()" style="width:100px"><option>1</option><option>2</option><option>3</option><option>4</option></select>
+    </div>
+    <div class="hint" id="ams-hint">每个 AMS 对应 4 个通道；新增通道请先在下方配置引脚，再保存。</div>
+    <div id="io-config-box" class="io-config">
+      <h3>电机与微动引脚</h3>
+      <div class="hint">通道数随上方 AMS 数量联动。新增通道或修改接线前请停止电机动作；引脚不能重复。带警告的引脚可能影响芯片启动。</div>
+      <table class="tbl">
+        <thead><tr><th>通道</th><th>进料</th><th>退料</th><th>微动</th></tr></thead>
+        <tbody id="iobody"></tbody>
+      </table>
+      <div class="row" style="margin-top:10px">
+        <button id="save-io" class="primary" onclick="saveIoConfig()">保存 AMS 数量与通道引脚</button>
+        <span id="io-state" class="hint">引脚配置未加载</span>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span style="color:var(--dim);width:90px">自定义序列号</span>
+      <input id="p-serial" class="grow" maxlength="15" pattern="[A-Z0-9]{15}" placeholder="留空使用自动序列号" autocomplete="off" oninput="this.value=this.value.toUpperCase()">
+      <button onclick="saveSerial()">保存</button>
+    </div>
+    <div class="hint">留空时按芯片 ID 自动生成；填写时必须正好 15 位大写字母或数字。</div>
+  </div>
+  <div class="card">
+    <h2>设备操作</h2>
+    <div class="row">
+      <button onclick="doReboot()">重启设备</button>
+      <button class="danger" onclick="doFactory()">恢复出厂设置</button>
+    </div>
+    <div class="hint">恢复出厂设置会清空 WiFi 凭据、通道参数，并重启进入配网模式</div>
+  </div>
+</div>
+
+<!-- ================= 更新 ================= -->
+<div id="t-update" class="hide">
+  <div class="card" id="card-ota">
+    <h2>更新</h2>
+    <div class="kv"><span>当前版本</span><b id="u-ver">-</b></div>
+    <div class="kv"><span>目标平台</span><b id="u-target">-</b></div>
+    <div class="kv"><span>编译时间</span><b id="u-build">-</b></div>
+    <div class="row" style="margin-top:10px">
+      <input id="u-otaurl" class="grow" placeholder="更新源目录，例如 http://192.168.1.10/ota" autocomplete="off">
+      <button onclick="saveOtaSrc()">保存地址</button>
+    </div>
+    <div class="hint">目录里要有 manifest.json（记录版本/说明/固件文件名）。格式和服务器配置见 tools/OTA_SERVER.md。</div>
+    <div class="row" style="margin-top:12px">
+      <span style="color:var(--dim);width:90px">进页面提示</span>
+      <button id="u-n1" onclick="setNotify(1)">提示更新：开</button>
+      <button id="u-n0" onclick="setNotify(0)">提示更新：关</button>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button onclick="checkUpdate(1)">检查更新</button>
+      <button id="btn-otapull" class="primary" onclick="pullUpdate()" disabled>在线更新</button>
+    </div>
+    <div class="hint" id="u-stat">尚未检查更新</div>
+    <div class="hint">升级前必须停止所有电机运动。固件会再次检查，不满足时拒绝升级。</div>
+    <div class="row" style="margin-top:12px">
+      <input id="u-file" class="grow" type="file" accept=".bin">
+      <button id="btn-otaupload" onclick="uploadFw()">本地升级</button>
+    </div>
+    <div class="hint">本地升级直接把手选的 .bin 写进 Flash，用于离线刷同型号板子（注意别刷错平台）</div>
+  </div>
+</div>
+
+<!-- ================= 日志 ================= -->
+<div id="t-logs" class="hide">
+  <div class="card">
+    <h2>日志</h2>
+    <div class="row">
+      <button class="on" data-log="0" onclick="showLog(0)">主板日志</button>
+      <button data-log="1" onclick="showLog(1)">BambuBus 报文</button>
+      <span class="spacer"></span>
+      <button id="btn-pause" onclick="togglePause()">暂停</button>
+      <button onclick="clearLog()">清空</button>
+      <button onclick="downloadLog()">下载</button>
+    </div>
+    <div class="row bus-only-control hide" style="margin-top:8px">
+      <span style="color:var(--dim)">BambuBus 原始报文日志</span>
+      <button id="b1" onclick="setBusLog(1)">开</button>
+      <button id="b0" onclick="setBusLog(0)">关</button>
+      <span class="hint" style="margin:0;flex:1;min-width:200px">关闭后不再记录 TX/RX 十六进制报文，可降低高波特率下的 CPU 占用。</span>
+    </div>
+    <div class="logfilters bus-only-control hide">
+      <span style="color:var(--dim);font-size:12px">显示类型</span>
+      <div id="bus-log-filters" class="logfilters" style="margin:0"></div>
+      <button onclick="setAllBusLogFilters(true)">全选</button>
+      <button onclick="setAllBusLogFilters(false)">全不选</button>
+    </div>
+    <pre id="log0" class="logbox"></pre>
+    <pre id="log1" class="logbox hide"></pre>
+    <div class="hint bus-only-control hide">BambuBus 面板显示 RS485 上的原始十六进制报文：<b>RX</b> = 收到、<b>TX</b> = 发出，以及解析出的包类型。</div>
+  </div>
+</div>
+
+</main>
+<div id="toast" class="toast"></div>
+
+<script>
+const $=id=>document.getElementById(id)
+// 提示条：默认 4 秒自动消失，点一下可以提前关掉
+const toast=(msg,ms)=>{
+  const t = $('toast');t.textContent=msg;t.classList.add('on');clearTimeout(t._t);t._t=setTimeout(toastOff,ms||4000);}
+const toastOff=()=> $('toast').classList.remove('on')
+const api=(path,opt)=>fetch(path,opt).then(r=>r.text())
+const esc=(s)=>{
+  const d = document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
+
+// ---------- 标签页 ----------
+let TAB = 'status';
+const showTab=(name)=>{
+  if(['status','wifi','settings','update','logs'].indexOf(name)<0) name='status'
+  TAB=name
+  try{localStorage.setItem('bmcu-tab',name);}catch(e){}
+  ['status','wifi','settings','update','logs'].forEach((n)=>{$('t-'+n).classList.toggle('hide',n!==name);})
+  const bs = document.querySelectorAll('nav button');
+  for(let i=0; i<bs.length; i++) bs[i].classList.toggle('on',bs[i].getAttribute('data-tab')===name)
+  if((name==='status'||name==='settings') && !IO_DIRTY) loadPara()
+}
+
+// ---------- 状态 ----------
+const fmtUptime=(s)=>{
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h+' 小时 '+m+' 分 '+(s%60)+' 秒'
+}
+/* 固件里的编译时间是 __DATE__ " " __TIME__，形如 "Sep 26 2026 03:27:29"
+   （个位数日期会有两个空格），这里统一显示成 yyyy-MM-dd HH:mm:ss */
+const MONTHS = {
+  Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06',
+  Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12'
+};
+const fmtBuild=(s)=>{
+  s=String(s||'').trim()
+  const m = /^([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})\s+(\d{2}:\d{2}:\d{2})$/.exec(s);
+  if(!m||!MONTHS[m[1]]) return s||'-'
+  return m[3]+'-'+MONTHS[m[1]]+'-'+('0'+m[2]).slice(-2)+' '+m[4]
+}
+let statusPending=false,statusAt=0
+let S;
+let otaAutoTried;
+let gOtaLatest;
+const refreshStatus=()=>{
+  if(statusPending) return
+  statusPending=true
+  const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),3000)
+  return fetch('/api/status',{signal:ac.signal,cache:'no-store'}).then(r=>{
+    if(!r.ok) throw Error('状态请求失败')
+    return r.json()
+  }).then((d)=>{
+    S=d
+    statusAt=performance.now()
+    $('printer').textContent=['等待打印机连接','打印机在线','打印机离线'][d.printer]||'打印机状态未知'
+    $('printer').style.color=d.printer===1?'var(--ok)':d.printer===2?'var(--err)':'var(--dim)'
+    $('s-mode').textContent = d.mode==='AP' ? 'AP 配网热点' : 'STA 已联网'
+    $('s-ip').textContent   = d.ip
+    $('s-ssid').textContent = d.ssid||'(未连接)'
+    $('s-rssi').textContent = d.mode==='AP' ? ('已接入 '+d.cli+' 台设备') : (d.rssi+' dBm')
+    $('s-mac').textContent  = d.mac
+    $('s-uptime').textContent = fmtUptime(d.uptime)
+    $('s-heap').textContent = (d.heap/1024).toFixed(1)+' / '+(d.heap_total/1024).toFixed(1)+' KB'
+    $('s-chip').textContent = d.chip
+    $('s-rs485').textContent = d.rs485==1 ? '模式 1（仅 RXD/TXD）' : '模式 2（DE 控制方向）'
+    $('s-fw').textContent = (d.version||'-') + '  (' + (d.target||'-') + ')'
+    $('s-build').textContent = fmtBuild(d.build)
+    $('u-ver').textContent = d.version||'-'
+    $('u-target').textContent = d.target||'-'
+    $('u-build').textContent = fmtBuild(d.build)
+    $('hdr').textContent = (d.mode==='AP'?'配网中 ':'')+d.ip
+    $('b1').classList.toggle('on', d.buslog==1)
+    $('b0').classList.toggle('on', d.buslog==0)
+    renderMotorControls()
+    updateChannelStateText()
+    $('btn-otapull').disabled=!gOtaLatest||!d.maintenance
+    $('btn-otaupload').disabled=!d.maintenance;
+    /* 首次拿到状态后自动检查一次更新，有新版就把常驻横幅亮出来 */
+    if(!otaAutoTried){otaAutoTried=true; if(d.otanotify==1 && d.otaurl) checkUpdate(0);}
+  }).catch(()=>{
+    statusAt=0
+    $('printer').textContent='设备连接中断，打印机状态未知'
+    $('printer').style.color='var(--warn)'
+    renderMotorControls()
+  }).finally(()=>{clearTimeout(timer);statusPending=false;})
+}
+
+// 只记录正在发送的请求；运行状态和并发限制以固件为准
+const motorPending={},CH_STATUS_NAMES=['离线','在线','自动'];
+// 通道模式是“自动”时，把该通道微动开关状态显示成 自动(有料) / 自动(无料)，随状态轮询实时刷新
+const updateChannelStateText=()=>{
+  const n = (S && S.channels) || 0, fl = (S && S.fl) || null;
+  for(let i=0; i<n; i++){
+    const sel = $('cm' + i);
+    if(!sel||!sel.autoOpt) continue
+    const st = (fl && typeof fl[i] === 'number') ? fl[i] : -1;
+    if(sel.value==='2'&&st>=0) sel.autoOpt.textContent='自动('+(st?'有料':'无料')+')'
+    else sel.autoOpt.textContent='自动'
+  }
+}
+const renderMotorControls=()=>{
+  const fresh=statusAt&&performance.now()-statusAt<3000
+  for(let i=0;i<(S.channels||0);i++){
+    const m=(S.motors||[])[i]||{},queued=!!m.queue_position,running=!!m.dir,occupied=running||queued
+    document.querySelectorAll('[data-motor="'+i+'"]').forEach(b=>{
+      const stop=b.dataset.dir==='0'
+      b.classList.toggle('hide',stop?!occupied:occupied)
+      if(stop) b.textContent=queued?'取消排队':'停止'
+      b.disabled=stop?motorPending[i]===0:!fresh||motorPending[i]!=null
+    })
+    const el=$('run'+i)
+    if(!el) continue
+    const left=Math.max(0,(m.remaining_ms||0)-(performance.now()-statusAt))
+    el.textContent=queued?'等待'+(m.queued_dir>0?'进料':'退料')+' · 排队第 '+m.queue_position+' 位'+(fresh?'':' · 状态待确认'):
+      running?(['','打印机','手动','微动辅助'][m.source]||'')+' · '+(m.dir>0?'进料':'退料')+
+      (!fresh?' · 状态待确认':m.remaining_ms<0?' · 剩余时间未知':left>0?' · 剩余 '+(left/1000).toFixed(1)+' 秒':' · 等待停止确认'):
+      m.blocked?'已拦截打印机动作，等待打印机结束本次操作':''
+  }
+  $('manual-state').textContent=fresh?'运行电机 '+S.motor_running+' / '+S.motor_limit+' · 排队 '+(S.motors||[]).filter(m=>m.queue_position).length+'，可继续点击其他通道':
+    '设备状态未更新，请检查连接；仍可尝试停止运行中的电机'
+}
+const sendMotor=async(motor,dir)=>{
+  if(motorPending[motor]!=null&&(dir||motorPending[motor]===0)) return
+  motorPending[motor]=dir
+  renderMotorControls()
+  try{
+    const r=await fetch('/api/motor',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'motor='+motor+'&dir='+dir+'&duration='+encodeURIComponent($('manual-ms').value)})
+    const d=await r.json()
+    if(!r.ok||!d.ok) throw Error(d.msg||'操作失败')
+  }catch(e){toast(e.message||'电机请求失败');}
+  finally{if(motorPending[motor]===dir) delete motorPending[motor];await refreshStatus();renderMotorControls();}
+};
+
+// ---------- 配网 ----------
+const doScan=()=>{
+  $('scanlist').textContent='扫描中...'
+  const started = Date.now();
+  const poll=()=>{fetch('/api/scan').then(r=>r.json()).then((list)=>{
+    if(list.scanning){
+      if(Date.now()-started>20000){$('scanlist').textContent='扫描超时';return;}
+      setTimeout(poll,800);return
+    }
+    const box = $('scanlist');box.textContent=''
+    if(!list.length){box.textContent='没有扫描到网络';return;}
+    list.forEach((ap)=>{
+      const d = document.createElement('div');
+      const n = document.createElement('span');n.textContent=ap.ssid||'(隐藏)'
+      const i = document.createElement('i');i.textContent=ap.rssi+' dBm'+(ap.enc?' 加密':' 开放')
+      d.appendChild(n);d.appendChild(i)
+      d.onclick=()=>{$('w-ssid').value=ap.ssid;}
+      box.appendChild(d)
+    })
+  }).catch(()=>{toast('扫描失败');});}
+  poll()
+}
+let handoffWin = null;
+const saveWifi=()=>{
+  const ssid = $('w-ssid').value.trim();
+  if(!ssid){toast('请填写 WiFi 名称');return;}
+  // 必须趁点击还没结束就把新标签页开出来，等 POST 回来再 open 会被当弹窗拦掉
+  handoffWin=window.open('', '_blank')
+  if(handoffWin){
+    handoffWin.document.write('<title>正在连接团子 BMCU…</title><body style="font-family:sans-serif;background:#12141a;color:#e8eaf0;padding:2em">正在配置 WiFi，请稍候…</body>')
+  }
+  toast('正在连接，请稍候（最多 15 秒）...',15000)
+  const body = 'ssid=' + encodeURIComponent(ssid) + '&pass=' + encodeURIComponent($('w-pass').value);
+  api('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+    .then((t)=>{
+      const d = JSON.parse(t);
+      if(d.ok && d.ip) startHandoff(d.ip)
+      else { if(handoffWin&&!handoffWin.closed) handoffWin.close(); toast(d.msg||'连接失败',6000); }
+    }).catch(()=>{
+      if(handoffWin&&!handoffWin.closed) handoffWin.close()
+      toast('请求失败')
+    })
+}
+
+/* 配网成功后设备会重启并换到路由器网段：
+   AP 断开 -> 手机/电脑自动切回原网络 -> 这里轮询新地址。
+   必须先在后台确认能连上再跳，直接跳失败浏览器只会给个错误页，本页也就废了。
+   跳转走的是点击时预留的新标签页，所以本页（192.168.4.1）原样保留。 */
+let handoffTimer = null;
+const startHandoff=(ip)=>{
+  const base = 'http://' + ip + '/';
+  const t0 = Date.now();
+  toastOff();   // 面板已经接管提示，别让"正在连接…"留在下面自相矛盾
+  $('wifi-done').classList.remove('hide')
+  $('wd-ip').textContent=ip
+  $('wd-link').href=base
+  if(handoffTimer) clearInterval(handoffTimer)
+  handoffTimer=setInterval(()=>{
+    $('wd-state').textContent='设备重启中，已等待 '+Math.round((Date.now()-t0)/1000)+' 秒，连上就自动在新标签页打开（本页保留）'
+  },500)
+  const ping=()=>{
+    const ac = new AbortController();
+    const to = setTimeout(() => {
+      ac.abort();
+    }, 2500);
+    fetch(base+'api/status',{mode:'no-cors',cache:'no-store',signal:ac.signal}).then(()=>{
+      clearTimeout(to)
+      if(handoffTimer) clearInterval(handoffTimer)
+      if(handoffWin && !handoffWin.closed){
+        handoffWin.location.replace(base)
+        $('wd-state').textContent='已连上 '+base+'，新控制台已在另一个标签页打开，本页保留。'
+      }else{
+        // 弹窗被拦了，只能在用户点击时再开
+        $('wd-state').textContent='已连上 '+base+'，点上面的按钮打开新控制台（本页保留）。'
+        window.open(base,'_blank')
+      }
+    }).catch(()=>{
+      clearTimeout(to)
+      if(Date.now()-t0>180000){
+        $('wd-state').textContent='自动跳转超时：请确认手机/电脑已切回原来的 WiFi，再点上面的按钮打开 '+base
+        return
+      }
+      setTimeout(ping,1500)
+    })
+  }
+  ping()
+}
+const doForget=()=>api('/api/forget',{method:'POST'}).then(t=>toast(JSON.parse(t).msg,6000))
+
+// ---------- BambuBus 接线 ----------
+let BUS_MODE=1, BUS_USES={}, BUS_READY=false, BUS_SAVING=false, BUS_APPLIED={}
+const setRs485=(mode)=>{if(BUS_SAVING) return;BUS_MODE=mode;updateBusLabels()}
+const updateBusLabels=()=>{
+  const keys=BUS_MODE===2?['rx','tx','de']:['rx','tx'], seen=new Set(), warnings=[]
+  let conflict=false,duplicate=false,missing=false
+  $('r1').classList.toggle('on',BUS_MODE===1);$('r2').classList.toggle('on',BUS_MODE===2)
+  $('bus-de-row').classList.toggle('hide',BUS_MODE!==2)
+  for(const key of keys){
+    const sel=$('bus-'+key)
+    for(const op of sel.options){
+      const uses=(BUS_USES[op.value]||[]).slice()
+      for(const role of keys) if($('bus-'+role).value===op.value) uses.push('BambuBus '+role.toUpperCase())
+      op.textContent=op.dataset.label+(op.title?' ⚠':'')+(uses.length?'（'+uses.join('、')+'）':'')
+    }
+    sel.title=sel.selectedOptions[0]?.title||''
+    if(sel.title) warnings.push(sel.title)
+    if(sel.value==='') missing=true
+    if(seen.has(sel.value)) duplicate=true
+    seen.add(sel.value)
+    if(BUS_USES[sel.value]?.length) conflict=true
+  }
+  $('save-bus').disabled=!BUS_READY||BUS_SAVING||missing||duplicate||conflict
+  $('bus-state').textContent=!BUS_READY?'正在读取总线配置…':duplicate?'RX、TX、DE 不能重复':
+    conflict?'所选 GPIO 已被通道或 PCF8575 占用，请先修改并保存对应接线':missing?'请选择完整接线':
+    warnings.join(' ')||'模式与引脚将在保存并重启后生效'
+}
+const renderBus=(d)=>{
+  const b=d.bus||{};BUS_READY=!!d.bus;BUS_SAVING=false;BUS_MODE=d.rs485===2?2:1;BUS_USES={};BUS_APPLIED={}
+  const add=(map,pin,label)=>{if(pin!=null&&pin!==255) (map[pin]??=[]).push(label)}
+  for(let ch=0;ch<d.channels;ch++){
+    const pins=[...(d.io?.motor[ch]||[]),d.io?.microswitch[ch]]
+    pins.forEach((pin,role)=>add(BUS_USES,pin,'通道'+(ch+1)+['进料','退料','微动'][role]))
+  }
+  if(d.pcf?.enabled){add(BUS_USES,d.pcf.sda,'PCF8575 SDA');add(BUS_USES,d.pcf.scl,'PCF8575 SCL')}
+  for(const key of ['rx','tx','de']){
+    const sel=$('bus-'+key);sel.textContent='';sel.disabled=!BUS_READY
+    for(const pin of b.pins||[]){
+      const op=new Option(pin.label,pin.id);op.dataset.label=pin.label;op.title=pin.warning_text||'';sel.add(op)
+    }
+    sel.value=String(b[key])
+    if(key!=='de'||BUS_MODE===2) add(BUS_APPLIED,b[key],'BambuBus '+key.toUpperCase())
+  }
+  updateBusLabels()
+}
+const saveBus=async()=>{
+  if($('save-bus').disabled) return
+  BUS_SAVING=true;updateBusLabels()
+  for(const key of ['rx','tx','de']) $('bus-'+key).disabled=true
+  try{
+    const body=new URLSearchParams({mode:BUS_MODE,rx:$('bus-rx').value,tx:$('bus-tx').value})
+    if(BUS_MODE===2) body.set('de',$('bus-de').value)
+    const r=await fetch('/api/bus',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body.toString()})
+    const d=await r.json()
+    if(!r.ok||!d.ok) throw Error(d.msg||'保存失败')
+    $('bus-state').textContent=d.msg;toast(d.msg,12000)
+  }catch(e){
+    BUS_SAVING=false;for(const key of ['rx','tx','de']) $('bus-'+key).disabled=!BUS_READY
+    updateBusLabels();$('bus-state').textContent=e.message||'连接中断，请重新读取确认是否保存';toast($('bus-state').textContent,8000)
+  }
+}
+
+// ---------- PCF8575 开关与接线 ----------
+let PCF_USES={}, PCF_ENABLED=false, PCF_DEV_ENABLED=false, PCF_SAVING=false
+const setPcfEnable=(v)=>{if(PCF_SAVING) return;PCF_ENABLED=!!v;updatePcfLabels()}
+const updatePcfLabels=()=>{
+  const sda=$('pcf-sda'),scl=$('pcf-scl'),warnings=[]
+  const duplicate=PCF_ENABLED&&sda.value!==''&&sda.value===scl.value
+  const changed=PCF_ENABLED!==PCF_DEV_ENABLED
+  // 通道占用不拦截保存：固件会在切换开关时自动清空这些引脚。
+  // 只有 BambuBus 占用必须先去改总线接线。
+  let busConflict=false, channelConflict=false
+  $('pcf-en1').classList.toggle('on',PCF_ENABLED)
+  $('pcf-en0').classList.toggle('on',!PCF_ENABLED)
+  sda.disabled=scl.disabled=!PCF_ENABLED
+  for(const sel of [sda,scl]){
+    for(const op of sel.options){
+      const uses=(PCF_USES[op.value]||[]).slice()
+      if(PCF_ENABLED&&op.value===sda.value) uses.push('PCF8575 SDA')
+      if(PCF_ENABLED&&op.value===scl.value) uses.push('PCF8575 SCL')
+      op.textContent=op.dataset.label+(op.title?' ⚠':'')+(uses.length?'（'+uses.join('、')+'）':'')
+    }
+    sel.title=sel.selectedOptions[0]?.title||''
+    if(PCF_ENABLED&&sel.title) warnings.push(sel.title)
+    if(PCF_ENABLED&&(PCF_USES[sel.value]||[]).some(u=>u.indexOf('通道')===0)) channelConflict=true
+    if(PCF_ENABLED&&(BUS_APPLIED[sel.value]||[]).length) busConflict=true
+  }
+  $('save-pcf').disabled=PCF_SAVING||(PCF_ENABLED&&(duplicate||busConflict||sda.value===''||scl.value===''))
+  const hint=warnings.join(' ')
+  $('pcf-state').textContent=duplicate?'SDA 和 SCL 不能相同':
+    busConflict?'所选 GPIO 已被 BambuBus 占用，请先修改并保存总线接线':
+    hint?hint:
+    channelConflict?'SDA/SCL 占用了通道引脚，保存时会清空这些通道接线':
+    changed?(PCF_ENABLED?'保存后启用 PCF8575，可用扩展脚并重启':'保存后关闭 PCF8575，扩展脚会被清空并重启'):'接线配置已加载，保存后重启生效'
+}
+const renderPcf=(d)=>{
+  const p=d.pcf||{}
+  PCF_ENABLED=PCF_DEV_ENABLED=!!p.enabled
+  PCF_USES=JSON.parse(JSON.stringify(BUS_APPLIED))
+  for(let ch=0;ch<d.channels;ch++){
+    const pins=[...(d.io?.motor[ch]||[]),d.io?.microswitch[ch]]
+    pins.forEach((pin,role)=>{
+      if(pin==null||pin===255) return
+      if(!PCF_USES[pin]) PCF_USES[pin]=[]
+      PCF_USES[pin].push('通道'+(ch+1)+['进料','退料','微动'][role])
+    })
+  }
+  for(const key of ['sda','scl']){
+    const sel=$('pcf-'+key);sel.textContent=''
+    for(const pin of p.pins||[]){
+      const op=new Option(pin.label,pin.id);op.dataset.label=pin.label;op.title=pin.warning_text||'';sel.add(op)
+    }
+    sel.value=String(p[key])
+  }
+  updatePcfLabels()
+}
+const savePcf=async()=>{
+  if($('save-pcf').disabled) return
+  const changed=PCF_ENABLED!==PCF_DEV_ENABLED
+  if(changed&&!confirm(PCF_ENABLED?'启用 PCF8575：会清掉与 SDA/SCL 冲突的通道引脚并重启，确定继续？':'关闭 PCF8575：会清掉所有扩展脚引脚并重启，确定继续？')) return
+  PCF_SAVING=true;updatePcfLabels()
+  $('pcf-sda').disabled=$('pcf-scl').disabled=true
+  try{
+    const body=new URLSearchParams({enable:PCF_ENABLED?1:0})
+    if(PCF_ENABLED) body.set('sda',$('pcf-sda').value), body.set('scl',$('pcf-scl').value)
+    const r=await fetch('/api/pcf',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body.toString()})
+    const d=await r.json()
+    if(!r.ok||!d.ok) throw Error(d.msg||'保存失败')
+    $('pcf-state').textContent=d.msg;toast(d.msg,12000)
+  }catch(e){
+    PCF_SAVING=false;updatePcfLabels()
+    $('pcf-state').textContent=e.message||'连接中断，请重新读取确认是否保存';toast($('pcf-state').textContent,8000)
+  }
+}
+// ---------- 通道与设置 ----------
+let IO_PIN_OPTIONS = [], IO_CHANNELS = 0, IO_DRAFT = null, IO_DIRTY = false;
+const ioMakeSelect=(id,value,allowNone)=>{
+  const sel = document.createElement('select');sel.id=id
+  if(allowNone){
+    const none = new Option('无', 255);sel.appendChild(none)}
+  for(let i=0; i<IO_PIN_OPTIONS.length; i++){
+    const p = IO_PIN_OPTIONS[i], op = new Option(p.label, p.id);
+    op.dataset.baseLabel=p.label
+    op.dataset.warning=p.warning?'1':'0'
+    op.title=p.warning_text||''
+    if(p.warning) op.textContent+=' ⚠'
+    sel.appendChild(op)
+  }
+  sel.value=String(value)
+  if(sel.selectedIndex<0){
+    const missing=new Option('请选择引脚','');missing.disabled=true;sel.insertBefore(missing,sel.firstChild);sel.value=''
+  }
+  sel.dataset.saved=sel.value
+  sel.onchange=()=>{IO_DIRTY=true;updateIoWarnings()}
+  return sel
+}
+const ioUsageMap=()=>{
+  const uses = {};
+  for(let i=0; i<IO_CHANNELS; i++){
+    const fields = [['io-mf' + i, (i + 1) + '进料'], ['io-mb' + i, (i + 1) + '退料'], ['io-sw' + i, (i + 1) + '微动']];
+    for(let k=0; k<fields.length; k++){
+      const el = $(fields[k][0]);if(!el) continue
+      const pin = +el.value;
+      if(el.value==='' || pin===255) continue
+      if(!uses[pin]) uses[pin]=[]
+      uses[pin].push(fields[k][1])
+    }
+  }
+  return uses
+}
+const refreshIoOptionLabels=()=>{
+  const uses = ioUsageMap(), selects = document.querySelectorAll('#iobody select');
+  for(let i=0; i<selects.length; i++){
+    const options = selects[i].options;
+    for(let k=0; k<options.length; k++){
+      const op = options[k], pin = +op.value;
+      if(pin===255){op.textContent='无';continue}
+      let label = op.dataset.baseLabel || op.textContent;
+      if(op.dataset.warning==='1') label+=' ⚠'
+      if(uses[pin]&&uses[pin].length) label+=' ('+uses[pin].join('、')+')'
+      op.textContent=label
+    }
+    const selected=selects[i].selectedOptions[0], warning=selected?selected.title:'';
+    selects[i].title=warning
+    const badge=$(selects[i].id+'-warning');
+    if(badge){
+      badge.hidden=!warning
+      badge.title=warning
+      badge.setAttribute('aria-label',warning||'无引脚警告')
+    }
+  }
+}
+const updateIoWarnings=()=>{
+  let seen = {}, duplicate = false, missing = false;const unset = [];
+  for(let i=0; i<IO_CHANNELS; i++){
+    const f=$('io-mf'+i), b=$('io-mb'+i);
+    if(f&&b&&f.value==='255'&&b.value==='255') unset.push(i+1)
+    for(const key of ['io-mf'+i,'io-mb'+i,'io-sw'+i]){
+      const el = $(key);if(!el) continue
+      const pin = +el.value;
+      el.classList.remove('bad')
+      if(el.value===''){el.classList.add('bad');missing=true;continue}
+      if(pin===255) continue
+      if(seen[pin]){el.classList.add('bad');duplicate=true}
+      seen[pin]=true
+    }
+  }
+  refreshIoOptionLabels()
+  $('io-state').textContent=missing?'请为所有启用通道选择进料和退料引脚':
+    duplicate?'存在重复引脚，请修改后再保存':
+    unset.length?'通道 '+unset.join('、')+' 的电机引脚是「无」，这些通道无法进退料':
+    '配置可提交；保存前请确认设备处于空闲状态'
+  $('io-state').classList.toggle('error',duplicate||missing)
+}
+const renderIoConfig=(d)=>{
+  IO_CHANNELS=d.channels||0
+  IO_PIN_OPTIONS=d.io&&d.io.pins||[]
+  const body = $('iobody');body.textContent=''
+  for(let i=0; i<IO_CHANNELS; i++){
+    const tr = document.createElement('tr'), td = document.createElement('td');td.textContent=i+1;tr.appendChild(td)
+    const values = d.io || {}, motors = values.motor || [], sw = values.microswitch || [];
+    // 电机引脚允许选「无」：留空表示该通道暂时不接电机。
+    const cells = [ioMakeSelect('io-mf' + i, motors[i] ? motors[i][0] : 255, true), ioMakeSelect('io-mb' + i, motors[i] ? motors[i][1] : 255, true), ioMakeSelect('io-sw' + i, sw[i] != null ? sw[i] : 255, true)];
+    for(let k=0; k<cells.length; k++){const c = document.createElement('td');c.appendChild(cells[k]);tr.appendChild(c)}
+    body.appendChild(tr)
+  }
+  $('io-state').textContent='配置已加载'
+  updateIoWarnings()
+}
+const previewAms=()=>{
+  if(!IO_DRAFT) return
+  IO_DIRTY=true
+  // 在数量来回切换时保留尚未保存的引脚选择。
+  for(let i=0;i<IO_CHANNELS;i++){
+    IO_DRAFT.io.motor[i]=[$('io-mf'+i).value,$('io-mb'+i).value]
+    IO_DRAFT.io.microswitch[i]=$('io-sw'+i).value
+  }
+  IO_DRAFT.channels=Number($('p-ams').value)*4
+  renderIoConfig(IO_DRAFT)
+  $('ams-hint').textContent='待保存：'+$('p-ams').value+' 个 AMS，共 '+IO_CHANNELS+' 通道；请在下方配置引脚后保存数量与引脚。减少数量会停止并移除停用通道的排队动作。'
+}
+const saveIoConfig=async()=>{
+  let seen = {}, body = new URLSearchParams({ams:$('p-ams').value}), duplicate = false;
+  for(let i=0;i<IO_CHANNELS;i++){
+    for(const key of ['io-mf'+i,'io-mb'+i,'io-sw'+i]){
+      const el=$(key)
+      if(el.value===''){toast('请先为新增通道配置引脚');updateIoWarnings();return}
+      const pin=Number(el.value)
+      if(pin!==255){if(seen[pin]) duplicate=true;seen[pin]=true}
+      body.append(key.replace('io-','io_'),String(pin))
+    }
+  }
+  if(duplicate){toast('IO 引脚不能重复，请先修改');updateIoWarnings();return}
+  $('save-io').disabled=$('p-ams').disabled=true
+  if(await postSettings(body.toString(),false)) await loadPara()
+  $('save-io').disabled=$('p-ams').disabled=false
+}
+const loadPara=()=>{
+  return fetch('/api/settings').then(r=>r.json()).then((d)=>{
+    $('manual-ms').value=String(d.manual_ms||300)
+    $('auto-ms').value=String(d.auto_ms!=null?d.auto_ms:1000)
+    const limit=$('motor-limit');limit.textContent=''
+    for(let i=1;i<=d.channels;i++) limit.add(new Option(i,i))
+    limit.value=d.motor_limit;
+    ['manual-ms','auto-ms','motor-limit'].forEach(id=>$(id).dataset.saved=$(id).value)
+    const ams = $('p-ams');ams.textContent=''
+    for(let a=1; a<=d.maxams; a++){
+      const op = document.createElement('option');op.value=a;op.textContent=a;ams.appendChild(op);}
+    $('p-ams').value=d.ams
+    $('ams-hint').textContent=d.ams+' 个 AMS，共 '+d.channels+' 通道；新增通道请先在下方配置引脚，再保存。'
+    IO_DRAFT=JSON.parse(JSON.stringify(d));IO_DIRTY=false
+    $('p-serial').value=d.serial||''
+    $('p-serial').dataset.saved=$('p-serial').value
+    $('u-otaurl').value=d.otaurl||''
+    $('u-n1').classList.toggle('on',d.otanotify==1)
+    $('u-n0').classList.toggle('on',d.otanotify==0)
+    renderIoConfig(d)
+    renderBus(d)
+    PCF_SAVING=false;renderPcf(d)
+    const tb = $('chbody');tb.textContent=''
+    for(let i=0; i<d.channels; i++){
+      const tr = document.createElement('tr');
+      const td0 = document.createElement('td');td0.textContent=(i+1)
+      const td1 = document.createElement('td');
+      const sel = document.createElement('select');sel.id='cm'+i
+      for(let k=0; k<CH_STATUS_NAMES.length; k++){
+        const o = document.createElement('option');o.value=k;o.textContent=CH_STATUS_NAMES[k]
+        if(k===2) sel.autoOpt=o;  /* 自动模式的选项文字要跟着微动状态变 */
+        sel.appendChild(o)
+      }
+      sel.onchange=e=>saveField(e.target,e.target.id)
+      sel.value=d.cm[i];sel.dataset.saved=sel.value;td1.appendChild(sel)
+      const td2 = document.createElement('td');
+      const inp = document.createElement('input');inp.id='to'+i;inp.type='number';inp.min=3;inp.max=30;inp.value=d.to[i]
+      inp.required=true;inp.step=1;inp.dataset.saved=inp.value
+      inp.onchange=e=>saveField(e.target,e.target.id)
+      td2.appendChild(inp)
+      const td3 = document.createElement('td'), acts = document.createElement('div');
+      acts.className='acts'
+      for(const [dir,label] of [[1,'进料'],[-1,'退料'],[0,'停止']]){
+        const button=document.createElement('button')
+        button.textContent=label;button.dataset.motor=i;button.dataset.dir=dir
+        if(!dir) button.className='danger hide'
+        button.onclick=e=>sendMotor(+e.currentTarget.dataset.motor,+e.currentTarget.dataset.dir)
+        acts.appendChild(button)
+      }
+      const state=document.createElement('div');state.id='run'+i;state.className='hint motor-state';state.setAttribute('role','status')
+      td3.appendChild(acts);td3.appendChild(state)
+      tr.appendChild(td0);tr.appendChild(td1);tr.appendChild(td2);tr.appendChild(td3);tb.appendChild(tr)
+    }
+    renderMotorControls()
+    updateChannelStateText()
+  }).catch(()=>{toast('读取参数失败');})
+}
+const postSettings=async(body,silent)=>{
+  try{
+    const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})
+    const d=await r.json()
+    if(!r.ok||!d.ok) throw Error(d.msg||'保存失败')
+    if(!silent) toast(d.msg)
+    refreshStatus()
+    return true
+  }catch(e){toast(e.message||'保存失败，请重试',6000);return false;}
+}
+const saveField=async(el,key)=>{
+  if(!el.reportValidity()) return
+  el.disabled=true
+  const value=el.value
+  if(await postSettings(key+'='+encodeURIComponent(value),false)) el.dataset.saved=value
+  else el.value=el.dataset.saved
+  el.disabled=false
+  updateChannelStateText()
+}
+const saveSerial=async()=>{
+  const el=$('p-serial')
+  if(!el.reportValidity()) return
+  el.disabled=true
+  const value=el.value
+  if(await postSettings('serial='+encodeURIComponent(value),true)){
+    el.dataset.saved=value
+    toast(value?'自定义序列号已保存':'已恢复使用自动序列号')
+  }else el.value=el.dataset.saved||''
+  el.disabled=false
+}
+const setBusLog=async(v)=>{
+  if(!await postSettings('buslog='+v,true)) return
+  $('b1').classList.toggle('on',v==1);$('b0').classList.toggle('on',v==0)
+  toast(v?'已开启 BambuBus 原始报文日志':'已关闭 BambuBus 原始报文日志')
+}
+
+// ---------- 固件更新 ----------
+otaAutoTried = false;
+gOtaLatest = null;
+
+const showUpbar=(d)=>{
+  $('upbar-txt').innerHTML='发现新固件 <b>'+esc(d.latest)+'</b>（当前 '+esc(d.current)+'）'
+  $('upbar').classList.remove('hide')
+}
+const hideUpbar=()=>{$('upbar').classList.add('hide');}
+const gotoUpdate=()=>{showTab('update');
+  const c = $('card-ota');if(c&&c.scrollIntoView)c.scrollIntoView({behavior:'smooth',block:'start'});}
+
+const setOtaUi=(d)=>{
+  gOtaLatest = d.has_update ? d : null
+  $('btn-otapull').disabled = !d.has_update || !S.maintenance
+  if(d.has_update){
+    $('u-stat').innerHTML='发现新版本 <b>'+esc(d.latest)+'</b>，当前 '+esc(d.current)+
+      (d.size?('（'+Math.round(d.size/1024)+' KB）'):'')+(d.notes?('<br>'+esc(d.notes)):'')
+    showUpbar(d)
+  }else{
+    $('u-stat').textContent='已是最新版本（'+d.current+'）'
+    hideUpbar()
+  }
+}
+
+// force=0 是进页面的静默检查（出错不打扰用户），force=1 是手动点按钮
+const checkUpdate=(force)=>{
+  if(force) $('u-stat').textContent='正在检查更新…'
+  fetch('/api/ota/check'+(force?'?force=1':''),{method:'POST'}).then(r=>r.json()).then((d)=>{
+    if(d.skipped){ if(force) $('u-stat').textContent='已在设置里关闭自动提示（仍可手动检查）'; return; }
+    if(!d.ok){
+      if(force){ $('u-stat').textContent='检查失败：'+d.msg; toast('检查失败：'+d.msg,8000); }
+      return
+    }
+    setOtaUi(d)
+    if(force && d.has_update) toast('发现新版本 '+d.latest+'，可以点"在线更新"',8000)
+  }).catch(()=>{ if(force){ $('u-stat').textContent='检查失败：请求超时'; toast('检查失败：请求超时',8000); } })
+}
+
+const pullUpdate=()=>{
+  if(!confirm('请确认打印已停止，打印机总线已断开且所有电机已停止。确定下载并安装新固件？过程中请勿断电。')) return
+  $('btn-otapull').disabled=true
+  $('u-stat').textContent='正在下载固件，请勿断电…（大文件可能要一两分钟）'
+  const t0 = Date.now(), tip = setInterval(() => {
+    $('u-stat').textContent = '正在下载并写入 Flash，已等待 ' + Math.round((Date.now() - t0) / 1000) + ' 秒，请勿断电…'
+  }, 1000);
+  fetch('/api/ota/pull',{method:'POST'}).then(r=>r.text()).then((txt)=>{
+    clearInterval(tip)
+    let d;
+    try{d=JSON.parse(txt);}catch(e){d={ok:false,msg:txt};}
+    $('u-stat').textContent=d.msg||'完成'
+    if(d.ok){
+      toast(d.msg,15000);
+      // 更新成功后延迟 5 秒打开新页面（设备重启后即连到新固件）
+      setTimeout(()=>{
+        const w = window.open(location.pathname, '_blank');
+        if(!w) location.href=location.pathname
+      },5000)
+    }
+    else { toast(d.msg,8000); $('btn-otapull').disabled=false; }
+  }).catch(()=>{
+    clearInterval(tip);
+    // 设备升级成功会直接重启，连接被切断属于正常现象
+    $('u-stat').textContent='连接已断开：如果设备正在重启，等一下刷新本页即可'
+    toast('连接已断开，设备可能正在重启',10000)
+  })
+}
+
+const uploadFw=()=>{
+  const f = $('u-file').files[0];
+  if(!f){toast('请先选择 .bin 固件文件');return;}
+  if(!/\.bin$/i.test(f.name)){toast('请选择 .bin 固件文件');return;}
+  if(!confirm('请确认打印已停止，打印机总线已断开且所有电机已停止。确定写入 '+f.name+'（'+Math.round(f.size/1024)+' KB）？')) return
+
+  const fd = new FormData();
+  fd.append('firmware',f,f.name)
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST','/api/ota/upload')
+  xhr.timeout=300000
+  $('u-stat').textContent='正在上传固件，请勿断电…'
+  xhr.upload.onprogress=(e)=>{
+    if(e.lengthComputable) $('u-stat').textContent='正在上传 '+Math.round(e.loaded*100/e.total)+'%，请勿断电…'
+  }
+  xhr.onload=()=>{
+    let d;
+    try{d=JSON.parse(xhr.responseText);}catch(e){d={ok:false,msg:'设备返回异常'};}
+    $('u-stat').textContent=d.msg||'完成'
+    toast(d.msg||'完成',12000)
+  }
+  xhr.onerror=xhr.ontimeout=()=>{
+    $('u-stat').textContent='上传中断：如果设备正在重启，等一下刷新本页即可'
+    toast('上传中断，设备可能正在重启',10000)
+  }
+  xhr.send(fd)
+}
+
+const saveOtaSrc=()=>postSettings('otaurl='+encodeURIComponent($('u-otaurl').value.trim()),false)
+const setNotify=async(v)=>{
+  if(!await postSettings('otanotify='+v,true)) return
+  $('u-n1').classList.toggle('on',v==1)
+  $('u-n0').classList.toggle('on',v==0)
+  if(v==0) hideUpbar()
+  else if(gOtaLatest) showUpbar(gOtaLatest)
+  toast(v?'已开启：进页面自动检查并提示更新':'已关闭：进页面不再自动检查更新')
+}
+
+// ---------- 系统 ----------
+const doReboot=()=>{if(confirm('确定重启设备？')) api('/api/reboot').then((t)=>{toast(JSON.parse(t).msg,6000);});}
+const doFactory=()=>{if(confirm('确定恢复出厂设置？WiFi 凭据也会被清空。')) api('/api/factory',{method:'POST'}).then((t)=>{toast(JSON.parse(t).msg,6000);});}
+
+// ---------- 日志 ----------
+const BUS_LOG_TYPES = [
+  {type: 0, label: 'filament_motion_short 短包动作', color: '#67e8f9'},
+  {type: 1, label: 'filament_motion_long 长包动作', color: '#2dd4bf'},
+  {type: 2, label: 'online_detect 在线检测', color: '#60a5fa'},
+  {type: 3, label: 'REQx6', color: '#facc15'},
+  {type: 4, label: 'NFC_detect NFC检测', color: '#c084fc'},
+  {type: 5, label: 'set_filament 设置耗材', color: '#fb923c'},
+  {type: 6, label: 'MC_online', color: '#a5b4fc'},
+  {type: 7, label: 'filament_info 耗材信息', color: '#a3e635'},
+  {type: 8, label: 'version 版本', color: '#e879f9'},
+  {type: 9, label: 'heartbeat 心跳', color: '#4ade80'},
+  {type: 10, label: 'ETC 其他', color: '#cbd5e1'},
+  {type: 11, label: 'ERROR 错误', color: '#ff6b6b'},
+  {type: 12, label: 'set_filament_type2 长包设置耗材', color: '#fda4af'},
+  {type: -1, label: 'unknown 未知/未关联', color: '#94a3b8'}
+];
+const busLogColors = Object.fromEntries(BUS_LOG_TYPES.map(item=>[item.type,item.color]));
+const busLogFilters = {};
+const busLogFilterStorage = 'bmcu-bus-log-filters';
+const LOGS = [
+  {seq: 0, el: null, paused: false, txt: ''},
+  {seq: 0, el: null, paused: false, txt: '', records: [], pending: '', rawBytes: 0}
+];
+let activeLog = 0, paused = false;
+const busLogHasType=(type)=>{
+  for(let i=0; i<BUS_LOG_TYPES.length; i++) if(BUS_LOG_TYPES[i].type===type) return true
+  return false
+}
+const saveBusLogFilters=()=>{
+  try{localStorage.setItem(busLogFilterStorage,JSON.stringify(busLogFilters));}catch(e){}
+}
+const initBusLogFilters=()=>{
+  let saved = {};
+  try{saved=JSON.parse(localStorage.getItem(busLogFilterStorage)||'{}')||{};}catch(e){}
+  const box = $('bus-log-filters');
+  for(let i=0; i<BUS_LOG_TYPES.length; i++){
+    const item = BUS_LOG_TYPES[i], key = String(item.type);
+    busLogFilters[item.type]=saved[key]!==false
+    const label = document.createElement('label'), input = document.createElement('input'),
+            text = document.createElement('span');
+    label.className='logfilter'
+    label.style.color=item.color
+    input.style.accentColor=item.color
+    input.type='checkbox'; input.checked=busLogFilters[item.type]; input.dataset.busType=key
+    input.onchange=function(){
+      const type = parseInt(this.dataset.busType, 10);
+      busLogFilters[type]=this.checked
+      saveBusLogFilters()
+      renderBusLog()
+    }
+    text.textContent=item.label
+    label.appendChild(input); label.appendChild(text); box.appendChild(label)
+  }
+}
+const setAllBusLogFilters=(checked)=>{
+  for(let i=0; i<BUS_LOG_TYPES.length; i++) busLogFilters[BUS_LOG_TYPES[i].type]=checked
+  const inputs = document.querySelectorAll('#bus-log-filters input');
+  for(let j=0; j<inputs.length; j++) inputs[j].checked=checked
+  saveBusLogFilters()
+  renderBusLog()
+}
+const busLogTypeFromLine=(line)=>{
+  const m = /\btype=(-?\d+)\b/.exec(line);
+  if(!m) return -1
+  const type = parseInt(m[1], 10);
+  return busLogHasType(type)?type:-1
+}
+const renderBusLog=()=>{
+  const L = LOGS[1], out = document.createDocumentFragment();
+  for(let i=0; i<L.records.length; i++){
+    const rec = L.records[i];
+    if(busLogFilters[rec.type]===false) continue
+    const line = document.createElement('span');
+    line.style.color=busLogColors[rec.type]||busLogColors[-1]
+    // type=... 是给筛选器使用的元数据；页面保留原来的可读日志格式。
+    line.textContent=rec.text.replace(/\btype=-?\d+\s+/,'')
+    out.appendChild(line)
+  }
+  $('log1').replaceChildren(out)
+  if(activeLog===1) $('log1').scrollTop=$('log1').scrollHeight
+}
+const appendBusLog=(text)=>{
+  const L = LOGS[1];
+  L.pending+=text
+  const lines = L.pending.split('\n');
+  L.pending=lines.pop()
+  for(let i=0; i<lines.length; i++){
+    const recordText = lines[i] + '\n';
+    L.records.push({type:busLogTypeFromLine(lines[i]),text:recordText})
+    L.rawBytes+=recordText.length
+  }
+  if(L.rawBytes>262144){
+    const target = 131072;
+    while(L.records.length&&L.rawBytes>target){L.rawBytes-=L.records.shift().text.length}
+  }
+  renderBusLog()
+}
+const showLog=(ch)=>{
+  activeLog=ch
+  $('log0').classList.toggle('hide',ch!==0)
+  $('log1').classList.toggle('hide',ch!==1)
+  const busControls = document.querySelectorAll('.bus-only-control');
+  for(let k=0; k<busControls.length; k++) busControls[k].classList.toggle('hide',ch!==1)
+  const bs = document.querySelectorAll('[data-log]');
+  for(let i=0; i<bs.length; i++) bs[i].classList.toggle('on',+bs[i].getAttribute('data-log')===ch)
+  if(ch===1) renderBusLog()
+  const el = $('log' + ch);
+  el.scrollTop=el.scrollHeight
+}
+const togglePause=()=>{
+  paused=!paused
+  $('btn-pause').textContent=paused?'继续':'暂停'
+  $('btn-pause').classList.toggle('on',paused)
+}
+const clearLog=()=>{
+  const ch = activeLog;
+  fetch('/api/log?ch='+ch+'&clear=1').then((r)=>{
+    const L = LOGS[ch];
+    L.seq=parseInt(r.headers.get('X-Log-Seq')||'0',10)
+    L.txt=''
+    if(ch===1){L.records=[];L.pending='';L.rawBytes=0;renderBusLog();}
+    else $('log'+ch).textContent=''
+  })
+}
+const downloadLog=()=>window.open('/api/log?ch='+activeLog+'&seq=0&dl=1','_blank')
+const appendLog=(ch,text)=>{
+  if(ch===1){appendBusLog(text);return}
+  const L = LOGS[ch], el = $('log' + ch);
+  L.txt+=text
+  if(L.txt.length>262144) L.txt=L.txt.slice(-131072)
+  el.textContent=L.txt
+  if(ch===activeLog) el.scrollTop=el.scrollHeight
+}
+const pollLog=()=>{
+  if(TAB!=='logs'||paused) return
+  const ch = activeLog, L = LOGS[ch];
+  fetch('/api/log?ch='+ch+'&seq='+L.seq).then((r)=>{
+    const s = r.headers.get('X-Log-Seq');
+    if(s!==null) L.seq=parseInt(s,10)
+    return r.text()
+  }).then((t)=>{ if(t) appendLog(ch,t); }).catch(()=>{})
+}
+
+// ---------- 启动 ----------
+document.getElementById('toast').onclick=toastOff
+const navBtns = document.querySelectorAll('nav button');
+for(let i=0; i<navBtns.length; i++){
+  navBtns[i].onclick=e=>showTab(e.currentTarget.dataset.tab)
+}
+S = {};
+let savedTab = 'status';
+try{savedTab=localStorage.getItem('bmcu-tab')||'status';}catch(e){}
+initBusLogFilters()
+showTab(savedTab)
+refreshStatus()
+loadPara()
+setInterval(refreshStatus,1000)
+setInterval(renderMotorControls,200)
+setInterval(pollLog,800)
+</script>
+</body>
+</html>

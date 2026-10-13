@@ -1,0 +1,5 @@
+.idea
+.pio
+
+# OTA 发版产物（tools/make_ota.py 的输出）
+dist/
