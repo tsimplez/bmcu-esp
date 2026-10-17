@@ -76,7 +76,7 @@ constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设�
 
 // OTA 更新源
 #define OTA_URL_MAX                 128
-#define DEFAULT_OTA_URL             ""
+#define DEFAULT_OTA_URL             "https://tuanzisimple.github.io/bmcu-esp"
 #define DEFAULT_OTA_NOTIFY          1
 
 // 初始化设置存储（在setup中调用）

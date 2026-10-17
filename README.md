@@ -2,6 +2,45 @@
 
 [交流群 1093447641 欢迎加入](https://qm.qq.com/q/hrK8NNwo6Y)
 
+## 有关于市面上的 bmcu 项目
+- Top ams 和 天枢TTC 相似
+- 孔明 和 怪兽 相似
+
+### Top ams
+- ***不推荐使用的是(mqtt方案)，其他项目都是使用485方案(和打印机直接通信)***
+- 功能: 微动
+- 群: 882091399
+- [教程 https://docs.qq.com/doc/DVkZIR0NtYUtsenB6](https://docs.qq.com/doc/DVkZIR0NtYUtsenB6)
+- [仓库 https://github.com/nccrrv/Top-AMS](https://github.com/nccrrv/Top-AMS)
+- [tt模型 https://makerworld.com.cn/models/1418429](https://makerworld.com.cn/models/1418429)
+
+### 天枢TTC
+- 功能: 微动
+- 群: 981655616
+- [教程 https://my.feishu.cn/wiki/N4bXwJpWUirYBFkMr81cw0umn72](https://my.feishu.cn/wiki/N4bXwJpWUirYBFkMr81cw0umn72)
+- [仓库 https://github.com/hu504011383/Tianshu](https://github.com/hu504011383/Tianshu)
+- [tt模型 https://makerworld.com.cn/models/1418429](https://makerworld.com.cn/models/1418429)
+- [TTC模型 https://makerworld.com.cn/models/2226484](https://makerworld.com.cn/models/2226484)
+
+### 孔明(主板使用ttl烧录)
+- 功能: 霍尔 + 双微动 + 370电机
+- 群 981889040
+- [教程 https://b23.tv/zsuv8dt](https://b23.tv/zsuv8dt)
+
+### 怪兽(比孔明的主板多了typec烧录(340芯片)(烧录更简单))
+- 功能: 霍尔 + 双微动 + 370电机
+- 群 1025731130
+- [教程](https://b23.tv/F88rm5g)
+- 26-10-17: 配件包价格 185(塑料)
+
+### bmcu pro
+- 功能: 霍尔 + 双微动 + 370电机 + 回卷
+- 群 735647789
+- [教程 https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9](https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9)
+
+### 其他
+欢迎补充内容
+
 ## 项目简介
 
 团子 BMCU 是一套面向 3D 打印机的自动材料更换控制单元固件，实现了与 Bambu Lab 打印机的
@@ -100,6 +139,7 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 - 缓冲区大小：ESP32 为主板 4 KB / 总线 64 KB，RP2040 为主板 2 KB / 总线 8 KB
 - 写入永不阻塞（可在中断/事件回调中调用）；网页以游标增量读取，支持清空
 - `LOG_MAIN` 同时输出到串口控制台，`LOG_BUS` 只进缓冲
+- 网页「日志」页可按报文类型过滤显示；「抓取 10 秒」在前端按当前勾选的显示类型抓取未来 10 秒的报文，抓完自动下载 `.log` 文件
 
 ## 网页管理
 
@@ -159,3 +199,6 @@ pio run -t clean             # 清理
 - 公共依赖在 `[env]` 中声明（PCF8575），网页 `web/index.html` 通过 `board_build.embed_txtfiles` 编入固件
 - `pico` 环境需 `lib_ignore` 忽略 ESP32 专用库（WiFi/DNSServer/ESPmDNS/WebServer/Preferences）；`upload_protocol = picotool`
 - C3 默认日志走 UART0；若要用板载 USB 看日志需追加 `-DARDUINO_USB_CDC_ON_BOOT=1`
+
+## 其他
+本项目基于[Tianshu](https://github.com/hu504011383/Tianshu)

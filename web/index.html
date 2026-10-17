@@ -256,7 +256,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="kv"><span>目标平台</span><b id="u-target">-</b></div>
     <div class="kv"><span>编译时间</span><b id="u-build">-</b></div>
     <div class="row" style="margin-top:10px">
-      <input id="u-otaurl" class="grow" placeholder="更新源目录，例如 http://192.168.1.10/ota" autocomplete="off">
+      <input id="u-otaurl" class="grow" placeholder="更新源目录，例如 https://tuanzisimple.github.io/bmcu-esp" autocomplete="off">
       <button onclick="saveOtaSrc()">保存地址</button>
     </div>
     <div class="hint">目录里要有 manifest.json（记录版本/说明/固件文件名）。格式和服务器配置见 tools/OTA_SERVER.md。</div>
@@ -286,6 +286,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="row">
       <button class="on" data-log="0" onclick="showLog(0)">主板日志</button>
       <button data-log="1" onclick="showLog(1)">BambuBus 报文</button>
+      <button id="btn-buscap" class="bus-only-control hide" onclick="startBusCapture()">抓取 30 秒</button>
       <span class="spacer"></span>
       <button id="btn-pause" onclick="togglePause()">暂停</button>
       <button onclick="clearLog()">清空</button>
@@ -305,7 +306,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     </div>
     <pre id="log0" class="logbox"></pre>
     <pre id="log1" class="logbox hide"></pre>
-    <div class="hint bus-only-control hide">BambuBus 面板显示 RS485 上的原始十六进制报文：<b>RX</b> = 收到、<b>TX</b> = 发出，以及解析出的包类型。</div>
+    <div class="hint bus-only-control hide">BambuBus 面板显示 RS485 上的原始十六进制报文：<b>RX</b> = 收到、<b>TX</b> = 发出，以及解析出的包类型。「抓取 30 秒」按当前勾选的显示类型抓取未来 30 秒的报文，抓完自动下载 .log 文件。</div>
   </div>
 </div>
 
@@ -1120,6 +1121,99 @@ const clearLog=()=>{
   })
 }
 const downloadLog=()=>window.open('/api/log?ch='+activeLog+'&seq=0&dl=1','_blank')
+
+// ---------- BambuBus 报文抓取：抓未来 10 秒的数据，抓完下载 ----------
+const BUS_CAPTURE_MS=30000         // 抓取时长
+const BUS_CAPTURE_STEP=200         // 轮询间隔（毫秒）
+const BUS_CAPTURE_CHUNK=16384      // 服务端单次拉取上限，拿满说明还有积压，立刻续拉
+const BUS_CAPTURE_SYNC=4294967295  // 大于写游标的序号：只同步游标，不取数据
+let busCapture=null, busCaptureBusy=false
+// 用一个超前序号让服务端把游标退回当前写入位置，保证只抓点击之后的数据
+const busCaptureSyncSeq=()=>
+  fetch('/api/log?ch=1&seq='+BUS_CAPTURE_SYNC).then((r)=>{
+    const s=r.headers.get('X-Log-Seq')
+    return r.text().then(()=>{
+      const seq=s===null?NaN:parseInt(s,10)
+      return (isFinite(seq)&&seq!==BUS_CAPTURE_SYNC)?seq:LOGS[1].seq
+    })
+  }).catch(()=>LOGS[1].seq)
+const busCaptureRefresh=()=>{
+  const btn=$('btn-buscap');if(!btn) return
+  btn.disabled=!!busCapture||busCaptureBusy
+  btn.classList.toggle('on',!!busCapture)
+  btn.textContent=busCapture?('抓取中 '+Math.max(0,(busCapture.until-Date.now())/1000).toFixed(1)+'s'):'抓取 30 秒'
+}
+// 逐行解析：显示类型里没勾选的一律不抓
+const busCaptureAppend=(cap,text)=>{
+  cap.pending+=text
+  const lines=cap.pending.split('\n');
+  cap.pending=lines.pop()
+  for(let i=0;i<lines.length;i++){
+    if(!lines[i]) continue                       // 空行不入档
+    const type=busLogTypeFromLine(lines[i])
+    if(cap.filters[type]===false) continue       // 显示类型里没勾选的类型不抓
+    cap.lines.push(lines[i])
+  }
+}
+const busCaptureSave=(cap)=>{
+  const d=new Date(),pad=(v)=>String(v).padStart(2,'0')
+  const name='bambubus-'+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'-'+
+             pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds())+'.log'
+  const text=cap.lines.length?(cap.lines.join('\n')+'\n'):''
+  const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}))
+  const a=document.createElement('a')
+  a.href=url;a.download=name
+  document.body.appendChild(a);a.click();a.remove()
+  setTimeout(()=>URL.revokeObjectURL(url),10000)
+}
+const busCaptureFinish=(cap)=>{
+  if(busCapture!==cap) return
+  busCapture=null
+  if(cap.timer) clearTimeout(cap.timer)
+  clearInterval(cap.labelTimer)
+  busCaptureRefresh()
+  busCaptureSave(cap)
+  toast(cap.lines.length?('抓取结束，共 '+cap.lines.length+' 行，开始下载'):'30 秒内没有抓到所选类型的报文，已下载空文件',6000)
+}
+const busCapturePoll=()=>{
+  const cap=busCapture
+  if(!cap) return
+  cap.timer=null
+  fetch('/api/log?ch=1&seq='+cap.seq).then((r)=>{
+    const s=r.headers.get('X-Log-Seq')
+    if(s!==null) cap.seq=parseInt(s,10)
+    return r.text()
+  }).then((t)=>{
+    if(busCapture!==cap) return
+    if(t) busCaptureAppend(cap,t)
+    // 到点后再拉一次，把截止时间之前写进缓冲区、还没取走的数据取干净
+    const left=cap.until-Date.now()
+    if(left<=0) busCaptureFinish(cap)
+    else cap.timer=setTimeout(busCapturePoll,t.length>=BUS_CAPTURE_CHUNK?0:Math.min(BUS_CAPTURE_STEP,left))
+  }).catch(()=>{
+    if(busCapture!==cap) return
+    const left=cap.until-Date.now()
+    if(left<=0) busCaptureFinish(cap)
+    else cap.timer=setTimeout(busCapturePoll,Math.min(400,left))
+  })
+}
+const startBusCapture=()=>{
+  if(busCapture||busCaptureBusy) return
+  busCaptureBusy=true
+  busCaptureRefresh()
+  busCaptureSyncSeq().then((seq)=>{
+    busCaptureBusy=false
+    if(busCapture) return
+    const filters={}
+    for(let i=0;i<BUS_LOG_TYPES.length;i++)
+      filters[BUS_LOG_TYPES[i].type]=busLogFilters[BUS_LOG_TYPES[i].type]!==false
+    busCapture={seq:seq,until:Date.now()+BUS_CAPTURE_MS,lines:[],pending:'',filters:filters,timer:null,labelTimer:null}
+    busCaptureRefresh()
+    busCapture.labelTimer=setInterval(busCaptureRefresh,100)
+    toast('正在抓取 BambuBus 报文…')
+    busCapturePoll()
+  })
+}
 const appendLog=(ch,text)=>{
   if(ch===1){appendBusLog(text);return}
   const L = LOGS[ch], el = $('log' + ch);
