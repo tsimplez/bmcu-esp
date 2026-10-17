@@ -1,0 +1,93 @@
+name: Build and Release Firmware
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini', 'src/**', 'lib/**', 'web/**') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-
+
+      - name: Install PlatformIO
+        run: python -m pip install platformio
+
+      - name: Check tag version
+        shell: bash
+        run: |
+          VERSION="$(python - <<'PY'
+          import re
+
+          text = open("src/version.h", encoding="utf-8").read()
+          match = re.search(r'#define\s+FW_VERSION\s+"([^"]+)"', text)
+          if not match:
+              raise SystemExit("FW_VERSION not found in src/version.h")
+          print(match.group(1))
+          PY
+          )"
+
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG_VERSION" ]; then
+            echo "FW_VERSION=$VERSION, tag=$TAG_VERSION"
+            exit 1
+          fi
+
+      - name: Build firmware
+        run: |
+          pio run -e esp32s3 -e esp32c3 -e airm2m_core_esp32c3
+
+      - name: Generate OTA package
+        shell: bash
+        run: |
+          NOTES="$(git log -1 --pretty=%s)"
+          python tools/make_ota.py \
+            esp32s3 \
+            esp32c3 \
+            airm2m_core_esp32c3 \
+            --notes "$NOTES" \
+            --out dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/*
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload OTA directory
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
