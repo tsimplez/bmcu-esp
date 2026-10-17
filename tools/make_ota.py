@@ -21,7 +21,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,39 +45,6 @@ def md5_of(path):
         for chunk in iter(lambda: f.read(1 << 16), b''):
             h.update(chunk)
     return h.hexdigest()
-
-
-def sha256_of(path):
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for chunk in iter(lambda: f.read(1 << 16), b''):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def source_info():
-    try:
-        commit = subprocess.check_output(
-            ['git', 'rev-parse', '--short=12', 'HEAD'], cwd=ROOT,
-            text=True, stderr=subprocess.DEVNULL).strip()
-        dirty = subprocess.call(
-            ['git', 'diff', '--quiet'], cwd=ROOT,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0
-        return commit, dirty
-    except (OSError, subprocess.CalledProcessError):
-        return 'unknown', None
-
-
-def capabilities_for(target):
-    channels = 4 if 'esp32c3' in target else 8
-    return {
-        'channels': channels,
-        'ams_mode': 'fixed',
-        'as5600': 'simulated',
-        'microswitch': channels,
-        'pcf8575': channels > 4,
-        'pwm': False,
-    }
 
 
 def validate_version(version):
@@ -126,9 +92,14 @@ def main():
         sys.exit('旧清单的板型条目缺少独立 version，请先一起重新发布：%s' % ', '.join(legacy))
     manifest.pop('version', None)
     manifest.pop('notes', None)
+    # 清掉旧版脚本写入的冗余字段（设备端只读取下面 entry 中的 5 个字段）
+    obsolete = {'sha256', 'source_commit', 'source_dirty', 'capabilities'}
+    for entry in manifest.values():
+        if isinstance(entry, dict):
+            for key in obsolete:
+                entry.pop(key, None)
 
     published = []
-    source_commit, source_dirty = source_info()
     for env in args.targets:
         src = os.path.join(ROOT, '.pio', 'build', env, 'firmware.bin')
         if not os.path.exists(src):
@@ -145,12 +116,7 @@ def main():
 
         size = os.path.getsize(dst)
         entry = {'version': version, 'notes': args.notes,
-                 'url': name, 'size': size, 'md5': md5_of(dst),
-                 'sha256': sha256_of(dst),
-                 'source_commit': source_commit,
-                 'capabilities': capabilities_for(env)}
-        if source_dirty is not None:
-            entry['source_dirty'] = source_dirty
+                 'url': name, 'size': size, 'md5': md5_of(dst)}
         manifest[env] = entry
         published.append((env, name, size))
 

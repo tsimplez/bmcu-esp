@@ -28,7 +28,7 @@ ota/
 {
   "esp32s3": {"version":"26.09.25","notes":"修复 RS485 偶发丢包","url":"firmware-esp32s3-26.09.25.bin","size":1029824,"md5":"229dfea069befa82c61299e0efa0fc37"},
   "esp32c3": {"version":"26.09.25","notes":"修复 RS485 偶发丢包","url":"firmware-esp32c3-26.09.25.bin","size":1101920,"md5":"da8ec9af5d6c686d9a5b5563687e95ee"},
-  "airm2m_core_esp32c3": {"version":"26.09.25","notes":"修复 RS485 偶发丢包","url":"firmware-airm2m_core_esp32c3-26.09.25.bin","size":1092016,"md5":"f54b287e9ba739e41db3b29720eb3612","sha256":"...","source_commit":"c904095"}
+  "airm2m_core_esp32c3": {"version":"26.09.25","notes":"修复 RS485 偶发丢包","url":"firmware-airm2m_core_esp32c3-26.09.25.bin","size":1092016,"md5":"f54b287e9ba739e41db3b29720eb3612"}
 }
 ```
 
@@ -38,9 +38,6 @@ ota/
 - 板子键名：必须和固件里的 `FW_TARGET` 完全一致（`src/version.h`）。设备只读自己那一条，其他板子的条目留着无所谓。
 - 每条的 `url` 写文件名（会自动拼到更新源目录后面）或完整 URL 都行。
 - `md5` 必填：设备写 Flash 时会校验完整内容。MD5 只能校验传输一致性，不能证明来源可信。
-- `sha256` 由发布脚本生成，用于人工核对发布文件；设备当前仍使用 `md5` 做传输校验。
-- `source_commit` 和 `source_dirty` 记录生成固件时的源码状态；工作区有未提交改动时清单会明确标记。
-- `capabilities` 记录通道数、固定 AMS 编号、模拟 AS5600、微动开关和 PWM 能力，不能据此宣称已通过实机兼容性验证。
 - `size` 用于页面显示，并与服务器返回的 `Content-Length` 核对。
 
 ## 三、服务器要求

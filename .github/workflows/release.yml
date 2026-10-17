@@ -38,26 +38,6 @@ jobs:
       - name: Install PlatformIO
         run: python -m pip install platformio
 
-      - name: Check tag version
-        shell: bash
-        run: |
-          VERSION="$(python - <<'PY'
-          import re
-
-          text = open("src/version.h", encoding="utf-8").read()
-          match = re.search(r'#define\s+FW_VERSION\s+"([^"]+)"', text)
-          if not match:
-              raise SystemExit("FW_VERSION not found in src/version.h")
-          print(match.group(1))
-          PY
-          )"
-
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$VERSION" != "$TAG_VERSION" ]; then
-            echo "FW_VERSION=$VERSION, tag=$TAG_VERSION"
-            exit 1
-          fi
-
       - name: Build firmware
         run: |
           pio run -e esp32s3 -e esp32c3 -e airm2m_core_esp32c3
@@ -70,6 +50,7 @@ jobs:
             esp32s3 \
             esp32c3 \
             airm2m_core_esp32c3 \
+            --version "${GITHUB_REF_NAME#v}" \
             --notes "$NOTES" \
             --out dist
 
