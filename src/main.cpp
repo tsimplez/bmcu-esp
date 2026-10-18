@@ -4,6 +4,10 @@
 #include "web_config.h"
 #include "version.h"
 
+/**
+ * Arduino 启动初始化入口
+ * 依次初始化控制台、看门狗、日志、设置存储、GPIO、I2C、BMCU 核心和 Web 管理服务。
+ */
 void setup(){
     hal_console_begin();  // 串口控制台：不 begin 的话下面所有 LOG_MAIN 都写不出去
     hal_watchdog_init();
@@ -21,6 +25,10 @@ void setup(){
     web_config_init(); // ESP32: 配网 + Web 管理页面；其它平台为空实现
 }
 
+/**
+ * Arduino 主循环入口
+ * 持续喂狗并轮询 BMCU 业务、微动开关和 Web 请求，最后让出 CPU。
+ */
 void loop(){
     while (true) {
         // 原有核心逻辑：喂狗 → 串口调试 → BMCU业务

@@ -4,6 +4,12 @@
 #include "PCF8575_PinMap.h"
 
 // 是否是预留引脚
+/**
+ * 判断引脚是否为系统保留脚
+ * @param pin 引脚号
+ * @return true 表示不可分配
+ * 按平台过滤微动专用脚、Flash、USB、控制台串口和启动绑带等保留引脚。
+ */
 static bool is_reserved_pin(int pin) {
 #if defined(PIN_SWITCH)
     if (pin != PIN_NONE && pin == PIN_SWITCH) return true;
@@ -28,6 +34,12 @@ static bool is_reserved_pin(int pin) {
 }
 
 // 是否是真正的io引脚
+/**
+ * 判断引脚是否为可用真实 GPIO
+ * @param pin 引脚号
+ * @return true 表示真实且未保留
+ * 结合平台引脚范围与保留脚列表，过滤不存在的编号。
+ */
 static bool is_real_gpio(int pin) {
     if (pin < 0 || pin >= 255 || is_reserved_pin(pin)) return false;
 
@@ -46,6 +58,11 @@ static bool is_real_gpio(int pin) {
 }
 
 // io配置设置默认值
+/**
+ * 生成平台默认引脚配置
+ * @param config 待填充的 IO 配置
+ * 按 platform.h 中的电机和微动默认映射初始化所有通道。
+ */
 void io_config_set_defaults(IoConfig &config) {
     static const int default_motor[IO_CONFIG_MAX_CHANNELS][2] = {
         MOTOR_PINS_1_4,MOTOR_PINS_5_8,MOTOR_PINS_9_12,MOTOR_PINS_13_16
@@ -61,6 +78,15 @@ void io_config_set_defaults(IoConfig &config) {
 
 // 该引脚在切换 PCF8575 开关后是否还能用：启用后 SDA/SCL 不能再用作通道引脚，
 // 关闭后扩展虚拟引脚不再存在。
+/**
+ * 判断引脚在 PCF8575 状态切换后是否失效
+ * @param pin 引脚号
+ * @param pcf_enable 切换后的 PCF8575 开关状态
+ * @param sda I2C SDA 引脚
+ * @param scl I2C SCL 引脚
+ * @return true 表示该引脚不再可用
+ * 启用 PCF 时 SDA/SCL 不能再作通道脚；关闭时扩展虚拟引脚全部失效。
+ */
 static bool pin_invalid_after_switch(int pin, bool pcf_enable, int sda, int scl) {
     if (pin == PIN_NONE) return false;
     if (!pcf_enable) return IS_PCF8575_VIRTUAL_PIN(pin);
@@ -70,6 +96,15 @@ static bool pin_invalid_after_switch(int pin, bool pcf_enable, int sda, int scl)
 // 切换 PCF8575 开关时只清掉不再合法的引脚，其余接线原样保留，避免覆盖用户已接线。
 // 电机是一对，任一脚被占用就整对清掉；清成 PIN_NONE(无) 表示该通道待配置。
 // 返回清掉的引脚数量，供日志使用。
+/**
+ * 清理切换后失效的通道引脚
+ * @param config 待清理的 IO 配置
+ * @param pcf_enable PCF8575 开关状态
+ * @param sda I2C SDA 引脚
+ * @param scl I2C SCL 引脚
+ * @return 被清空的引脚数量
+ * 电机任一脚失效就整对清成 PIN_NONE，微动脚单独清理，其余接线保持不变。
+ */
 int io_config_clear_invalid_pins(IoConfig &config, bool pcf_enable, int sda, int scl) {
     int cleared = 0;
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
@@ -88,11 +123,24 @@ int io_config_clear_invalid_pins(IoConfig &config, bool pcf_enable, int sda, int
     return cleared;
 }
 
+/**
+ * 判断引脚是否被 BambuBus 占用
+ * @param pin 引脚号
+ * @return true 表示已被占用
+ * RX/TX 始终占用；只有 DE 模式才占用 DE 引脚。
+ */
 static bool bus_uses_pin(int pin) {
     return pin == BUS_RX || pin == BUS_TX || (RS485_MODE == RS485_MODE_DE && pin == BUS_DE);
 }
 
 // io配置是否引脚可用
+/**
+ * 判断引脚能否出现在网页选择列表中
+ * @param pin 引脚号
+ * @param allow_none 是否允许 PIN_NONE
+ * @return true 表示可用
+ * 综合检查虚拟引脚开关、I2C 占用、系统保留脚和总线占用。
+ */
 bool io_config_pin_available(int pin, bool allow_none) {
     if (allow_none && pin == PIN_NONE) return true;
     // 虚拟引脚只在 Web 开关打开 PCF8575 后可选；关闭时 I2C 引脚可作普通 IO。
@@ -101,6 +149,13 @@ bool io_config_pin_available(int pin, bool allow_none) {
     return is_real_gpio(pin) && !bus_uses_pin(pin);
 }
 
+/**
+ * 判断引脚能否作为 I2C 引脚
+ * @param pin 引脚号
+ * @param sda true 表示按 SDA 校验，false 表示按 SCL 校验
+ * @return true 表示可用
+ * RP2040 额外校验 I2C0 的固定 SDA/SCL 复用位置。
+ */
 static bool i2c_pin_available(int pin, bool sda) {
 #if defined(ARDUINO_ARCH_RP2040)
     // Wire 使用 I2C0，RP2040 的 SDA/SCL 复用位置固定。
@@ -110,6 +165,16 @@ static bool i2c_pin_available(int pin, bool sda) {
 #endif
 }
 
+/**
+ * 校验 I2C 接线配置
+ * @param sda SDA 引脚
+ * @param scl SCL 引脚
+ * @param config 当前通道接线
+ * @param active_channels 启用通道数
+ * @param error 可选的错误文本输出
+ * @return true 表示配置合法
+ * 检查通道数、与总线/通道引脚的冲突、SDA/SCL 是否不同以及平台复用限制。
+ */
 bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active_channels, String *error) {
     if (active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
         if (error) *error = "通道数量无效";
@@ -137,6 +202,12 @@ bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active
 }
 
 // pin警告文本
+/**
+ * 获取引脚风险提示文本
+ * @param pin 引脚号
+ * @return 中文提示；无风险时返回空串
+ * 为 ESP32-C3/S3 的启动绑带脚提供网页提示。
+ */
 static const char *pin_warning_text(int pin) {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
     if (pin == 2) return "ESP32-C3 GPIO2 是启动绑带引脚，建议上电或复位时保持高电平，避免外部电路影响启动。正常运行时可作为普通 IO。";
@@ -151,11 +222,23 @@ static const char *pin_warning_text(int pin) {
 }
 
 // io配置引脚有警告
+/**
+ * 判断引脚是否需要风险提示
+ * @param pin 引脚号
+ * @return true 表示存在风险提示
+ * 根据 pin_warning_text() 是否为空判断。
+ */
 bool io_config_pin_has_warning(int pin) {
     return pin_warning_text(pin)[0] != '\0';
 }
 
 // io配置引脚标签
+/**
+ * 生成引脚可读名称
+ * @param pin 引脚号
+ * @return “无”、IOx 或 PCF8575 Px
+ * 供网页和日志统一显示引脚名称。
+ */
 String io_config_pin_label(int pin) {
     if (pin == PIN_NONE) return "无";
     if (IS_PCF8575_VIRTUAL_PIN(pin)) return String("PCF8575 P") + String(VIRTUAL_TO_PCF8575_PIN(pin));
@@ -163,6 +246,14 @@ String io_config_pin_label(int pin) {
 }
 
 // io配置验证
+/**
+ * 校验整组通道接线
+ * @param config 通道接线配置
+ * @param active_channels 启用通道数
+ * @param error 可选的错误文本输出
+ * @return true 表示配置合法
+ * 检查电机和微动引脚是否可用、是否重复占用同一引脚。
+ */
 bool io_config_validate(const IoConfig &config, int active_channels, String *error) {
     if (active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
         if (error) *error = "通道数量无效";
@@ -197,6 +288,12 @@ bool io_config_validate(const IoConfig &config, int active_channels, String *err
 }
 
 // io配置附加引脚选项
+/**
+ * 生成网页可选引脚 JSON 数组
+ * @param json 待追加的 JSON 字符串
+ * @param i2c_only true 时只列真实 GPIO
+ * 把引脚编号、显示名称和风险提示拼接为网页下拉框需要的数组。
+ */
 void io_config_append_pin_options(String &json, bool i2c_only) {
     json += "[";
     bool first = true;
@@ -213,6 +310,20 @@ void io_config_append_pin_options(String &json, bool i2c_only) {
 }
 
 
+/**
+ * 校验 BambuBus 总线接线
+ * @param rx 接收引脚
+ * @param tx 发送引脚
+ * @param de 方向控制引脚
+ * @param mode RS485 收发模式
+ * @param sda I2C SDA 引脚
+ * @param scl I2C SCL 引脚
+ * @param config 通道接线配置
+ * @param active_channels 启用通道数
+ * @param error 可选的错误文本输出
+ * @return true 表示配置合法
+ * 检查 RX/TX/DE 的合法性、重复占用、与 I2C/通道引脚的冲突以及 RP2040 UART 复用限制。
+ */
 bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
                             const IoConfig &config, int active_channels, String *error) {
     if ((mode != RS485_MODE_RXTX && mode != RS485_MODE_DE) ||

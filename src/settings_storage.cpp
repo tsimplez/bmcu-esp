@@ -19,6 +19,10 @@ int OTA_NOTIFY = DEFAULT_OTA_NOTIFY;
 IoConfig IO_CONFIG = {};
 int BUS_RX = PIN_BUS_RX, BUS_TX = PIN_BUS_TX, BUS_DE = PIN_BUS_DE;
 
+/**
+ * 恢复 BambuBus 引脚默认值
+ * 把 RX、TX、DE 三个引脚恢复为当前平台的板级默认映射。
+ */
 static void bus_defaults() {
     BUS_RX = PIN_BUS_RX; BUS_TX = PIN_BUS_TX; BUS_DE = PIN_BUS_DE;
 }
@@ -28,12 +32,22 @@ int PCF_SCL = PIN_I2C_SCL;
 // Web 里的 PCF8575 开关：默认关闭，只用主控直连 GPIO；打开后通道可改用扩展脚。
 int PCF_ENABLE = 0;
 
+/**
+ * 恢复 PCF8575 I2C 引脚默认值
+ * 把 SDA、SCL 恢复为当前平台的默认 I2C 引脚。
+ */
 static void pcf_defaults() {
     PCF_SDA = PIN_I2C_SDA;
     PCF_SCL = PIN_I2C_SCL;
 }
 
 // 当前设置记录使用 CRC32，计算时把 checksum 字段视为 0，避免校验值自引用。
+/**
+ * 计算设置记录 CRC32
+ * @param data 设置数据结构
+ * @return 计算得到的 32 位 CRC
+ * 计算前把 checksum 字段清零，避免校验值自引用。
+ */
 static uint32_t calculate_crc32(const SettingsData* data) {
     SettingsData copy = *data;
     copy.checksum = 0;
@@ -47,6 +61,12 @@ static uint32_t calculate_crc32(const SettingsData* data) {
     return ~crc;
 }
 
+/**
+ * 校验自定义序列号格式
+ * @param serial 待校验的字符串
+ * @return true 表示格式合法
+ * 允许空串，或正好 15 位数字/大写字母的序列号。
+ */
 bool settings_custom_serial_valid(const char *serial) {
     if (!serial) return false;
     size_t length = 0;
@@ -61,15 +81,31 @@ bool settings_custom_serial_valid(const char *serial) {
 }
 
 // 从Flash读取设置数据
+/**
+ * 从持久化存储读设置记录
+ * @param data 输出结构
+ * 调用平台存储接口读取整块 SettingsData。
+ */
 static void read_settings_from_flash(SettingsData* data) {
     hal_storage_read(HAL_REGION_SETTINGS, data, sizeof(SettingsData));
 }
 
 // 写入设置到Flash
+/**
+ * 把设置记录写入持久化存储
+ * @param data 待写入结构
+ * @return 是否写入成功
+ * 调用平台存储接口写入整块 SettingsData。
+ */
 static bool write_settings_to_flash(const SettingsData* data) {
     return hal_storage_write(HAL_REGION_SETTINGS, data, sizeof(SettingsData));
 }
 
+/**
+ * 校验并应用设置到运行期变量
+ * @param data 从存储或快照得到的设置
+ * 逐项检查范围后更新全局配置；接线配置无效时恢复平台默认映射并记录日志。
+ */
 static void apply_settings_values(const SettingsData& data) {
     for (int i = 0; i < 16; i++) {
         PULLBACK_TIMEOUT[i] = data.pullback_timeout[i] >= 3 && data.pullback_timeout[i] <= 30
@@ -125,6 +161,10 @@ static void apply_settings_values(const SettingsData& data) {
     }
 }
 
+/**
+ * 初始化设置存储
+ * 读取设置并校验魔数与 CRC32；无效或空片时恢复默认值并重新写入。
+ */
 void settings_storage_init() {
     SettingsData data{};
 
@@ -142,11 +182,20 @@ void settings_storage_init() {
         LOG_MAIN("[settings] 默认设置写入失败，将在下次启动重试");
 }
 
+/**
+ * 重新加载设置
+ * 复用 settings_storage_init() 的读取与校验流程。
+ */
 void settings_load_from_flash() {
     // 重新加载（与init相同逻辑）
     settings_storage_init();
 }
 
+/**
+ * 生成当前设置快照
+ * @return 包含所有运行期设置及 CRC32 的 SettingsData
+ * 收集当前生效参数和接线配置，计算 checksum 后返回副本。
+ */
 SettingsData settings_snapshot() {
     SettingsData data = {};
 
@@ -175,10 +224,20 @@ SettingsData settings_snapshot() {
     return data;
 }
 
+/**
+ * 从设置快照恢复运行期变量
+ * @param data 要恢复的设置快照
+ * 只应用内存参数，不写入持久化存储；用于保存失败时回滚。
+ */
 void settings_restore_snapshot(const SettingsData &data) {
     apply_settings_values(data);
 }
 
+/**
+ * 保存当前设置并校验
+ * @return true 表示写入并回读一致
+ * 生成快照、写入存储，再回读比较魔数和 CRC32。
+ */
 bool settings_save_to_flash() {
     const SettingsData data = settings_snapshot();
     if (!write_settings_to_flash(&data)) return false;
@@ -189,6 +248,10 @@ bool settings_save_to_flash() {
            memcmp(&data, &saved, sizeof(data)) == 0;
 }
 
+/**
+ * 恢复所有设置默认值
+ * 重置参数、引脚映射、PCF8575 开关和 OTA 配置，不直接写存储。
+ */
 void settings_reset_to_defaults() {
     for (int i = 0; i < 16; i++) {
         PULLBACK_TIMEOUT[i] = DEFAULT_PULLBACK_TIMEOUT;
@@ -209,6 +272,11 @@ void settings_reset_to_defaults() {
     pcf_defaults();
 }
 
+/**
+ * 检查存储中的设置是否有效
+ * @return true 表示魔数和 CRC32 均有效
+ * 读取持久化记录并校验完整性。
+ */
 bool settings_is_valid() {
     SettingsData data{};
     read_settings_from_flash(&data);
@@ -216,6 +284,12 @@ bool settings_is_valid() {
     return data.magic == SETTINGS_MAGIC_NUMBER && calculate_crc32(&data) == data.checksum;
 }
 
+/**
+ * 获取通道模式中文名称
+ * @param mode 通道模式枚举
+ * @return 离线/在线/自动/未知
+ * 用于日志输出。
+ */
 static const char *channel_mode_name(int mode) {
     switch (mode) {
         case CHANNEL_MODE_OFFLINE: return "离线";
@@ -226,6 +300,10 @@ static const char *channel_mode_name(int mode) {
 }
 
 // 把当前生效的设置打印到主板日志：启动时打印一次，之后每次保存设置再打印一次
+/**
+ * 打印当前全部设置
+ * 把总线、序列号、通道、引脚、OTA 等参数分行写入主板日志，便于启动排查。
+ */
 void settings_log_all() {
     LOG_MAIN("[settings] RS485 收发模式=%d，BambuBus 原始报文日志=%s",
              RS485_MODE, BUS_LOG_ENABLE ? "已启用" : "已关闭");
@@ -271,6 +349,12 @@ void settings_log_all() {
 }
 
 // 获取指定电机的退料超时时间
+/**
+ * 读取通道退料超时
+ * @param motor_index 通道编号 0-15
+ * @return 退料超时秒数
+ * 编号越界时返回默认值。
+ */
 int get_motor_pullback_timeout(int motor_index) {
     if (motor_index >= 0 && motor_index < 16) {
         return PULLBACK_TIMEOUT[motor_index];

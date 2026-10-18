@@ -147,8 +147,8 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 
 仅 ESP32 平台生效，RP2040 为空实现（不影响编译）
 
-- **访问方式**：上电连不上已保存 WiFi 时开启配网热点（SSID `BMCU`，密码 `12345678`），浏览器自动弹出配网页；
-  联网后访问 `http://<设备IP>/` 或 `http://bmcu.local/`热点密码与 HTTP 接口为固定/无认证，见「已知限制」
+- **访问方式**：上电连不上已保存 WiFi 时开启配网热点（SSID `BMCU_<芯片ID后6位>`，密码 `12345678`），浏览器自动弹出配网页；
+  联网后访问 `http://<设备IP>/` 或 `http://<mDNS名称>.local/`（默认 `bmcu`，可在配网页自定义）；热点密码与 HTTP 接口为固定/无认证，见「已知限制」
 - **页面分页**：状态、配网、设置、固件更新、日志
 - **主要接口**：
 
@@ -160,7 +160,7 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 | `/api/pcf` | POST | 保存 PCF8575 开关与 I2C 接线 |
 | `/api/motor` | POST | 手动进退料（`motor` / `dir` / 可选 `duration`） |
 | `/api/scan` | GET | 扫描 WiFi |
-| `/api/wifi` / `/api/forget` | POST | 保存 / 清除 WiFi |
+| `/api/wifi` / `/api/mdns` / `/api/forget` | POST | 保存 WiFi / 保存 mDNS 名称 / 清除 WiFi |
 | `/api/log` | GET | 增量拉取日志（`dl=1` 下载附件） |
 | `/api/ota/check` / `pull` / `upload` | POST | 检查更新 / 在线更新 / 本地上传 |
 | `/api/reboot` | GET | 重启 |

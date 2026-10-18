@@ -21,11 +21,20 @@ static volatile bool bus_rx_seen = false;
 static volatile uint32_t rx_error_frames = 0;
 
 #if defined(ARDUINO_ARCH_RP2040)
+/**
+ * 递增接收错误帧计数（RP2040）
+ * 在禁用中断的临界区内增加 rx_error_frames，保证中断与主循环并发安全。
+ */
 static inline void rx_error_increment() {
     const uint32_t state = save_and_disable_interrupts();
     ++rx_error_frames;
     restore_interrupts(state);
 }
+/**
+ * 读取接收错误帧计数（RP2040）
+ * @return 错误帧累计数量
+ * 在禁用中断的临界区内读取 rx_error_frames。
+ */
 static inline uint32_t rx_error_load() {
     const uint32_t state = save_and_disable_interrupts();
     const uint32_t value = rx_error_frames;
@@ -33,7 +42,16 @@ static inline uint32_t rx_error_load() {
     return value;
 }
 #else
+/**
+ * 递增接收错误帧计数（原子操作）
+ * ESP32 平台使用 __atomic 原子操作增加错误计数。
+ */
 static void rx_error_increment() { __atomic_add_fetch(&rx_error_frames, 1u, __ATOMIC_RELAXED); }
+/**
+ * 读取接收错误帧计数（原子操作）
+ * @return 错误帧累计数量
+ * ESP32 平台使用 __atomic 原子读取错误计数。
+ */
 static uint32_t rx_error_load() { return __atomic_load_n(&rx_error_frames, __ATOMIC_RELAXED); }
 #endif
 
@@ -67,11 +85,15 @@ struct _filament_ext {
 };
 
 static _filament_ext filament_ext[4][4];
-static uint8_t bambubus_ams_map[4] = {0, 1, 2, 3};
 static uint16_t bambubus_ams_address = 0x0000;
 static uint32_t time_sendout_onuse_ticks[4] = {};
 static bool have_registered[4] = {false, false, false, false};
 
+/**
+ * 获取 32 位毫秒时间截断
+ * @return 64 位时间戳的低 32 位
+ * 用于状态机计时，允许自然回绕。
+ */
 static uint32_t get_ticks32() {
     return static_cast<uint32_t>(get_time64());
 }
@@ -104,6 +126,12 @@ namespace {
 static constexpr uint32_t FILAMENT_FORMAT_VERSION = 1u;
 static bool Bambubus_need_to_save = false;
 
+/**
+ * 计算耗材记录 CRC32
+ * @param record 待校验的 Flash 记录
+ * @return 计算得到的 32 位 CRC
+ * 复制记录并把 crc32 字段清零后计算 CRC32，避免校验值自引用。
+ */
 static uint32_t filament_record_crc(const flash_save_struct *record) {
     flash_save_struct copy = *record;
     copy.crc32 = 0;
@@ -118,6 +146,11 @@ static uint32_t filament_record_crc(const flash_save_struct *record) {
 }
 
 // ==================== 存储操作API（后端见 platform.cpp）====================
+/**
+ * 读取并校验耗材记录
+ * @return true 表示存储中存在有效记录
+ * 从持久化存储读取记录，校验魔数、格式版本和 CRC32；无效时恢复默认值并标记待保存。
+ */
 bool Bambubus_read() {
     hal_storage_read(HAL_REGION_FILAMENT, &data_save, sizeof(data_save));
     if (data_save.check == 0x40614061 &&
@@ -130,10 +163,19 @@ bool Bambubus_read() {
     return false;
 }
 
+/**
+ * 标记耗材记录需要保存
+ * 设置延迟保存标志，由主循环限频写入存储。
+ */
 void Bambubus_set_need_to_save() {
     Bambubus_need_to_save = true;
 }
 
+/**
+ * 保存耗材记录并回读校验
+ * @return true 表示写入内容与回读一致
+ * 更新格式版本和 CRC32 后写入存储，再回读比较整块数据。
+ */
 static bool Bambubus_save() {
     data_save.format_version = FILAMENT_FORMAT_VERSION;
     data_save.crc32 = filament_record_crc(&data_save);
@@ -148,10 +190,20 @@ static bool Bambubus_save() {
 }
 
 // ==================== 数据访问API ====================
+/**
+ * 读取当前耗材通道编号
+ * @return 0-15 的通道编号；无当前通道时为 255
+ * 返回打印机当前选中的全局通道号。
+ */
 int get_now_filament_num() {
     return data_save.BambuBus_now_filament_num;
 }
 
+/**
+ * 读取当前 AMS 编号
+ * @return 0-3 的 AMS 编号；无当前通道时为 -1
+ * 由当前通道号除以 4 得到。
+ */
 int get_current_AMS_index() {
     return data_save.BambuBus_now_filament_num < 16
                ? data_save.BambuBus_now_filament_num / 4
@@ -159,38 +211,80 @@ int get_current_AMS_index() {
 }
 
 
+/**
+ * 清零指定通道的耗材长度
+ * @param num 全局通道编号 0-15
+ * 同时清零记录中的长度和内部虚拟计数。
+ */
 void reset_filament_meters(const int num) {
     if (num < 0 || num >= 16) return;
     data_save.filament[num / 4][num % 4].meters = 0;
     filament_ext[num / 4][num % 4].meters_virtual_count = 0;
 }
 
+/**
+ * 累加指定通道的耗材长度
+ * @param num 全局通道编号 0-15
+ * @param meters 本次变化的长度
+ * 把进料或退料距离累加到耗材记录。
+ */
 void add_filament_meters(const int num, float meters) {
     if (num < 0 || num >= 16) return;
     data_save.filament[num / 4][num % 4].meters += meters;
 }
 
+/**
+ * 读取指定通道的耗材长度
+ * @param num 全局通道编号 0-15
+ * @return 累计长度；编号越界返回 0
+ * 返回记录中保存的耗材长度。
+ */
 float get_filament_meters(const int num) {
     if (num < 0 || num >= 16) return 0.0f;
     return data_save.filament[num / 4][num % 4].meters;
 }
 
+/**
+ * 查询通道是否有料
+ * @param num 全局通道编号 0-15
+ * @return true 表示在线/有料
+ * 读取通道状态是否为 online。
+ */
 bool is_filament_online(const int num) {
     if (num < 0 || num >= 16) return false;
     return data_save.filament[num / 4][num % 4].statu == online;
 }
 
 // 设置耗材在线状态
+/**
+ * 设置通道有料状态
+ * @param num AMS 编号 0-3
+ * @param count AMS 内通道编号 0-3
+ * @param if_online true 表示有料
+ * 更新耗材记录中的 statu 字段，供协议响应和网页显示。
+ */
 void set_filament_online(const int num, const int count, const bool if_online) {
     if (num < 0 || num >= 4 || count < 0 || count >= 4) return;
     data_save.filament[num][count].statu = if_online ? online : offline;
 }
 
+/**
+ * 读取指定通道的耗材名称
+ * @param num 全局通道编号 0-15
+ * @return 耗材名称；编号越界返回空串
+ * 把记录中的 20 字节名称转换为 String。
+ */
 String get_now_filament_name(const int num) {
     if (num < 0 || num >= 16) return {};
     return {data_save.filament[num / 4][num % 4].name};
 }
 
+/**
+ * 把内部运动状态转换为对外状态
+ * @param m 内部状态机枚举
+ * @return waiting、need_send_out 或 need_pull_back
+ * 隐藏 before_on_use、on_use 等中间状态。
+ */
 static _filament_motion_state_set map_internal_to_api(_filament_motion_internal m) {
     switch (m) {
         case _filament_motion_internal::send_out:
@@ -203,6 +297,13 @@ static _filament_motion_state_set map_internal_to_api(_filament_motion_internal 
     }
 }
 
+/**
+ * 更新内部运动状态
+ * @param ams_num AMS 编号
+ * @param ch 通道编号
+ * @param new_motion 新的内部状态
+ * 同步内部状态与对外 motion_set；进入 idle 时通知 BMCU 解除打印机阻断。
+ */
 static void set_motion_internal(const uint8_t ams_num, const uint8_t ch, const _filament_motion_internal new_motion) {
     if (ams_num >= 4 || ch >= 4) return;
     if (new_motion == _filament_motion_internal::idle) BMCU_printer_idle(ams_num * 4 + ch);
@@ -210,11 +311,23 @@ static void set_motion_internal(const uint8_t ams_num, const uint8_t ch, const _
     data_save.filament[ams_num][ch].motion_set = map_internal_to_api(new_motion);
 }
 
+/**
+ * 读取通道对外运动状态
+ * @param num 全局通道编号 0-15
+ * @return 当前运动状态；越界返回 waiting
+ * 供 BMCU 运动层查询打印机请求。
+ */
 _filament_motion_state_set get_filament_motion(const int num) {
     if (num < 0 || num >= 16) return waiting;
     return data_save.filament[num / 4][num % 4].motion_set;
 }
 
+/**
+ * 设置通道对外运动状态
+ * @param num 全局通道编号 0-15
+ * @param motion 新的对外状态
+ * 同步更新内部状态机，保证 BMCU 与协议层状态一致。
+ */
 void set_filament_motion(const int num, const _filament_motion_state_set motion) {
     if (num < 0 || num >= 16) return;
     data_save.filament[num / 4][num % 4].motion_set = motion;
@@ -233,27 +346,57 @@ void set_filament_motion(const int num, const _filament_motion_state_set motion)
     }
 }
 
+/**
+ * 读取耗材透明度通道
+ * @param num 全局通道编号 0-15
+ * @return A 通道值；越界返回 0
+ * 返回 RGBA 颜色中的 A 分量。
+ */
 uint8_t get_filament_color_A(const int num) {
     if (num < 0 || num >= 16) return 0;
     return data_save.filament[num / 4][num % 4].color_A;
 }
 
+/**
+ * 读取耗材红色通道
+ * @param num 全局通道编号 0-15
+ * @return R 通道值；越界返回 0
+ * 返回 RGBA 颜色中的 R 分量。
+ */
 uint8_t get_filament_color_R(const int num) {
     if (num < 0 || num >= 16) return 0;
     return data_save.filament[num / 4][num % 4].color_R;
 }
 
+/**
+ * 读取耗材绿色通道
+ * @param num 全局通道编号 0-15
+ * @return G 通道值；越界返回 0
+ * 返回 RGBA 颜色中的 G 分量。
+ */
 uint8_t get_filament_color_G(const int num) {
     if (num < 0 || num >= 16) return 0;
     return data_save.filament[num / 4][num % 4].color_G;
 }
 
+/**
+ * 读取耗材蓝色通道
+ * @param num 全局通道编号 0-15
+ * @return B 通道值；越界返回 0
+ * 返回 RGBA 颜色中的 B 分量。
+ */
 uint8_t get_filament_color_B(const int num) {
     if (num < 0 || num >= 16) return 0;
     return data_save.filament[num / 4][num % 4].color_B;
 }
 
 // ==================== 新协议状态机核心 ====================
+/**
+ * 读取 AMS 当前已加载通道
+ * @param ams_num AMS 编号
+ * @return 0-3；该 AMS 没有加载通道时返回 0xFF
+ * 判断打印机当前耗材是否位于指定 AMS 内。
+ */
 static uint8_t get_loaded_filament(const uint8_t ams_num) {
     const int now = data_save.BambuBus_now_filament_num;
     if (now >= ams_num * 4 && now < (ams_num + 1) * 4)
@@ -261,6 +404,16 @@ static uint8_t get_loaded_filament(const uint8_t ams_num) {
     return 0xFF;
 }
 
+/**
+ * 处理 BambuBus 运动状态机
+ * @param ams_num AMS 编号
+ * @param filament_channel AMS 内通道编号
+ * @param statu_flags 状态标志
+ * @param motion_flag 运动标志
+ * @param time_used_ms 距上次处理的时间
+ * @return true 表示状态发生变化
+ * 根据短包状态组合切换送出、使用、停止、回卷等内部状态，并维护当前通道和耗材长度。
+ */
 static bool process_motion_state_machine(
     const uint8_t ams_num,
     const uint8_t filament_channel,
@@ -372,6 +525,12 @@ static bool TX_IDLE = true;
 // 没有对应 RX 来源的主动发送保持 -1，网页归入“未知”。
 static int bus_tx_context_type = -1;
 
+/**
+ * 通过 BambuBus 串口发送数据
+ * @param data 待发送数据
+ * @param length 数据长度
+ * 按 RS485 模式控制 DE 方向，发送完成后恢复接收，并可选写入原始报文日志。
+ */
 void send_uart(const unsigned char *data, uint16_t length) {
     // RS485_MODE_RXTX（只用 RXD/TXD）时模块自行控制收发方向，不驱动 DE
     const bool drive_de = (RS485_MODE == RS485_MODE_DE);
@@ -395,23 +554,44 @@ static volatile uint32_t rx_dropped_frames = 0;
 CRC8 _RX_IRQ_crcx(0x39, 0x66, 0x00, false, false);
 
 #if defined(ARDUINO_ARCH_RP2040)
+/**
+ * 递增接收丢帧计数（RP2040）
+ * 在临界区内增加因双缓冲已占用而丢弃的帧数。
+ */
 static inline void rx_dropped_increment() {
     const uint32_t state = save_and_disable_interrupts();
     ++rx_dropped_frames;
     restore_interrupts(state);
 }
+/**
+ * 读取接收丢帧计数（RP2040）
+ * @return 丢帧累计数量
+ * 在临界区内读取 rx_dropped_frames。
+ */
 static inline uint32_t rx_dropped_load() {
     const uint32_t state = save_and_disable_interrupts();
     const uint32_t value = rx_dropped_frames;
     restore_interrupts(state);
     return value;
 }
+/**
+ * 读取已完成帧槽位（RP2040）
+ * @return 槽位编号；没有完成帧时为 -1
+ * 用于判断双缓冲中是否已有待处理帧。
+ */
 static inline int8_t completed_slot_load() {
     const uint32_t state = save_and_disable_interrupts();
     const int8_t value = completed_slot;
     restore_interrupts(state);
     return value;
 }
+/**
+ * 发布已完成帧（RP2040）
+ * @param slot 缓冲区槽位
+ * @param length 帧长度
+ * @return true 表示发布成功
+ * 在临界区内占用空槽位并设置待处理帧长度。
+ */
 static inline bool completed_slot_publish(int8_t slot, uint16_t length) {
     const uint32_t state = save_and_disable_interrupts();
     if (completed_slot != -1) {
@@ -423,6 +603,11 @@ static inline bool completed_slot_publish(int8_t slot, uint16_t length) {
     restore_interrupts(state);
     return true;
 }
+/**
+ * 取出已完成帧（RP2040）
+ * @return 槽位编号；没有完成帧时为 -1
+ * 在临界区内取走槽位并清空待处理标志。
+ */
 static inline int8_t completed_slot_take() {
     const uint32_t state = save_and_disable_interrupts();
     const int8_t slot = completed_slot;
@@ -432,9 +617,30 @@ static inline int8_t completed_slot_take() {
     return slot;
 }
 #else
+/**
+ * 递增接收丢帧计数（原子操作）
+ * ESP32 平台原子增加丢帧计数。
+ */
 static void rx_dropped_increment() { __atomic_add_fetch(&rx_dropped_frames, 1u, __ATOMIC_RELAXED); }
+/**
+ * 读取接收丢帧计数（原子操作）
+ * @return 丢帧累计数量
+ * ESP32 平台原子读取丢帧计数。
+ */
 static uint32_t rx_dropped_load() { return __atomic_load_n(&rx_dropped_frames, __ATOMIC_RELAXED); }
+/**
+ * 读取已完成帧槽位（原子操作）
+ * @return 槽位编号；没有完成帧时为 -1
+ * ESP32 平台原子读取双缓冲槽位。
+ */
 static int8_t completed_slot_load() { return __atomic_load_n(&completed_slot, __ATOMIC_ACQUIRE); }
+/**
+ * 发布已完成帧（原子操作）
+ * @param slot 缓冲区槽位
+ * @param length 帧长度
+ * @return true 表示发布成功
+ * 使用 compare-exchange 占用空槽位并发布帧长度。
+ */
 static bool completed_slot_publish(int8_t slot, uint16_t length) {
     int8_t expected = -1;
     if (!__atomic_compare_exchange_n(&completed_slot, &expected, slot, false,
@@ -442,6 +648,11 @@ static bool completed_slot_publish(int8_t slot, uint16_t length) {
     __atomic_store_n(&BambuBus_have_data, (int) length, __ATOMIC_RELEASE);
     return true;
 }
+/**
+ * 取出已完成帧（原子操作）
+ * @return 槽位编号；没有完成帧时为 -1
+ * 原子交换清空槽位，并复位待处理长度。
+ */
 static int8_t completed_slot_take() {
     const int8_t slot = __atomic_exchange_n(&completed_slot, -1, __ATOMIC_ACQUIRE);
     __atomic_store_n(&BambuBus_have_data, 0, __ATOMIC_RELAXED);
@@ -449,6 +660,11 @@ static int8_t completed_slot_take() {
 }
 #endif
 
+/**
+ * 逐字节解析 BambuBus 接收帧
+ * @param _RX_IRQ_data 串口收到的单个字节
+ * 从帧头 0x3D 开始组帧，解析短包/长包长度并校验 CRC8，完整帧写入双缓冲供主循环处理。
+ */
 static void RX_IRQ(unsigned char _RX_IRQ_data) {
     static int _index = 0;
     static uint16_t length = 0;
@@ -544,6 +760,10 @@ static void RX_IRQ(unsigned char _RX_IRQ_data) {
     }
 }
 
+/**
+ * 处理串口接收事件
+ * 读空 UART 接收缓冲并逐字节送入 RX_IRQ，同时记录最近一次接收时间。
+ */
 static void on_uart_rx() {
     bool received = false;
 
@@ -558,12 +778,21 @@ static void on_uart_rx() {
     }
 }
 
-void BambuBUS_UART_Init(uint32_t baudrate) {
+/**
+ * 初始化 BambuBus 串口与接收回调
+ * @param baudrate 串口波特率
+ * 调用平台层初始化串口，并注册接收中断或事件回调。
+ */
+static void BambuBUS_UART_Init(uint32_t baudrate) {
     hal_bus_begin(baudrate);
     BUS_IRQ_SETUP();
 }
 
 // ==================== 初始化 ====================
+/**
+ * 初始化 BambuBus 协议层
+ * 加载耗材记录、配置 CRC 参数和 RS485 DE、复位状态机，并以 1.2288Mbps 启动串口。
+ */
 void BambuBus_init() {
     const bool _init_ready = Bambubus_read();
     crc_8.reset(0x39, 0x66, 0, false, false);
@@ -653,6 +882,13 @@ void BambuBus_init() {
 }
 
 // ==================== 包处理辅助函数 ====================
+/**
+ * 校验报文末尾的 CRC16
+ * @param data 完整报文
+ * @param data_length 报文长度
+ * @return true 表示 CRC 正确
+ * 对除末两字节外的数据计算 CRC16，并与报文中的小端校验值比较。
+ */
 static bool package_check_crc16(const uint8_t *data, int data_length) {
     if (!data || data_length < 7 || data_length > BUS_FRAME_CAPACITY)
         return false;
@@ -668,6 +904,12 @@ static bool package_check_crc16(const uint8_t *data, int data_length) {
     return false;
 }
 
+/**
+ * 填充 CRC 并发送报文
+ * @param data 待发送报文
+ * @param data_length 报文总长度
+ * 按短包或长包位置填充 CRC8 和 CRC16，然后调用 send_uart() 发送。
+ */
 static void package_send_with_crc(uint8_t *data, int data_length) {
     crc_8.restart();
     if (data[1] & 0x80) {
@@ -706,6 +948,11 @@ struct long_packge_data {
     uint16_t data_length;
 } __attribute__((packed));
 
+/**
+ * 组装并发送长包
+ * @param data 长包字段与载荷描述
+ * 写入帧头、长度和 11 字节头字段，拼接载荷后统一计算 CRC 并发送。
+ */
 static void Bambubus_long_package_send(long_packge_data *data) {
     packge_send_buf[0] = 0x3D;
     packge_send_buf[1] = 0x00;
@@ -715,6 +962,13 @@ static void Bambubus_long_package_send(long_packge_data *data) {
     package_send_with_crc(packge_send_buf, data->data_length + 15);
 }
 
+/**
+ * 解析长包头
+ * @param buf 完整长包
+ * @param data_length 报文长度
+ * @param data 输出的长包描述
+ * 复制 11 字节头字段，并把 datas 指向载荷起始位置。
+ */
 static void Bambubus_long_package_analysis(uint8_t *buf, int data_length, long_packge_data *data) {
     if (!buf || !data || data_length < 15 || data_length > BUS_FRAME_CAPACITY) {
         if (data) memset(data, 0, sizeof(*data));
@@ -729,7 +983,14 @@ static void Bambubus_long_package_analysis(uint8_t *buf, int data_length, long_p
 static long_packge_data printer_data_long;
 
 // ==================== 动态压力值计算 ====================
-static uint16_t get_pressure_value(uint8_t ams_num, uint8_t ch) {
+/**
+ * 计算通道压力反馈值
+ * @param ams_num AMS 编号
+ * @param ch AMS 内通道编号
+ * @return 压力值；无效通道返回 0xFFFF
+ * 根据内部运动状态映射为打印机期望的压力反馈。
+ */
+static uint16_t get_pressure_value(const uint8_t ams_num, uint8_t ch) {
     if (ams_num >= AMS_COUNT || ch >= 4) return 0xFFFF;
 
     const _filament_motion_internal m = filament_ext[ams_num][ch].motion;
@@ -753,6 +1014,12 @@ static uint16_t get_pressure_value(uint8_t ams_num, uint8_t ch) {
     }
 }
 
+/**
+ * 计算 AMS 耗材使用标志
+ * @param ams_num AMS 编号
+ * @return 0x00、0x02 或 0x04
+ * 有通道运动时返回送出/回卷标志，否则返回空闲。
+ */
 static uint8_t get_filament_use_flag(uint8_t ams_num) {
     if (ams_num >= AMS_COUNT) return 0x00;
 
@@ -798,6 +1065,13 @@ static uint8_t get_filament_use_flag(uint8_t ams_num) {
 
 
 // 获取包类型
+/**
+ * 识别 BambuBus 报文类型
+ * @param buf 完整报文
+ * @param length 报文长度
+ * @return package_type 枚举值；校验失败返回 ERROR
+ * 校验 CRC16、短包长度或长包长度，再按命令字节和长包 type 分类。
+ */
 static package_type get_package_type(unsigned char *buf, const int length) {
     if (!buf || length < 7 || length > BUS_FRAME_CAPACITY)
         return BambuBus_package_ERROR;
@@ -856,8 +1130,14 @@ static package_type get_package_type(unsigned char *buf, const int length) {
     return BambuBus_package_ERROR;
 }
 
-uint8_t package_num = 0;
+static uint8_t package_num = 0;
 
+/**
+ * 生成耗材在线状态位图
+ * @param AMS_num AMS 编号
+ * @return 每通道 2 bit 的状态位图；无效 AMS 返回 0
+ * bit0 表示在线，bit1 表示通道正在运动，供打印机显示耗材状态。
+ */
 uint8_t get_filament_left_char(const uint8_t AMS_num) {
     if (AMS_num >= 4) return 0;
     uint8_t data = 0;
@@ -891,6 +1171,14 @@ unsigned char Cxx_res[] = {
 };
 
 // ==================== 辅助函数：字节序转换 ====================
+/**
+ * 填充短包运动响应载荷
+ * @param set_buf 响应载荷缓冲区
+ * @param buf 收到的请求报文
+ * @param length 请求长度
+ * @return true 表示参数有效并已填充
+ * 写入使用标志、通道号、剩余长度、压力值和在线位图。
+ */
 static bool set_cxx_buf(unsigned char *set_buf, unsigned char *buf, int length) {
     const unsigned char AMS_num = buf[5];
     const unsigned char read_num = buf[7];
@@ -922,6 +1210,12 @@ static bool set_cxx_buf(unsigned char *set_buf, unsigned char *buf, int length) 
     return true;
 }
 
+/**
+ * 回复短包运动请求
+ * @param buf 收到的请求报文
+ * @param length 请求长度
+ * 设置包序号和响应载荷后计算 CRC 并发送，包序号在 0-7 间循环。
+ */
 static void send_for_Cxx(unsigned char *buf, const int length) {
     if (!buf || length < 10) return;
 
@@ -951,6 +1245,12 @@ static uint8_t res_for_06_num = 0xFF;
 static int last_detect = 0;
 static uint8_t filament_flag_detected = 0;
 
+/**
+ * 回复长包运动请求
+ * @param buf 收到的请求报文
+ * @param length 请求长度
+ * 解析 AMS/通道/状态标志，驱动状态机并生成包含在线、NFC、长度和压力的 Dxx 响应。
+ */
 static void send_for_Dxx(const unsigned char *buf, const int length) {
     if (!buf || length < 10) return;
 
@@ -1087,6 +1387,10 @@ static unsigned char F00_res[4][29] = {
     }
 };
 
+/**
+ * 等待 5ms 总线空闲间隔
+ * 忙等约 5ms，确保连续响应帧之间留有间隔。
+ */
 static void bus_wait_idle_5ms() {
     uint32_t t0 = get_ticks32();
     while (get_ticks32() - t0 < 5) {
@@ -1094,6 +1398,12 @@ static void bus_wait_idle_5ms() {
     }
 }
 
+/**
+ * 回复在线检测与注册请求
+ * @param buf 收到的请求报文
+ * @param length 请求长度
+ * 处理广播注册、指定 AMS 查询和 0x06 握手，维护已注册状态并回复 F00/F06 报文。
+ */
 void send_for_Fxx(unsigned char *buf, int length) {
     if (!buf || length < 8) return;
     if (buf[5] == 0x01u && length < 26) return;
@@ -1165,6 +1475,12 @@ void send_for_Fxx(unsigned char *buf, int length) {
 // ==================== MC在线 ====================
 unsigned char long_packge_MC_online[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
+/**
+ * 回复 MC 在线长包
+ * @param buf 收到的长包
+ * @param length 报文长度
+ * 校验 AMS 编号后复制包序号和地址，回复 MC 在线状态。
+ */
 void send_for_long_packge_MC_online(unsigned char *buf, int length) {
     long_packge_data data{};
     Bambubus_long_package_analysis(buf, length, &printer_data_long);
@@ -1204,6 +1520,12 @@ unsigned char long_packge_filament[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
+/**
+ * 回复耗材信息长包
+ * @param buf 收到的长包
+ * @param length 报文长度
+ * 读取指定通道的 ID、名称、颜色和温度范围，组装长包回复打印机。
+ */
 void send_for_long_packge_filament(unsigned char *buf, int length) {
     long_packge_data data{};
     Bambubus_long_package_analysis(buf, length, &printer_data_long);
@@ -1273,6 +1595,10 @@ static unsigned char long_packge_version_version_and_name_AMS08[] = {
     0x00, 0x00, 0x00, 0x00 // 填充 + AMS序号位置
 };
 
+/**
+ * 生成稳定的设备序列号
+ * 把芯片唯一 ID 格式化为 15 字节序列号，并填充两套 AMS 序列号缓冲区。
+ */
 static void build_stable_serial_identity() {
     static constexpr char hex[] = "0123456789ABCDEF";
     const uint64_t id = hal_get_device_id();
@@ -1299,6 +1625,12 @@ static void build_stable_serial_identity() {
     }
 }
 
+/**
+ * 回复序列号或版本查询
+ * @param buf 收到的长包
+ * @param length 报文长度
+ * type=0x402 回复序列号，type=0x103 回复版本和名称；支持网页自定义序列号。
+ */
 void send_for_long_packge_version(unsigned char *buf, int length) {
     long_packge_data data{};
     Bambubus_long_package_analysis(buf, length, &printer_data_long);
@@ -1358,7 +1690,13 @@ void send_for_long_packge_version(unsigned char *buf, int length) {
 // ==================== 设置耗材信息（短包 0xC5 0x08）====================
 unsigned char Set_filament_res[] = {0x3D, 0xC0, 0x08, 0xB2, 0x08, 0x60, 0xB4, 0x04};
 
-void send_for_Set_filament(unsigned char *buf, int length) {
+/**
+ * 处理短包设置耗材请求
+ * @param buf 收到的请求报文
+ * @param length 请求长度
+ * 解析通道、ID、颜色、温度范围和名称，回复 ACK 并标记记录待保存。
+ */
+static void send_for_Set_filament(const unsigned char *buf, const int length) {
     if (!buf || length < 45) return;
 
     uint8_t read_num = buf[5];
@@ -1385,6 +1723,12 @@ void send_for_Set_filament(unsigned char *buf, int length) {
 // ==================== 新增：设置耗材信息类型2（长包 0x05 0x218）====================
 unsigned char set_filament_res_type2[] = {0x00, 0x00, 0x00};
 
+/**
+ * 处理长包设置耗材请求
+ * @param buf 收到的长包
+ * @param length 报文长度
+ * 按长包偏移解析耗材信息，回复三字节确认并标记记录待保存。
+ */
 void send_for_Set_filament_type2(unsigned char *buf, int length) {
     long_packge_data data{};
     Bambubus_long_package_analysis(buf, length, &printer_data_long);
@@ -1433,10 +1777,20 @@ void send_for_Set_filament_type2(unsigned char *buf, int length) {
     Bambubus_set_need_to_save();
 }
 
+/**
+ * 读取最近一次报文类型
+ * @return 最近处理的 package_type
+ * 供网页或调试代码查询协议状态。
+ */
 int get_cmd_type() {
     return cmd;
 }
 
+/**
+ * 读取最近操作的通道号
+ * @return 最近操作的通道号；未知时为 255
+ * 记录 Cxx/Dxx/设置耗材等请求中的通道。
+ */
 unsigned char get_now_op_num() {
     return now_op_num;
 }
@@ -1447,25 +1801,51 @@ static bool bus_packet_seen = false;
 static uint32_t last_heartbeat_ms = 0;
 static bool heartbeat_seen = false;
 
+/**
+ * 获取打印机连接状态
+ * @return 0=尚未收到心跳，1=最近 5 秒有心跳，2=心跳超时
+ * 仅表示通信连接状态，不推断打印或故障状态。
+ */
 int BambuBus_printer_status() {
     // 容忍偶发丢帧；仅表示连接状态，不推断打印/暂停/故障。
     return !heartbeat_seen ? 0 : millis() - last_heartbeat_ms < 5000 ? 1 : 2;
 }
 
+/**
+ * 读取接收错误帧总数
+ * @return 错误帧累计数量
+ * 返回 CRC 或格式错误导致的丢帧计数。
+ */
 uint32_t BambuBus_rx_error_count() {
     return rx_error_load();
 }
 
+/**
+ * 读取接收丢帧总数
+ * @return 丢帧累计数量
+ * 返回完整帧因双缓冲已满而丢弃的计数。
+ */
 uint32_t BambuBus_rx_dropped_count() {
     return rx_dropped_load();
 }
 
+/**
+ * 读取距最近合法报文的时间
+ * @return 毫秒数；从未收到合法报文时返回 UINT32_MAX
+ * 供网页显示总线新鲜度。
+ */
 uint32_t BambuBus_last_valid_packet_age_ms() {
     if (!bus_packet_seen) return UINT32_MAX;
     return millis() - last_bus_packet_ms;
 }
 
-bool BambuBus_recent_activity(uint32_t quiet_ms) {
+/**
+ * 判断总线最近是否有活动
+ * @param quiet_ms 静默时间窗口（毫秒）
+ * @return true 表示有待处理帧或窗口内收到过数据
+ * 同时检查双缓冲、原始接收时间和合法报文时间。
+ */
+bool BambuBus_recent_activity(const uint32_t quiet_ms) {
     uint32_t now = millis();
     return completed_slot_load() >= 0 ||
            BambuBus_have_data > 0 ||
@@ -1473,6 +1853,12 @@ bool BambuBus_recent_activity(uint32_t quiet_ms) {
            (bus_packet_seen && now - last_bus_packet_ms < quiet_ms);
 }
 
+/**
+ * 获取报文类型名称
+ * @param type package_type 枚举值
+ * @return 用于日志显示的名称
+ * 把报文类型转换为中文/英文可读文本。
+ */
 static const char *package_type_name(const int type) {
     switch (type) {
         case BambuBus_package_filament_motion_short: return "filament_motion_short";
@@ -1492,6 +1878,11 @@ static const char *package_type_name(const int type) {
     }
 }
 
+/**
+ * BambuBus 主处理循环
+ * @return 0=本轮无帧，1=处理了合法帧，2=收到错误帧，-1=合法通信超时
+ * 取出双缓冲中的完整帧、识别类型并分发响应，同时更新心跳/超时状态并限频保存耗材记录。
+ */
 int BambuBus_run() {
     // 返回值：0=本轮没有帧，1=处理了合法帧，2=收到但校验/格式错误，-1=合法通信超时。
     int stu = 0;

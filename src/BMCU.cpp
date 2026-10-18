@@ -77,11 +77,22 @@ namespace {
 static MotorJob manual_queue[IO_CONFIG_MAX_CHANNELS];
 static int manual_queued = 0;
 
+/**
+ * 查询通道在手动队列中的位置
+ * @param ch 通道编号
+ * @return 从 1 开始的排队位置；未排队返回 0
+ * 顺序扫描手动动作队列，供状态接口显示排队位置。
+ */
 static int queue_position(int ch) {
     for (int i = 0; i < manual_queued; i++) if (manual_queue[i].channel == ch) return i + 1;
     return 0;
 }
 
+/**
+ * 从手动队列删除指定任务
+ * @param index 队列下标
+ * 把后续任务前移并减少队列长度。
+ */
 static void remove_job(int index) {
     for (int i = index; i + 1 < manual_queued; i++) manual_queue[i] = manual_queue[i + 1];
     --manual_queued;
@@ -89,11 +100,21 @@ static void remove_job(int index) {
 
 // 进料/退料引脚都配置好了才能驱动电机：切换 PCF8575 开关后会先清掉不可用的引脚，
 // 「无」的通道必须拒绝启动，否则界面显示在进退料而实际没有任何输出。
+/**
+ * 检查通道电机引脚是否配置完整
+ * @param ch 通道编号
+ * @return true 表示进料和退料引脚都已配置
+ * 任一方向引脚为 PIN_NONE 时拒绝启动电机，避免界面显示运行但硬件无输出。
+ */
 bool BMCU_channel_motor_ready(int ch) {
     if (ch < 0 || ch >= IO_CONFIG_MAX_CHANNELS) return false;
     return IO_CONFIG.motor[ch][0] != PIN_NONE && IO_CONFIG.motor[ch][1] != PIN_NONE;
 }
 
+/**
+ * 启动排队中的手动电机动作
+ * 在并发上限内依次取出队首任务启动；无效通道或引脚未配置的任务会被丢弃。
+ */
 static void run_manual_queue() {
     while (manual_queued && BMCU_running_count() < MOTOR_LIMIT) {
         const auto job = manual_queue[0];
@@ -123,8 +144,8 @@ static uint32_t msw_raw_time[IO_CONFIG_MAX_CHANNELS];              // 原始状�
 static Motor motors[IO_CONFIG_MAX_CHANNELS];
 
 /**
- * @brief 初始化IO引脚
- * 功能：设置微动开关和电机引脚的模式
+ * 初始化IO引脚
+ * 设置微动开关和电机引脚的模式
  */
 void init_io_pins() {
     // 微动开关引脚：输入模式+内部上拉
@@ -150,6 +171,10 @@ void init_io_pins() {
     }
 }
 
+/**
+ * 应用最新的通道引脚配置
+ * 对比新旧配置，先停止并释放变更通道，再绑定新引脚；未变化通道保持运行状态。
+ */
 void BMCU_apply_io_config() {
     static IoConfig applied_io = {};
     static int applied_channels = 0;
@@ -183,12 +208,18 @@ void BMCU_apply_io_config() {
 }
 
 /**
- * @brief 检查微动开关状态并更新自动模式下的通道状态
- * 功能：通道处于自动模式时，微动开关由「无料」变为「有料」会触发该通道电机
+ * 检查微动开关状态并更新自动模式下的通道状态
+ * 通道处于自动模式时，微动开关由「无料」变为「有料」会触发该通道电机
  *       限时进料（AUTO_LOAD_MS，可在 Web 配置）。到时或被打断即停止，撤料后
  *       再次插入可重新触发。
  */
 // 该通道当前是否不适合辅助进料（模式、互锁或正被打印机/手动占用）
+/**
+ * 判断通道是否禁止微动辅助进料
+ * @param ch 通道编号
+ * @return true 表示当前不能触发辅助进料
+ * 非自动模式、无微动输入、正被手动或打印机占用时返回 true。
+ */
 static bool autoload_blocked(const int ch) {
     if (ch < 0 || ch >= active_channel_count()) return true;
     if (CHANNEL_MODE[ch] != CHANNEL_MODE_AUTO) return true;   // 仅自动模式触发
@@ -198,6 +229,10 @@ static bool autoload_blocked(const int ch) {
     return false;
 }
 
+/**
+ * 检测微动开关并触发自动进料
+ * 轮询各通道微动状态，做 30ms 防抖；自动模式下由无料变有料时启动限时辅助进料。
+ */
 void check_microswitch_status() {
     const uint32_t now = millis();
 
@@ -242,8 +277,23 @@ void check_microswitch_status() {
     }
 }
 
+/**
+ * 获取当前启用通道数
+ * @return AMS 数量乘以 4
+ * 供状态接口、网页和运动逻辑统一使用。
+ */
 int BMCU_motor_count() { return active_channel_count(); }
+/**
+ * 获取硬件支持的最大 AMS 数量
+ * @return 最大 AMS 数量
+ * 由固定通道容量除以 4 得到。
+ */
 int BMCU_max_ams_count() { return IO_CONFIG_MAX_CHANNELS / 4; }
+/**
+ * 判断是否存在手动动作
+ * @return true 表示有手动任务在运行或排队
+ * 检查手动队列和所有手动来源的电机。
+ */
 bool BMCU_manual_active() {
     if (manual_queued) return true;
     for (const auto &m : motor_run) if (m.source == MOTOR_MANUAL) return true;
@@ -251,6 +301,12 @@ bool BMCU_manual_active() {
 }
 
 // 供 Web 页面显示自动(有料)/(无料)：1=有料 0=无料 -1=该通道没有微动开关
+/**
+ * 读取通道耗材状态
+ * @param motorNum 通道编号
+ * @return 1=有料，0=无料，-1=无微动或通道无效
+ * 供网页显示自动检测结果。
+ */
 int BMCU_channel_filament_state(const int motorNum) {
     constexpr int pinCount = sizeof(IO_CONFIG.microswitch) / sizeof(IO_CONFIG.microswitch[0]);
     if (motorNum < 0 || motorNum >= active_channel_count() || motorNum >= pinCount) return -1;
@@ -258,6 +314,10 @@ int BMCU_channel_filament_state(const int motorNum) {
     return is_filament_online(motorNum) ? 1 : 0;
 }
 
+/**
+ * 按通道模式刷新在线状态
+ * 在线模式直接标记有料；自动模式读取微动；其余模式标记无料。
+ */
 void BMCU_apply_channel_modes() {
     for (int i = 0; i < 16; i++) {
         const bool enabled = i < active_channel_count();
@@ -271,6 +331,11 @@ void BMCU_apply_channel_modes() {
     }
 }
 
+/**
+ * 判断当前是否允许维护操作
+ * @return true 表示可以安全修改配置或升级
+ * 要求没有手动排队、没有电机运行、所有通道处于停止且打印机状态为 waiting。
+ */
 bool BMCU_can_maintain() {
     // 手动维护不再因为打印机总线近期有通信而被拒绝，只检查本地运动状态。
     if (BMCU_running_count() || manual_queued) return false;
@@ -280,16 +345,32 @@ bool BMCU_can_maintain() {
     return true;
 }
 
+/**
+ * 统计正在运行的电机数量
+ * @return 当前方向非零的通道数
+ * 用于限制同时运行的电机数量。
+ */
 int BMCU_running_count() {
     int count = 0;
     for (const auto &m : motor_run) count += m.direction != 0;
     return count;
 }
 
+/**
+ * 查询打印机总线故障状态
+ * @return true 表示总线超时并已阻止打印机动作
+ * 返回最近一次总线合法性判断的结果。
+ */
 bool BMCU_printer_bus_fault() {
     return printer_bus_fault;
 }
 
+/**
+ * 读取通道电机完整状态
+ * @param ch 通道编号
+ * @return 包含方向、来源、剩余时间、阻断和排队信息的 MotorStatus
+ * 越界通道返回默认空闲状态。
+ */
 MotorStatus BMCU_motor_status(int ch) {
     if (ch < 0 || ch >= active_channel_count()) return {};
     const auto &m = motor_run[ch];
@@ -299,12 +380,22 @@ MotorStatus BMCU_motor_status(int ch) {
             printer_blocked[ch], pos, pos ? manual_queue[pos - 1].direction : 0};
 }
 
+/**
+ * 解除通道的打印机阻断
+ * @param ch 通道编号
+ * 收到打印机 idle 后清除 blocked 标志，并把上一次动作恢复为 waiting。
+ */
 void BMCU_printer_idle(int ch) {
     if (ch < 0 || ch >= active_channel_count()) return;
     printer_blocked[ch] = false;
     last_action[ch] = waiting;
 }
 
+/**
+ * 停止指定通道并清理排队
+ * @param ch 通道编号
+ * 移除该通道的排队任务、停止电机并回到 waiting；打印机来源的动作会设置阻断，等待总线确认。
+ */
 void BMCU_stop_motor(int ch) {
     if (ch < 0 || ch >= IO_CONFIG_MAX_CHANNELS) return;
     const int pos = queue_position(ch);
@@ -316,6 +407,14 @@ void BMCU_stop_motor(int ch) {
     set_filament_motion(ch, waiting);
 }
 
+/**
+ * 提交一次手动点动请求
+ * @param ch 通道编号
+ * @param cmd 1=进料，-1=退料
+ * @param duration_ms 点动时长（毫秒）
+ * @return true 表示已启动或已排队
+ * 校验参数、通道状态和并发限制后加入手动队列并尝试立即启动。
+ */
 bool BMCU_manual_pulse(int ch, const int cmd, const uint32_t duration_ms) {
     if (ch < 0 || ch >= active_channel_count() || (cmd != 1 && cmd != -1) || !duration_ms ||
         duration_ms >= MAX_PULSE_MS || motor_run[ch].direction || queue_position(ch) ||
@@ -327,6 +426,15 @@ bool BMCU_manual_pulse(int ch, const int cmd, const uint32_t duration_ms) {
     return true;
 }
 
+/**
+ * 统一控制电机启停
+ * @param ch 通道编号
+ * @param cmd 1=正转，-1=反转，0=停止
+ * @param source 动作来源
+ * @param duration_ms 限时动作时长，0 表示不自动停止
+ * @return true 表示命令被接受
+ * 检查来源互锁、并发上限和通道占用后驱动 Motor，并记录动作截止时间；重复命令不续期。
+ */
 bool motorCmd(int ch, const int cmd, const MotorSource source, const uint32_t duration_ms) {
     if (ch < 0 || ch >= IO_CONFIG_MAX_CHANNELS || cmd < -1 || cmd > 1) return false;
     auto &m = motor_run[ch];
@@ -358,6 +466,10 @@ bool motorCmd(int ch, const int cmd, const MotorSource source, const uint32_t du
     return true;
 }
 
+/**
+ * 处理限时电机和手动队列
+ * 停止已到期的限时动作，并继续启动排队中的手动任务。
+ */
 static void motor_tick() {
     for (int i = 0; i < active_channel_count(); i++) {
         auto m = BMCU_motor_status(i);
@@ -371,7 +483,7 @@ static void motor_tick() {
 /**
  * @param motorNum 电机编号(0~3)
  * @param dutyCycle 占空比(0-255)
- * 功能：设置电机的速度
+ * 设置电机的速度
  */
 static void setMotorDutyCycle(const int motorNum, const uint8_t dutyCycle) {
     if (motorNum < 0 || motorNum >= active_channel_count()) return;
@@ -379,8 +491,8 @@ static void setMotorDutyCycle(const int motorNum, const uint8_t dutyCycle) {
 }
 
 /**
- * @brief 初始化AS5600传感器（模拟版）
- * 功能：初始化模拟的AS5600角度传感器
+ * 初始化AS5600传感器（模拟版）
+ * 初始化模拟的AS5600角度传感器
  */
 void AS5600_init() {
     if_as5600_init = true;
@@ -401,9 +513,9 @@ void AS5600_init() {
 }
 
 /**
- * @brief 获取模拟的AS5600距离数据
+ * 获取模拟的AS5600距离数据
  * @return 模拟的距离值
- * 功能：生成模拟的距离数据，用于测试
+ * 生成模拟的距离数据，用于测试
  */
 float AS5600_get_distance_E() {
     if (!enable_as5600) return 0;
@@ -425,10 +537,10 @@ float AS5600_get_distance_E() {
 }
 
 /**
- * @brief 获取模拟的AS5600原始角度值
+ * 获取模拟的AS5600原始角度值
  * @param channel 通道号（0-3）
  * @return 模拟的角度值
- * 功能：生成模拟的角度数据，用于测试
+ * 生成模拟的角度数据，用于测试
  */
 uint16_t AS5600_get_raw_angle(const uint8_t channel) {
     if (!enable_as5600 || channel >= 4) return 0;
@@ -464,10 +576,10 @@ uint16_t AS5600_get_raw_angle(const uint8_t channel) {
 }
 
 /**
- * @brief 获取模拟的AS5600磁场状态
+ * 获取模拟的AS5600磁场状态
  * @param channel 通道号（0-3）
  * @return 磁场状态
- * 功能：返回模拟的磁场状态，始终为正常
+ * 返回模拟的磁场状态，始终为正常
  */
 AS5600_magnet_stu AS5600_get_magnet_stu(uint8_t channel) {
     if (!enable_as5600 || channel >= 4) return AS5600_offline;
@@ -477,12 +589,12 @@ AS5600_magnet_stu AS5600_get_magnet_stu(uint8_t channel) {
 }
 
 /**
- * @brief 检查AS5600是否在线
+ * 检查AS5600是否在线
  * @param channel 通道号（0-3）
  * @return 是否在线
- * 功能：返回模拟的在线状态，始终为在线
+ * 返回模拟的在线状态，始终为在线
  */
-bool AS5600_is_online(uint8_t channel) {
+bool AS5600_is_online(const uint8_t channel) {
     if (!enable_as5600 || channel >= 4) return false;
 
     // 始终返回在线状态
@@ -490,10 +602,10 @@ bool AS5600_is_online(uint8_t channel) {
 }
 
 /**
- * @brief 获取模拟的AS5600速度
+ * 获取模拟的AS5600速度
  * @param channel 通道号（0-3）
  * @return 速度值
- * 功能：返回模拟的速度数据
+ * 返回模拟的速度数据
  */
 float AS5600_get_speed(uint8_t channel) {
     if (!enable_as5600 || channel >= 4) return 0.0f;
@@ -501,8 +613,8 @@ float AS5600_get_speed(uint8_t channel) {
 }
 
 /**
- * @brief BMCU系统初始化
- * 功能：初始化IO引脚、传感器、通信等
+ * BMCU系统初始化
+ * 初始化IO引脚、传感器、通信等
  */
 void BMCU_init() {
     // 初始化PCF8575虚拟引脚映射
@@ -537,8 +649,8 @@ void BMCU_init() {
 }
 
 /**
- * @brief 微动开关中断处理
- * 功能：当微动开关被触发时，控制选中的电机进料200ms
+ * 微动开关中断处理
+ * 当微动开关被触发时，控制选中的电机进料200ms
  */
 static void switchInterrupt() {
     if (switchPin == PIN_NONE) return;
@@ -552,13 +664,28 @@ static void switchInterrupt() {
 }
 
 // 空实现：保留接口兼容性
+/**
+ * 选择舵机位置（兼容空实现）
+ * @param num 位置编号
+ * 当前硬件不使用舵机，保留接口以兼容旧代码。
+ */
 void selectOnePos(char num) {}
+/**
+ * 释放所有舵机位置（兼容空实现）
+ * 当前硬件不使用舵机，保留接口以兼容旧代码。
+ */
 void releaseAllPos() {}
+/**
+ * 处理总线运动响应（兼容空实现）
+ * @param data 报文数据
+ * @param len 报文长度
+ * 保留旧协议处理入口，当前由 BambuBus 层直接完成状态机处理。
+ */
 static void BMCU_bus_deal_set_motion_res(uint8_t *data, int len) {}
 
 /**
  * BMCU主运行逻辑
- * 功能：处理耗材状态、更新耗材长度、运行通信和调试逻辑
+ * 处理耗材状态、更新耗材长度、运行通信和调试逻辑
  */
 void BMCU_run() {
     motor_tick();
@@ -622,7 +749,7 @@ void BMCU_run() {
 
 /**
  * 电机运动逻辑
- * 功能：根据当前状态控制电机的运动
+ * 根据当前状态控制电机的运动
  */
 void BMCU_motion() {
     if (printer_bus_fault) {

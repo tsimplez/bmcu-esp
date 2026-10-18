@@ -1,7 +1,7 @@
 /**
  * PCF8575引脚映射头文件
  * 
- * 功能：将PCF8575的0-15号引脚映射为Pico的30-45号虚拟引脚
+ * 将PCF8575的0-15号引脚映射为Pico的30-45号虚拟引脚
  * 映射关系：PCF8575引脚0 → 虚拟引脚30，PCF8575引脚1 → 虚拟引脚31，以此类推
  * 
  * 使用方法：
@@ -52,40 +52,40 @@ static const uint8_t VIRTUAL_TO_PCF8575_MAP[16] = {
 #define VIRTUAL_TO_PCF8575_PIN(pin) (VIRTUAL_TO_PCF8575_MAP[(pin) - PCF8575_VIRTUAL_PIN_BASE])
 
 /**
- * @brief 初始化PCF8575
+ * 初始化PCF8575
  * @return true: 初始化成功, false: 初始化失败
  */
 bool PCF8575_init();
 
 /**
- * @brief 更新所有PCF8575引脚状态
+ * 更新所有PCF8575引脚状态
  * 需要在loop()中定期调用
  */
 void PCF8575_update();
 
 /**
- * @brief 设置PCF8575虚拟引脚模式（模拟pinMode）
+ * 设置PCF8575虚拟引脚模式（模拟pinMode）
  * @param pin 虚拟引脚号（30-45）
  * @param mode 模式（OUTPUT/INPUT）
  */
 void PCF8575_pinMode(uint8_t pin, uint8_t mode);
 
 /**
- * @brief 设置PCF8575虚拟引脚电平（模拟digitalWrite）
+ * 设置PCF8575虚拟引脚电平（模拟digitalWrite）
  * @param pin 虚拟引脚号（30-45）
  * @param value 电平（HIGH/LOW）
  */
 void PCF8575_digitalWrite(uint8_t pin, uint8_t value);
 
 /**
- * @brief 读取PCF8575虚拟引脚电平（模拟digitalRead）
+ * 读取PCF8575虚拟引脚电平（模拟digitalRead）
  * @param pin 虚拟引脚号（30-45）
  * @return 引脚电平（HIGH/LOW）
  */
 int PCF8575_digitalRead(uint8_t pin);
 
 /**
- * @brief 设置PCF8575虚拟引脚PWM（模拟analogWrite）
+ * 设置PCF8575虚拟引脚PWM（模拟analogWrite）
  * @param pin 虚拟引脚号（30-45）
  * @param value PWM值（0-255）
  */

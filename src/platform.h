@@ -145,6 +145,10 @@ bool hal_storage_write(int region, const void* buf, uint32_t len);
 #include <soc/usb_serial_jtag_reg.h>
 #include <soc/io_mux_reg.h>
 #endif
+/**
+ * 初始化前的 GPIO 预处理
+ * ESP32-C3 经典款上释放内部 USB Serial/JTAG 对 GPIO18/19 的占用，其他平台为空操作。
+ */
 static inline void hal_prepare_gpio() {
     // ESP32-C3  USB-TTL 转串口芯片
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && C3_BOARD_USB_TTL && !ARDUINO_USB_CDC_ON_BOOT
@@ -162,6 +166,10 @@ extern int PCF_SDA;
 extern int PCF_SCL;
 // Web 里的 PCF8575 开关：关闭时不初始化 I2C，扩展虚拟引脚也不可选。
 extern int PCF_ENABLE;
+/**
+ * 按设置初始化 I2C 总线
+ * 仅在 Web 开关启用 PCF8575 时初始化 Wire，并设置 400kHz 时钟。
+ */
 static void hal_i2c_begin() {
     if (!PCF_ENABLE) return;  // 未启用 PCF8575 时不占用 I2C 引脚
 #if defined(ARDUINO_ARCH_ESP32)
@@ -178,9 +186,17 @@ static void hal_i2c_begin() {
 // 表现就是串口上只剩 ROM 启动信息和 core 自己的 [E] 日志，一条应用日志都看不到
 // 因此这里显式打开控制台串口（C3: UART0 GPIO20/21，S3: GPIO43/44）
 #if defined(ARDUINO_ARCH_ESP32)
+/**
+ * 初始化控制台串口
+ * ESP32 平台显式调用 Serial.begin(115200)，确保应用日志能够从串口输出。
+ */
 static void hal_console_begin() { Serial.begin(115200); }
 #else
 // RP2040: 日志走 stdout，无需 begin
+/**
+ * 初始化控制台串口（RP2040）
+ * RP2040 的日志直接写 stdout，因此保持空实现。
+ */
 static inline void hal_console_begin() {}
 #endif
 
@@ -204,6 +220,10 @@ extern int BUS_RX, BUS_TX, BUS_DE;
 #define BUS_SERIAL Serial1
 #define BUS_IRQ_SETUP() BUS_SERIAL.onReceive(on_uart_rx)
 
+/**
+ * 初始化任务看门狗
+ * ESP32 平台配置 10 秒超时并把主循环任务加入看门狗。
+ */
 static void hal_watchdog_init() {
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     // IDF5 起看门狗参数从 (超时秒数, 是否 panic) 换成了结构体，而且系统启动时已经
@@ -218,15 +238,40 @@ static void hal_watchdog_init() {
 #endif
     esp_task_wdt_add(NULL); // 把 loop 任务挂进看门狗
 }
+/**
+ * 喂任务看门狗
+ * ESP32 平台复位任务看门狗计时，防止主循环被误判为卡死。
+ */
 static void hal_watchdog_feed() { esp_task_wdt_reset(); }
 
+/**
+ * 初始化 BambuBus 串口
+ * @param baud 波特率
+ * ESP32 平台扩大接收缓冲后，以 8E1 格式初始化 RS485 串口。
+ */
 static void hal_bus_begin(const uint32_t baud) {
     // 1228800 bps 下默认 256 字节 RX 缓冲太小，事件任务来不及取就会丢包
     BUS_SERIAL.setRxBufferSize(2048);
     BUS_SERIAL.begin(baud, SERIAL_8E1, BUS_RX, BUS_TX, false);
 }
+/**
+ * 查询串口是否有可读数据
+ * @return 可读字节数
+ * 返回 BambuBus 串口当前可读取的字节数。
+ */
 static bool hal_bus_available() { return BUS_SERIAL.available(); }
+/**
+ * 读取一个串口字节
+ * @return 读到的字节；无数据时返回 -1
+ * 从 BambuBus 串口读取单字节。
+ */
 static int hal_bus_read() { return BUS_SERIAL.read(); }
+/**
+ * 发送串口数据
+ * @param data 待发送数据
+ * @param len 发送长度
+ * ESP32 平台写入并等待串口发送完成。
+ */
 static void hal_bus_write(const uint8_t *data, const uint16_t len) {
     BUS_SERIAL.write(data, len);
     BUS_SERIAL.flush();
@@ -247,9 +292,22 @@ static void hal_bus_write(const uint8_t *data, const uint16_t len) {
         uart_set_irq_enables(BUS_SERIAL, true, false);   \
     } while (0)
 
+/**
+ * 初始化硬件看门狗（RP2040）
+ * RP2040 平台启用 10 秒硬件看门狗。
+ */
 static inline void hal_watchdog_init() { watchdog_enable(10000, true); }
+/**
+ * 喂硬件看门狗（RP2040）
+ * RP2040 平台刷新硬件看门狗计时。
+ */
 static inline void hal_watchdog_feed() { watchdog_update(); }
 
+/**
+ * 初始化 BambuBus UART（RP2040）
+ * @param baud 波特率
+ * RP2040 平台配置 UART0 的 TX/RX、8E1 格式和 FIFO。
+ */
 static inline void hal_bus_begin(uint32_t baud) {
     uart_init(BUS_SERIAL, baud);
     gpio_set_function(BUS_TX, GPIO_FUNC_UART);
@@ -258,8 +316,24 @@ static inline void hal_bus_begin(uint32_t baud) {
     uart_set_format(BUS_SERIAL, 8, 1, UART_PARITY_EVEN);
     uart_set_fifo_enabled(BUS_SERIAL, true);
 }
+/**
+ * 查询 UART 是否有可读数据（RP2040）
+ * @return 是否有可读字节
+ * RP2040 平台通过 uart_is_readable() 检查接收状态。
+ */
 static inline bool hal_bus_available() { return uart_is_readable(BUS_SERIAL); }
+/**
+ * 读取 UART 字节（RP2040）
+ * @return 读到的字节
+ * RP2040 平台从 UART0 读取一个字节。
+ */
 static inline int hal_bus_read() { return uart_getc(BUS_SERIAL); }
+/**
+ * 发送 UART 数据（RP2040）
+ * @param data 待发送数据
+ * @param len 发送长度
+ * RP2040 平台阻塞写入并等待发送完成。
+ */
 static inline void hal_bus_write(const uint8_t *data, uint16_t len) {
     uart_write_blocking(BUS_SERIAL, data, len);
     uart_tx_wait_blocking(BUS_SERIAL);

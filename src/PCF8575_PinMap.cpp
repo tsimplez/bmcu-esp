@@ -21,6 +21,11 @@ static bool pcf8575_initialized = false; // 初始化状态
 static arduino::MbedI2C *pcf8575_wire = nullptr;
 #endif
 
+/**
+ * 初始化 PCF8575 扩展芯片
+ * @return true 表示初始化成功
+ * 按配置创建 I2C 实例并启动 PCF8575，所有输出初始化为低电平；重复调用直接返回成功。
+ */
 bool PCF8575_init() {
     if (pcf8575_initialized) {
         return true;
@@ -49,6 +54,10 @@ bool PCF8575_init() {
     return true;
 }
 
+/**
+ * 刷新 PCF8575 输出状态
+ * 把缓存的 16 位输出状态一次写入扩展芯片。
+ */
 void PCF8575_update() {
     if (!pcf8575_initialized) {
         return;
@@ -62,6 +71,12 @@ void PCF8575_update() {
     // uint16_t input_states = pcf8575.read16();
 }
 
+/**
+ * 设置 PCF8575 虚拟引脚模式
+ * @param pin 虚拟引脚号
+ * @param mode INPUT 或 OUTPUT
+ * 只更新引脚模式缓存，不直接操作硬件。
+ */
 void PCF8575_pinMode(const uint8_t pin, const uint8_t mode) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) {
         return;
@@ -76,6 +91,12 @@ void PCF8575_pinMode(const uint8_t pin, const uint8_t mode) {
     }
 }
 
+/**
+ * 设置 PCF8575 虚拟引脚电平
+ * @param pin 虚拟引脚号
+ * @param value HIGH 或 LOW
+ * 更新输出位缓存并立即写入芯片。
+ */
 void PCF8575_digitalWrite(const uint8_t pin, const uint8_t value) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) {
         return;
@@ -95,6 +116,12 @@ void PCF8575_digitalWrite(const uint8_t pin, const uint8_t value) {
     }
 }
 
+/**
+ * 读取 PCF8575 虚拟引脚电平
+ * @param pin 虚拟引脚号
+ * @return HIGH 或 LOW
+ * 输出模式返回缓存电平；输入模式先写高电平上拉，读取后再恢复原输出状态。
+ */
 int PCF8575_digitalRead(const uint8_t pin) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) {
         return LOW;
@@ -125,6 +152,12 @@ int PCF8575_digitalRead(const uint8_t pin) {
     return (input_states & (1 << pcf_pin)) ? HIGH : LOW;
 }
 
+/**
+ * 用软件 PWM 模拟 PCF8575 输出
+ * @param pin 虚拟引脚号
+ * @param value PWM 占空比，0-255
+ * 用约 1kHz 的软件计数比较模拟 PWM，精度有限。
+ */
 void PCF8575_analogWrite(const uint8_t pin, const uint8_t value) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) {
         return;
@@ -159,6 +192,12 @@ void PCF8575_analogWrite(const uint8_t pin, const uint8_t value) {
 // motorPins[8..15]（GP80-95）是预留槽位、根本不是合法 GPIO，
 // 直接透传给 core 的话，ESP32 的 pinMode() 会为每个编号打一条
 // "Invalid pin selected"，空板启动就能刷屏几十行噪声。
+/**
+ * 判断引脚是否为当前平台的真实 GPIO
+ * @param pin 引脚号
+ * @return true 表示合法 GPIO
+ * 过滤 PIN_NONE 和平台不存在的编号，避免向 Arduino core 传入非法引脚。
+ */
 static bool is_real_gpio(const uint8_t pin) {
     if (pin == 255) return false;
 #if defined(ARDUINO_ARCH_ESP32)
@@ -170,6 +209,12 @@ static bool is_real_gpio(const uint8_t pin) {
 #endif
 }
 
+/**
+ * 统一设置物理或扩展引脚模式
+ * @param pin 引脚号或虚拟引脚号
+ * @param mode 输入输出模式
+ * 虚拟引脚转交 PCF8575_pinMode()，真实 GPIO 调用 Arduino pinMode()。
+ */
 void pinMode_PCF8575(const uint8_t pin, const uint8_t mode) {
     if (IS_PCF8575_VIRTUAL_PIN(pin)) {
         PCF8575_pinMode(pin, mode);
@@ -178,6 +223,12 @@ void pinMode_PCF8575(const uint8_t pin, const uint8_t mode) {
     }
 }
 
+/**
+ * 统一写入物理或扩展引脚电平
+ * @param pin 引脚号或虚拟引脚号
+ * @param value HIGH 或 LOW
+ * 虚拟引脚走 PCF8575，真实 GPIO 走 Arduino digitalWrite()。
+ */
 void digitalWrite_PCF8575(const uint8_t pin, const uint8_t value) {
     if (IS_PCF8575_VIRTUAL_PIN(pin)) {
         PCF8575_digitalWrite(pin, value);
@@ -186,6 +237,12 @@ void digitalWrite_PCF8575(const uint8_t pin, const uint8_t value) {
     }
 }
 
+/**
+ * 统一读取物理或扩展引脚电平
+ * @param pin 引脚号或虚拟引脚号
+ * @return HIGH、LOW；非法引脚返回 LOW
+ * 虚拟引脚走 PCF8575，真实 GPIO 走 Arduino digitalRead()。
+ */
 int digitalRead_PCF8575(const uint8_t pin) {
     if (IS_PCF8575_VIRTUAL_PIN(pin)) {
         return PCF8575_digitalRead(pin);
@@ -196,6 +253,12 @@ int digitalRead_PCF8575(const uint8_t pin) {
     return LOW;
 }
 
+/**
+ * 统一输出物理或扩展引脚 PWM
+ * @param pin 引脚号或虚拟引脚号
+ * @param value PWM 值 0-255
+ * 虚拟引脚使用软件 PWM，真实 GPIO 调用 Arduino analogWrite()。
+ */
 void analogWrite_PCF8575(const uint8_t pin, const uint8_t value) {
     if (IS_PCF8575_VIRTUAL_PIN(pin)) {
         PCF8575_analogWrite(pin, value);

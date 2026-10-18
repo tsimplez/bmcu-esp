@@ -31,6 +31,12 @@ KNOWN_TARGETS = ['esp32s3', 'esp32c3', 'airm2m_core_esp32c3', 'pico']
 
 
 def read_fw_version():
+    """读取当前固件版本号。
+
+    返回：
+        src/version.h 中 FW_VERSION 宏对应的字符串。
+    从版本头文件中提取版本号；缺失时终止打包并提示修改位置。
+    """
     with open(VERSION_H, 'r', encoding='utf-8') as f:
         text = f.read()
     m = re.search(r'#define\s+FW_VERSION\s+"([^"]+)"', text)
@@ -40,6 +46,14 @@ def read_fw_version():
 
 
 def md5_of(path):
+    """计算固件文件的 MD5 摘要。
+
+    参数：
+        path: 待计算的固件文件路径。
+    返回：
+        32 位小写十六进制 MD5 字符串。
+    分块读取文件，避免一次性把大固件全部载入内存。
+    """
     h = hashlib.md5()
     with open(path, 'rb') as f:
         for chunk in iter(lambda: f.read(1 << 16), b''):
@@ -48,6 +62,12 @@ def md5_of(path):
 
 
 def validate_version(version):
+    """校验 OTA 版本号格式和日期有效性。
+
+    参数：
+        version: 形如 YY.MM.DD 或 YY.MM.DD.修订号 的版本字符串。
+    版本不合法时打印错误并终止打包，防止生成设备无法比较的版本。
+    """
     if not re.fullmatch(r'\d{2}\.\d{2}\.\d{2}(?:\.\d{1,3})?', version):
         sys.exit('版本号须为 YY.MM.DD 或 YY.MM.DD.修订号，例如 26.12.22.123')
     yy, mm, dd = map(int, version.split('.')[:3])
@@ -58,6 +78,11 @@ def validate_version(version):
 
 
 def main():
+    """生成 OTA 发布目录和跨板型累加的 manifest.json。
+
+    校验版本与编译产物，复制各环境 firmware.bin，并写入版本、大小和
+    MD5；已有清单中的其他板型条目会保留。
+    """
     ap = argparse.ArgumentParser(description='生成 OTA 发布目录（固件 + manifest.json）')
     ap.add_argument('targets', nargs='+', help='PlatformIO 环境名，同时也是清单里的板子键名')
     ap.add_argument('--version', '-v', help='版本号，默认取 src/version.h 的 FW_VERSION')

@@ -12,6 +12,7 @@
 #include <WiFiClientSecure.h>
 
 #include "logbus.h"
+#include "platform.h"
 #include "settings_storage.h"
 #include "BMCU.h"
 #include "version.h"
@@ -19,9 +20,11 @@
 // ============================================================
 // 常量
 // ============================================================
-#define AP_SSID         "BMCU"     // 配网热点名
+#define AP_SSID_PREFIX  "BMCU"     // 配网热点名前缀
 #define AP_PASS         "12345678" // 配网热点密码（至少 8 位）
 #define WIFI_NS         "wifi"     // NVS 中 WiFi 凭据的命名空间
+#define DEFAULT_MDNS_NAME "bmcu"   // 默认 mDNS 主机名
+#define MDNS_NAME_MAX   32         // mDNS 主机名最大长度
 #define STA_TIMEOUT_MS  15000      // 连接路由器超时（毫秒）
 #define LOG_PULL_MAX    16384      // 单次拉取日志的最大字节数
 
@@ -35,6 +38,8 @@ static uint32_t connect_deadline = 0;
 static bool     ap_mode = false;
 static char     sta_ssid[64] = {};
 static char     sta_pass[64] = {};
+static char     mdns_name[MDNS_NAME_MAX + 1] = DEFAULT_MDNS_NAME;
+static char     ap_ssid[16] = {};
 
 // ============================================================
 // 页面
@@ -46,6 +51,11 @@ extern const uint8_t web_index_html_end[] asm("_binary_web_index_html_end");
 #define PAGE_HTML ((const char *)web_index_html_start)
 
 // embed_txtfiles 会在末尾补一个 '\0'，发给浏览器时要去掉，否则 HTML 尾巴上会多一个空字节
+/**
+ * 获取嵌入网页的长度
+ * @return 不包含末尾 NUL 的 HTML 字节数
+ * PlatformIO 嵌入文件时会在末尾补 0，发送给浏览器前需要去掉。
+ */
 static size_t page_html_len() {
     size_t n = (size_t)(web_index_html_end - web_index_html_start);
     if (n && web_index_html_start[n - 1] == 0) n--;
@@ -54,6 +64,13 @@ static size_t page_html_len() {
 // ============================================================
 // 小工具
 // ============================================================
+/**
+ * 安全复制字符串到固定缓冲区
+ * @param dst 目标缓冲区
+ * @param cap 目标容量
+ * @param src 源字符串
+ * 按容量截断并保证以 NUL 结尾，源指针为空时写入空串。
+ */
 static void copy_str(char *dst, size_t cap, const char *src) {
     if (cap == 0) return;
     size_t n = src ? strlen(src) : 0;
@@ -62,6 +79,12 @@ static void copy_str(char *dst, size_t cap, const char *src) {
     dst[n] = 0;
 }
 
+/**
+ * 转义 JSON 字符串内容
+ * @param s 原始字符串
+ * @return 转义后的字符串
+ * 处理双引号和反斜杠，并把控制字符替换为空格，避免破坏 JSON。
+ */
 static String json_escape(const char *s) {
     String out;
     for (; s && *s; s++) {
@@ -73,17 +96,83 @@ static String json_escape(const char *s) {
     return out;
 }
 
+/**
+ * 校验 mDNS 主机名格式
+ * @param name 待校验的主机名
+ * @return true 表示名称合法
+ * 只允许 1-32 位字母、数字和连字符，且首尾不能是连字符。
+ */
+static bool mdns_name_valid(const char *name) {
+    if (!name) return false;
+    const size_t length = strlen(name);
+    if (length == 0 || length > MDNS_NAME_MAX) return false;
+    if (name[0] == '-' || name[length - 1] == '-') return false;
+    for (size_t i = 0; i < length; i++) {
+        const char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '-')) return false;
+    }
+    return true;
+}
+
+/**
+ * 规范化 mDNS 主机名
+ * @param raw 用户输入或存储中的原始名称
+ * @param out 输出的规范名称
+ * @return true 表示名称合法
+ * 去除空白和可选的 .local 后缀并转为小写，再用 mdns_name_valid() 校验。
+ */
+static bool normalize_mdns_name(const String &raw, String &out) {
+    String name = raw;
+    name.trim();
+    name.toLowerCase();
+    if (name.endsWith(".local")) name.remove(name.length() - 6);
+    name.trim();
+    if (!mdns_name_valid(name.c_str())) return false;
+    out = name;
+    return true;
+}
+
+/**
+ * 生成带芯片唯一 ID 的配网热点名
+ * @return 指向静态 SSID 缓冲区的指针
+ * 取芯片 64 位唯一 ID 的低 24 位格式化为 6 位大写十六进制，拼成 BMCU_XXXXXX。
+ */
+static const char *build_ap_ssid() {
+    const uint32_t suffix = static_cast<uint32_t>(hal_get_device_id() & 0xFFFFFFULL);
+    snprintf(ap_ssid, sizeof(ap_ssid), "%s_%06lX", AP_SSID_PREFIX,
+             static_cast<unsigned long>(suffix));
+    return ap_ssid;
+}
+
 // ============================================================
 // WiFi 凭据（NVS 独立命名空间 "wifi"）
 // ============================================================
+/**
+ * 读取已保存的 WiFi 凭据
+ * 从 NVS 的 wifi 命名空间读取 SSID、密码和 mDNS 名称到内存；无有效名称时使用默认值。
+ */
 static void load_wifi_creds() {
     sta_ssid[0] = sta_pass[0] = 0;
+    copy_str(mdns_name, sizeof(mdns_name), DEFAULT_MDNS_NAME);
     if (!wprefs.begin(WIFI_NS, true)) return;
     wprefs.getString("ssid", sta_ssid, sizeof(sta_ssid));
     wprefs.getString("pass", sta_pass, sizeof(sta_pass));
+    char stored_mdns[MDNS_NAME_MAX + 1] = {};
+    wprefs.getString("mdns", stored_mdns, sizeof(stored_mdns));
     wprefs.end();
+
+    String normalized;
+    if (normalize_mdns_name(String(stored_mdns), normalized))
+        copy_str(mdns_name, sizeof(mdns_name), normalized.c_str());
 }
 
+/**
+ * 保存 WiFi 凭据
+ * @param ssid WiFi 名称
+ * @param pass WiFi 密码
+ * 写入 NVS 并同步更新内存中的 SSID/密码。
+ */
 static void save_wifi_creds(const char *ssid, const char *pass) {
     if (wprefs.begin(WIFI_NS, false)) {
         wprefs.putString("ssid", ssid);
@@ -94,46 +183,102 @@ static void save_wifi_creds(const char *ssid, const char *pass) {
     copy_str(sta_pass, sizeof(sta_pass), pass);
 }
 
+/**
+ * 保存 mDNS 名称
+ * @param name 已规范化的 mDNS 主机名
+ * @return true 表示写入成功
+ * 把名称写入 NVS 的 wifi 命名空间，成功后同步更新内存中的名称。
+ */
+static bool save_mdns_name(const String &name) {
+    bool saved = false;
+    if (wprefs.begin(WIFI_NS, false)) {
+        saved = wprefs.putString("mdns", name) == name.length();
+        wprefs.end();
+    }
+    if (saved) copy_str(mdns_name, sizeof(mdns_name), name.c_str());
+    return saved;
+}
+
+/**
+ * 清除 WiFi 凭据
+ * 清空 NVS 的 wifi 命名空间和内存中的 SSID/密码。
+ */
 static void forget_wifi_creds() {
     if (wprefs.begin(WIFI_NS, false)) {
         wprefs.clear();
         wprefs.end();
     }
     sta_ssid[0] = sta_pass[0] = 0;
+    copy_str(mdns_name, sizeof(mdns_name), DEFAULT_MDNS_NAME);
 }
 
 // ============================================================
 // WiFi 状态机
 // ============================================================
 // 切换 WiFi 模式（模式确定后 WiFi 协议栈才算初始化，此时才能关省电）
+/**
+ * 切换 WiFi 工作模式
+ * @param m WiFi 模式
+ * 设置模式后关闭 WiFi 省电，保证网页和串口响应及时。
+ */
 static void wifi_set_mode(wifi_mode_t m) {
     WiFi.mode(m);
     WiFi.setSleep(false);
 }
 
+/**
+ * 启动配网热点
+ * 创建固定网段的 AP，并把 DNS 通配请求指向自身，实现强制门户。
+ */
 static void start_config_ap() {
     wifi_set_mode(WIFI_AP_STA);
+    const char *ssid = build_ap_ssid();
     // 固定 AP 网段，并把网关/DNS 都指向自己，客户端才能被强制门户接管
     WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-    WiFi.softAP(AP_SSID, AP_PASS);
+    WiFi.softAP(ssid, AP_PASS);
     dns.start(53, "*", WiFi.softAPIP());
     ap_mode = true;
     wifi_state = ST_IDLE;
     LOG_MAIN("[web] 未连接 WiFi，配网热点 '%s' 已开启：连上后访问 http://%s/",
-             AP_SSID, WiFi.softAPIP().toString().c_str());
+             ssid, WiFi.softAPIP().toString().c_str());
 }
 
+/**
+ * 启动或重载 mDNS 服务
+ * @return true 表示 mDNS 启动成功
+ * 使用当前 mdns_name 重启 mDNS 并发布 HTTP 服务，供 http://<名称>.local/ 访问。
+ */
+static bool start_mdns() {
+    MDNS.end();
+    if (!MDNS.begin(mdns_name)) {
+        LOG_MAIN("[web] mDNS 启动失败：%s.local", mdns_name);
+        return false;
+    }
+    MDNS.addService("http", "tcp", 80);
+    LOG_MAIN("[web] mDNS 已启动：http://%s.local/", mdns_name);
+    return true;
+}
+
+/**
+ * 处理 STA 连接成功
+ * 退出连接状态、关闭 AP 模式并按当前配置启动 mDNS 服务。
+ */
 static void on_sta_connected() {
     wifi_state = ST_IDLE;
     ap_mode = false;
-    if (MDNS.begin("bmcu")) MDNS.addService("http", "tcp", 80);
-    LOG_MAIN("[web] 已连接 WiFi '%s'：http://%s/ 或 http://bmcu.local/",
-             sta_ssid, WiFi.localIP().toString().c_str());
+    start_mdns();
+    LOG_MAIN("[web] 已连接 WiFi '%s'：http://%s/ 或 http://%s.local/",
+             sta_ssid, WiFi.localIP().toString().c_str(), mdns_name);
 }
 
 // ============================================================
 // REST API
 // ============================================================
+/**
+ * 检查是否允许维护操作
+ * @return true 表示当前可以执行配置、重启或升级
+ * 调用 BMCU_can_maintain()；不满足时直接向客户端发送 409 响应。
+ */
 static bool maintenance_required() {
     if (BMCU_can_maintain()) return true;
     server.send(409, "application/json",
@@ -141,12 +286,20 @@ static bool maintenance_required() {
     return false;
 }
 
+/**
+ * 处理首页请求
+ * 禁用浏览器缓存并发送嵌入固件的 HTML 管理页面。
+ */
 static void handle_root() {
     // 页面必须和固件配套：禁掉缓存，避免升级后浏览器仍用旧页面（旧页面不认新字段）。
     server.sendHeader("Cache-Control", "no-store");
     server.send_P(200, "text/html; charset=utf-8", (PGM_P)PAGE_HTML, page_html_len());
 }
 
+/**
+ * 处理运行状态查询
+ * 汇总 WiFi、IP、堆内存、总线、电机、耗材、维护状态和版本信息为 JSON。
+ */
 static void handle_status() {
     IPAddress ip = ap_mode ? WiFi.softAPIP() : WiFi.localIP();
 
@@ -155,6 +308,7 @@ static void handle_status() {
     j  = "{\"mode\":\"" + String(ap_mode ? "AP" : "STA") + "\"";
     j += ",\"ip\":\"" + ip.toString() + "\"";
     j += ",\"ssid\":\"" + json_escape(ap_mode ? "" : sta_ssid) + "\"";
+    j += ",\"mdns\":\"" + json_escape(mdns_name) + "\"";
     j += ",\"rssi\":" + String(ap_mode ? 0 : WiFi.RSSI());
     j += ",\"mac\":\"" + WiFi.macAddress() + "\"";
     j += ",\"uptime\":" + String(millis() / 1000);
@@ -205,6 +359,10 @@ static void handle_status() {
     server.send(200, "application/json", j);
 }
 
+/**
+ * 处理设置读取请求
+ * 输出参数、通道模式、退料超时、IO/PCF/总线接线和可选引脚 JSON。
+ */
 static void handle_settings_get() {
     String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
                ",\"ams\":" + String(AMS_COUNT) + ",\"manual_ms\":" + String(MANUAL_PULSE_MS) +
@@ -241,6 +399,14 @@ static void handle_settings_get() {
 }
 
 // toInt() 会把非法字符串当作 0；修改参数前先完整校验，避免部分保存。
+/**
+ * 校验请求参数是否为范围内整数
+ * @param key 参数名
+ * @param low 允许的最小值
+ * @param high 允许的最大值
+ * @return true 表示参数缺失或数值合法
+ * 先否定 toInt() 的容错行为，避免非法字符串被当作 0 保存。
+ */
 static bool valid_number(const String &key, int low, int high) {
     if (!server.hasArg(key)) return true;
     String raw = server.arg(key);
@@ -249,6 +415,14 @@ static bool valid_number(const String &key, int low, int high) {
     return end != raw.c_str() && !*end && value >= low && value <= high;
 }
 
+/**
+ * 解析并校验引脚参数
+ * @param key 参数名
+ * @param value 输出的引脚编号
+ * @param allow_none 是否允许 PIN_NONE
+ * @return true 表示参数存在且引脚可用
+ * 把请求中的十进制引脚号解析为整数并调用 io_config_pin_available()。
+ */
 static bool parse_io_pin(const String &key, int &value, bool allow_none) {
     if (!server.hasArg(key)) return false;
     String raw = server.arg(key);
@@ -260,6 +434,10 @@ static bool parse_io_pin(const String &key, int &value, bool allow_none) {
 }
 
 // PCF8575 开关 + I2C 接线：切换只清掉在新状态下不能用的引脚，保存后重启生效。
+/**
+ * 处理 PCF8575 开关与 I2C 接线保存
+ * 校验 SDA/SCL、清理切换后失效的通道引脚、写入设置并重启使接线生效。
+ */
 static void handle_pcf_save() {
     if (server.hasArg("enable") && !valid_number("enable", 0, 1)) {
         server.send(400, "application/json", "{\"ok\":false,\"msg\":\"启用开关取值无效\"}");
@@ -315,6 +493,10 @@ static void handle_pcf_save() {
     ESP.restart();
 }
 
+/**
+ * 处理 BambuBus 总线接线保存
+ * 校验 RS485 模式与 RX/TX/DE 引脚，写入设置后重启；UART 重启前继续使用旧接线。
+ */
 static void handle_bus_save() {
     if (!server.hasArg("rx") || !server.hasArg("tx") || !server.hasArg("mode") ||
         !valid_number("rx", 0, 48) || !valid_number("tx", 0, 48) || !valid_number("mode", 1, 2) ||
@@ -347,6 +529,10 @@ static void handle_bus_save() {
     ESP.restart();
 }
 
+/**
+ * 处理常规设置保存
+ * 统一校验 AMS 数量、时长、并发上限、序列号、通道参数、IO 接线和 OTA 配置；保存失败时回滚内存快照。
+ */
 static void handle_settings_save() {
     if (server.hasArg("rs485")) {
         server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请刷新页面，在 BambuBus 接线中同时保存模式与引脚并重启\"}");
@@ -474,6 +660,10 @@ static void handle_settings_save() {
 }
 
 // dir=0 停止任意来源的动作；启动只登记截止时间，立即返回。
+/**
+ * 处理手动电机控制请求
+ * 方向为 0 时停止任意来源的动作；否则校验通道和时长后提交点动，忙时进入手动队列。
+ */
 static void handle_manual_motor() {
     if (!server.hasArg("motor") || !server.hasArg("dir") ||
         !valid_number("motor", 0, BMCU_motor_count() - 1) || !valid_number("dir", -1, 1)) {
@@ -506,6 +696,10 @@ static void handle_manual_motor() {
     server.send(202, "application/json", queued ? "{\"ok\":true,\"msg\":\"已排队\"}" : "{\"ok\":true,\"msg\":\"已启动\"}");
 }
 
+/**
+ * 处理 WiFi 配网请求
+ * 保留 AP 的同时尝试连接目标路由；成功后保存凭据并重启，失败则恢复原网络。
+ */
 static void handle_wifi_save() {
     if (!maintenance_required()) return;
     String ssid = server.arg("ssid");
@@ -519,6 +713,19 @@ static void handle_wifi_save() {
     if (pass.length() > 0 && pass.length() < 8) {
         server.send(400, "application/json", "{\"ok\":false,\"msg\":\"WPA 密码至少 8 位\"}");
         return;
+    }
+
+    if (server.hasArg("mdns")) {
+        String normalized;
+        if (!normalize_mdns_name(server.arg("mdns"), normalized)) {
+            server.send(400, "application/json",
+                        "{\"ok\":false,\"msg\":\"mDNS 名称仅支持 1-32 位字母、数字和连字符，且首尾不能是连字符\"}");
+            return;
+        }
+        if (!save_mdns_name(normalized)) {
+            server.send(500, "application/json", "{\"ok\":false,\"msg\":\"mDNS 名称保存失败，请重试\"}");
+            return;
+        }
     }
 
     LOG_MAIN("[web] 正在连接 WiFi '%s' ...", ssid.c_str());
@@ -554,6 +761,37 @@ static void handle_wifi_save() {
                 "{\"ok\":false,\"msg\":\"连接失败，请确认 SSID / 密码，且路由器为 2.4GHz\"}");
 }
 
+/**
+ * 处理 mDNS 名称保存请求
+ * 校验并写入 WiFi NVS；STA 在线时立即重载 mDNS，AP 模式下联网后生效。
+ */
+static void handle_mdns_save() {
+    String normalized;
+    if (!normalize_mdns_name(server.arg("mdns"), normalized)) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"msg\":\"mDNS 名称仅支持 1-32 位字母、数字和连字符，且首尾不能是连字符\"}");
+        return;
+    }
+    if (!save_mdns_name(normalized)) {
+        server.send(500, "application/json", "{\"ok\":false,\"msg\":\"mDNS 名称保存失败，请重试\"}");
+        return;
+    }
+
+    const bool active = !ap_mode && WiFi.status() == WL_CONNECTED;
+    const bool started = !active || start_mdns();
+    const String url = "http://" + normalized + ".local/";
+    const String msg = active
+        ? (started ? "mDNS 名称已保存并生效" : "mDNS 名称已保存，但服务启动失败，请重启设备")
+        : "mDNS 名称已保存，联网后生效";
+    server.send(200, "application/json",
+                "{\"ok\":true,\"mdns\":\"" + normalized + "\",\"url\":\"" + url +
+                "\",\"msg\":\"" + msg + "\"}");
+}
+
+/**
+ * 处理忘记 WiFi 请求
+ * 清除凭据并重启，使设备进入配网模式。
+ */
 static void handle_wifi_forget() {
     if (!maintenance_required()) return;
     forget_wifi_creds();
@@ -563,6 +801,10 @@ static void handle_wifi_forget() {
     ESP.restart();
 }
 
+/**
+ * 处理 WiFi 扫描请求
+ * 异步启动扫描；扫描未完成时返回 scanning，完成后返回 SSID、信号强度和加密状态列表。
+ */
 static void handle_scan() {
     int n = WiFi.scanComplete();
     if (n < 0) {
@@ -582,6 +824,10 @@ static void handle_scan() {
     server.send(200, "application/json", j);
 }
 
+/**
+ * 处理日志读取请求
+ * 支持按游标增量读取、清空和下载；主板日志和 BambuBus 日志通过 ch 参数选择。
+ */
 static void handle_log() {
     int ch = server.hasArg("ch") ? server.arg("ch").toInt() : LOG_CH_MAIN;
     if (ch < 0 || ch >= LOG_CH_COUNT) ch = LOG_CH_MAIN;
@@ -609,6 +855,10 @@ static void handle_log() {
     server.send(200, "text/plain; charset=utf-8", buf);
 }
 
+/**
+ * 处理设备重启请求
+ * 在维护状态下回复成功并重启设备。
+ */
 static void handle_reboot() {
     if (!maintenance_required()) return;
     LOG_MAIN("[web] 收到重启指令");
@@ -617,6 +867,10 @@ static void handle_reboot() {
     ESP.restart();
 }
 
+/**
+ * 处理恢复出厂设置请求
+ * 恢复默认参数、清除 WiFi 凭据并重启。
+ */
 static void handle_factory_reset() {
     if (!maintenance_required()) return;
     settings_reset_to_defaults();
@@ -637,6 +891,11 @@ static String g_ota_ver;    // 服务器上的版本号
 static String g_ota_notes;  // 更新说明
 static size_t g_ota_size = 0;
 
+/**
+ * 获取 OTA 服务基础地址
+ * @return 去掉首尾空白和末尾斜杠的地址
+ * 用于拼接 manifest.json 和相对固件路径。
+ */
 static String ota_base() {
     String b = OTA_URL;
     b.trim();
@@ -645,10 +904,24 @@ static String ota_base() {
 }
 
 // ---- 够用就好的迷你 JSON 取值，不引第三方库 ----
+/**
+ * 跳过 JSON 空白字符
+ * @param s JSON 字符串
+ * @param i 当前解析位置
+ * 推进索引越过空格、制表符、回车和换行。
+ */
 static void json_ws(const String &s, int &i) {
     while (i < static_cast<int>(s.length()) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n')) i++;
 }
 
+/**
+ * 解析 JSON 字符串值
+ * @param s JSON 字符串
+ * @param i 当前解析位置
+ * @param out 输出的字符串
+ * @return true 表示解析成功
+ * 处理常见转义字符，直到遇到结束引号。
+ */
 static bool json_read_string(const String &s, int &i, String &out) {
     if (i >= static_cast<int>(s.length()) || s[i] != '"') return false;
     i++;
@@ -668,6 +941,14 @@ static bool json_read_string(const String &s, int &i, String &out) {
 }
 
 // 取 "key": 后面的值，字符串或裸标量都能取
+/**
+ * 读取 JSON 键对应的原始值
+ * @param s JSON 字符串
+ * @param key 键名
+ * @param out 输出值
+ * @return true 表示找到并成功读取
+ * 支持带引号字符串和裸标量，裸标量会去掉尾部空白。
+ */
 static bool json_get_raw(const String &s, const char *key, String &out) {
     String pat = "\"" + String(key) + "\"";
     int p = s.indexOf(pat);
@@ -687,12 +968,28 @@ static bool json_get_raw(const String &s, const char *key, String &out) {
     return out.length() > 0;
 }
 
+/**
+ * 读取 JSON 键对应的值
+ * @param s JSON 字符串
+ * @param key 键名
+ * @param out 输出值
+ * @return true 表示找到并成功读取
+ * 先清空输出，再复用 json_get_raw()。
+ */
 static bool json_get(const String &s, const char *key, String &out) {
     out = "";
     return json_get_raw(s, key, out);
 }
 
 // 取出 "key": { ... } 那个对象（含大括号），用来读某个目标平台的固件信息
+/**
+ * 提取 JSON 子对象文本
+ * @param s JSON 字符串
+ * @param key 键名
+ * @param out 输出的对象文本（含大括号）
+ * @return true 表示找到完整对象
+ * 按大括号深度和字符串状态扫描，避免把嵌套对象截断。
+ */
 static bool json_get_object(const String &s, const char *key, String &out) {
     String pat = "\"" + String(key) + "\"";
     int p = s.indexOf(pat);
@@ -723,6 +1020,13 @@ static bool json_get_object(const String &s, const char *key, String &out) {
 }
 
 // a 比 b 新返回 true（按 . 分段比数字，1.0.10 > 1.0.9）
+/**
+ * 比较两个版本号的新旧
+ * @param a 待比较版本
+ * @param b 基准版本
+ * @return true 表示 a 比 b 新
+ * 按点分段比较数字，可正确处理 1.0.10 > 1.0.9。
+ */
 static bool version_newer(const String &a, const String &b) {
     int ia = 0, ib = 0;
     while (ia < static_cast<int>(a.length()) || ib < static_cast<int>(b.length())) {
@@ -736,6 +1040,12 @@ static bool version_newer(const String &a, const String &b) {
     return false;
 }
 
+/**
+ * 校验 OTA 版本号格式
+ * @param v 版本字符串
+ * @return true 表示格式有效
+ * 要求 YY.MM.DD 或 YY.MM.DD.修订号格式。
+ */
 static bool version_valid(const String &v) {
     int groups = 1, digits = 0;
     for (unsigned int i = 0; i < v.length(); i++) {
@@ -751,6 +1061,12 @@ static bool version_valid(const String &v) {
 }
 
 // ---- HTTP ----
+/**
+ * 创建 OTA HTTP 客户端
+ * @param url 固件或清单地址
+ * @return 新建的 WiFiClient 指针
+ * HTTPS 使用不校验证书的 WiFiClientSecure 以节省内存，HTTP 使用普通客户端。
+ */
 static WiFiClient *ota_make_client(const String &url) {
     if (url.startsWith("https")) {
         auto *c = new WiFiClientSecure();
@@ -767,8 +1083,22 @@ namespace {
     // 块内对象按声明逆序析构，正好保证「先 ~HTTPClient，再 delete client」。
     class OtaClientHolder {
     public:
+        /**
+         * 构造 OTA 客户端持有器
+         * @param url 请求地址
+         * 按地址创建 HTTP 或 HTTPS 客户端，并保证其生命周期长于 HTTPClient。
+         */
         explicit OtaClientHolder(const String &url) : _client(ota_make_client(url)) {}
+        /**
+         * 析构 OTA 客户端持有器
+         * 在 HTTPClient 析构之后释放底层网络客户端。
+         */
         ~OtaClientHolder() { delete _client; }
+        /**
+         * 获取底层网络客户端引用
+         * @return 底层 WiFiClient 引用
+         * 供 HTTPClient.begin() 使用。
+         */
         WiFiClient &ref() const { return *_client; }
 
     private:
@@ -776,6 +1106,15 @@ namespace {
     };
 }
 
+/**
+ * 执行 OTA HTTP GET 请求
+ * @param url 请求地址
+ * @param body 响应正文
+ * @param err 错误信息
+ * @param timeout_ms 超时时间
+ * @return true 表示请求成功
+ * 跟随重定向，检查 HTTP 状态，并在下载前确认设备处于可维护状态。
+ */
 static bool ota_http_get(const String &url, String &body, String &err, uint16_t timeout_ms) {
     const OtaClientHolder client(url);
     HTTPClient http;
@@ -803,6 +1142,12 @@ static bool ota_http_get(const String &url, String &body, String &err, uint16_t 
     return true;
 }
 
+/**
+ * 获取并解析 OTA 清单
+ * @param err 错误信息
+ * @return true 表示成功取得当前板型固件信息
+ * 读取 manifest.json，提取目标平台的 url、md5、version、notes 和 size，并校验版本与 MD5 格式。
+ */
 static bool ota_fetch_manifest(String &err) {
     const String base = ota_base();
     if (!base.length()) {
@@ -859,15 +1204,30 @@ static bool ota_fetch_manifest(String &err) {
     return true;
 }
 
+/**
+ * 生成 OTA 错误 JSON
+ * @param msg 错误文本
+ * @return {"ok":false,"msg":"..."} 格式字符串
+ * 统一网页接口的错误响应格式。
+ */
 static String ota_json_err(const String &msg) {
     return "{\"ok\":false,\"msg\":\"" + json_escape(msg.c_str()) + "\"}";
 }
 
+/**
+ * 检查 OTA 前设备是否空闲
+ * @return true 表示允许继续
+ * 复用 maintenance_required() 的检查和 409 响应。
+ */
 static bool ota_require_stopped() {
     return maintenance_required();
 }
 
 // ---- 检查更新 ----
+/**
+ * 处理检查更新请求
+ * 可配置关闭自动提示；带 force 参数时强制检查，返回当前版本、最新版本、更新说明和下载信息。
+ */
 static void handle_ota_check() {
     if (!ota_require_stopped()) return;
     // 关掉"自动提示"后，进页面时的静默检查直接跳过，不白跑一趟网络请求；
@@ -902,6 +1262,12 @@ static void handle_ota_check() {
 }
 
 // ---- 在线更新：下载 → 写 flash → 重启 ----
+/**
+ * 从 URL 下载并写入固件
+ * @param err 错误信息
+ * @return true 表示下载、校验和写入全部成功
+ * 按 Content-Length 下载，写入 Update 分区并持续校验 MD5、设备空闲状态和看门狗。
+ */
 static bool ota_flash_from_url(String &err) {
     const OtaClientHolder client(g_ota_url);
     HTTPClient http;
@@ -1001,6 +1367,10 @@ static bool ota_flash_from_url(String &err) {
     return true;
 }
 
+/**
+ * 处理在线升级请求
+ * 检查清单和版本，仅当服务器版本更新时下载写入，成功后重启。
+ */
 static void handle_ota_pull() {
     if (!ota_require_stopped()) return;
     String err;
@@ -1037,6 +1407,10 @@ static void handle_ota_pull() {
 static bool  ota_up_failed = false;
 static String ota_up_err;
 
+/**
+ * 处理浏览器固件上传
+ * 按开始、写入、结束、中断四个阶段驱动 Update 接口，并在上传过程中喂狗和检查设备状态。
+ */
 static void handle_ota_upload() {
     HTTPUpload &up = server.upload();
 
@@ -1081,6 +1455,10 @@ static void handle_ota_upload() {
     }
 }
 
+/**
+ * 处理本地升级完成回调
+ * 根据上传阶段记录的结果返回成功或失败，成功后重启设备。
+ */
 static void handle_ota_upload_done() {
     if (ota_up_failed) {
         LOG_MAIN("[ota] 本地升级失败: %s", ota_up_err.c_str());
@@ -1094,6 +1472,10 @@ static void handle_ota_upload_done() {
 }
 
 // 配网模式下的强制门户：任何未知请求都跳回首页
+/**
+ * 处理未匹配的 HTTP 请求
+ * 配网模式下跳转到强制门户首页，STA 模式下返回 404。
+ */
 static void handle_not_found() {
     if (ap_mode) {
         server.sendHeader("Location", "http://" + WiFi.softAPIP().toString() + "/", true);
@@ -1103,6 +1485,10 @@ static void handle_not_found() {
     }
 }
 
+/**
+ * 注册 Web 路由
+ * 把首页、状态、设置、接线、电机、WiFi、日志、重启、恢复出厂和 OTA 接口绑定到处理函数。
+ */
 static void setup_routes() {
     server.on("/", HTTP_GET, handle_root);
     server.on("/api/status", HTTP_GET, handle_status);
@@ -1113,6 +1499,7 @@ static void setup_routes() {
     server.on("/api/motor", HTTP_POST, handle_manual_motor);
     server.on("/api/scan", HTTP_GET, handle_scan);
     server.on("/api/wifi", HTTP_POST, handle_wifi_save);
+    server.on("/api/mdns", HTTP_POST, handle_mdns_save);
     server.on("/api/forget", HTTP_POST, handle_wifi_forget);
     server.on("/api/log", HTTP_GET, handle_log);
     server.on("/api/reboot", HTTP_GET, handle_reboot);
@@ -1126,6 +1513,10 @@ static void setup_routes() {
 // ============================================================
 // 对外接口
 // ============================================================
+/**
+ * 初始化 Web 管理服务
+ * 读取 WiFi 凭据，优先连接已保存网络，失败或未配置时启动配网热点，然后注册路由并启动 HTTP 服务。
+ */
 void web_config_init() {
     load_wifi_creds();
     WiFi.persistent(false);
@@ -1145,6 +1536,10 @@ void web_config_init() {
     LOG_MAIN("[web] HTTP 管理服务已启动");
 }
 
+/**
+ * 轮询 Web 与 WiFi 状态
+ * 处理 STA 连接成功/超时切换，调用 WebServer 处理请求，并在 AP 模式处理 DNS 强制门户请求。
+ */
 void web_config_run() {
     if (wifi_state == ST_CONNECTING) {
         if (WiFiClass::status() == WL_CONNECTED) {

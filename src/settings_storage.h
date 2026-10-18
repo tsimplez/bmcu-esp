@@ -57,6 +57,11 @@ struct SettingsData {
 #define SETTINGS_MAGIC_NUMBER    0x53415429
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS。
+/**
+ * 获取当前启用通道数
+ * @return AMS 数量乘以 4
+ * 所有运动逻辑和界面都以此作为有效通道上限。
+ */
 inline int active_channel_count() { return AMS_COUNT * 4; }
 
 // 默认值定义
