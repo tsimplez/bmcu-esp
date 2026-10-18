@@ -3,7 +3,6 @@
  * 
  * 实现PCF8575虚拟引脚功能，将PCF8575的0-15号引脚映射为Pico的30-45号虚拟引脚
  */
-
 #include "PCF8575_PinMap.h"
 #include "platform.h"
 
@@ -11,10 +10,10 @@
 extern PCF8575 pcf8575;
 
 // 引脚状态缓存
-uint16_t pcf8575_pin_states = 0; // 当前引脚状态（16位，对应物理引脚0-15，但注意实际引脚是0-7,10-17）
-uint16_t pcf8575_pin_modes = 0;  // 引脚模式（0=INPUT, 1=OUTPUT）
-uint8_t pcf8575_pwm_values[18] = {0}; // PWM值缓存（覆盖物理引脚0-17）
-bool pcf8575_initialized = false; // 初始化状态
+static uint16_t pcf8575_pin_states = 0; // 当前引脚状态（16位，对应物理引脚0-15，但注意实际引脚是0-7,10-17）
+static uint16_t pcf8575_pin_modes = 0;  // 引脚模式（0=INPUT, 1=OUTPUT）
+static uint8_t pcf8575_pwm_values[18] = {}; // PWM值缓存（覆盖物理引脚0-17）
+static bool pcf8575_initialized = false; // 初始化状态
 
 #if defined(ARDUINO_ARCH_RP2040)
 // Arduino-Mbed 的全局 Wire 对象没有 setSDA/setSCL；按设置创建一个使用自定义
@@ -63,7 +62,7 @@ void PCF8575_update() {
     // uint16_t input_states = pcf8575.read16();
 }
 
-void PCF8575_pinMode(uint8_t pin, uint8_t mode) {
+void PCF8575_pinMode(const uint8_t pin, const uint8_t mode) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) {
         return;
     }
@@ -77,7 +76,7 @@ void PCF8575_pinMode(uint8_t pin, uint8_t mode) {
     }
 }
 
-void PCF8575_digitalWrite(uint8_t pin, uint8_t value) {
+void PCF8575_digitalWrite(const uint8_t pin, const uint8_t value) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) {
         return;
     }
@@ -96,7 +95,7 @@ void PCF8575_digitalWrite(uint8_t pin, uint8_t value) {
     }
 }
 
-int PCF8575_digitalRead(uint8_t pin) {
+int PCF8575_digitalRead(const uint8_t pin) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) {
         return LOW;
     }
@@ -126,7 +125,7 @@ int PCF8575_digitalRead(uint8_t pin) {
     return (input_states & (1 << pcf_pin)) ? HIGH : LOW;
 }
 
-void PCF8575_analogWrite(uint8_t pin, uint8_t value) {
+void PCF8575_analogWrite(const uint8_t pin, const uint8_t value) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) {
         return;
     }
@@ -140,8 +139,8 @@ void PCF8575_analogWrite(uint8_t pin, uint8_t value) {
     // 注意：这是软件模拟的PWM，精度有限
     static uint32_t last_pwm_time = 0;
     static uint8_t pwm_counter = 0;
-    
-    uint32_t current_time = millis();
+
+    const uint32_t current_time = millis();
     if (current_time - last_pwm_time > 1) { // 约1kHz PWM频率
         last_pwm_time = current_time;
         pwm_counter++;
@@ -160,7 +159,7 @@ void PCF8575_analogWrite(uint8_t pin, uint8_t value) {
 // motorPins[8..15]（GP80-95）是预留槽位、根本不是合法 GPIO，
 // 直接透传给 core 的话，ESP32 的 pinMode() 会为每个编号打一条
 // "Invalid pin selected"，空板启动就能刷屏几十行噪声。
-static bool is_real_gpio(uint8_t pin) {
+static bool is_real_gpio(const uint8_t pin) {
     if (pin == 255) return false;
 #if defined(ARDUINO_ARCH_ESP32)
     return digitalPinIsValid(pin);
@@ -171,7 +170,7 @@ static bool is_real_gpio(uint8_t pin) {
 #endif
 }
 
-void pinMode_PCF8575(uint8_t pin, uint8_t mode) {
+void pinMode_PCF8575(const uint8_t pin, const uint8_t mode) {
     if (IS_PCF8575_VIRTUAL_PIN(pin)) {
         PCF8575_pinMode(pin, mode);
     } else if (is_real_gpio(pin)) {
@@ -179,7 +178,7 @@ void pinMode_PCF8575(uint8_t pin, uint8_t mode) {
     }
 }
 
-void digitalWrite_PCF8575(uint8_t pin, uint8_t value) {
+void digitalWrite_PCF8575(const uint8_t pin, const uint8_t value) {
     if (IS_PCF8575_VIRTUAL_PIN(pin)) {
         PCF8575_digitalWrite(pin, value);
     } else if (is_real_gpio(pin)) {
@@ -187,7 +186,7 @@ void digitalWrite_PCF8575(uint8_t pin, uint8_t value) {
     }
 }
 
-int digitalRead_PCF8575(uint8_t pin) {
+int digitalRead_PCF8575(const uint8_t pin) {
     if (IS_PCF8575_VIRTUAL_PIN(pin)) {
         return PCF8575_digitalRead(pin);
     }
@@ -197,7 +196,7 @@ int digitalRead_PCF8575(uint8_t pin) {
     return LOW;
 }
 
-void analogWrite_PCF8575(uint8_t pin, uint8_t value) {
+void analogWrite_PCF8575(const uint8_t pin, const uint8_t value) {
     if (IS_PCF8575_VIRTUAL_PIN(pin)) {
         PCF8575_analogWrite(pin, value);
     } else if (is_real_gpio(pin)) {

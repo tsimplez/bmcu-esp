@@ -40,7 +40,7 @@ uint32_t as5600_last_time[4] = {0, 0, 0, 0};     // 上一次时间戳
 float as5600_speed[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // 速度值
 
 // 微动开关引脚
-const int switchPin = PIN_SWITCH;   // 微动开关引脚
+constexpr int switchPin = PIN_SWITCH;   // 微动开关引脚
 
 // 全局变量
 static uint32_t last_toggle_time = 0;      // 上次切换时间
@@ -131,7 +131,7 @@ void init_io_pins() {
     if (switchPin != PIN_NONE) {
         pinMode(switchPin, INPUT_PULLUP);
     }
-    
+
     // 只初始化启用通道的微动输入。
     for (int i = 0; i < active_channel_count(); i++) {
         const int pin = IO_CONFIG.microswitch[i];
@@ -143,7 +143,6 @@ void init_io_pins() {
 
     // 初始化所有电机引脚
     for (int i = 0; i < active_channel_count(); i++) {
-        // 使用PCF8575虚拟引脚处理函数
         pinMode_PCF8575(IO_CONFIG.motor[i][0], OUTPUT); // 正转（进料）引脚
         pinMode_PCF8575(IO_CONFIG.motor[i][1], OUTPUT); // 反转（退料）引脚
         digitalWrite_PCF8575(IO_CONFIG.motor[i][0], LOW);
@@ -190,7 +189,7 @@ void BMCU_apply_io_config() {
  *       再次插入可重新触发。
  */
 // 该通道当前是否不适合辅助进料（模式、互锁或正被打印机/手动占用）
-static bool autoload_blocked(int ch) {
+static bool autoload_blocked(const int ch) {
     if (ch < 0 || ch >= active_channel_count()) return true;
     if (CHANNEL_MODE[ch] != CHANNEL_MODE_AUTO) return true;   // 仅自动模式触发
     if (IO_CONFIG.microswitch[ch] == PIN_NONE) return true; // 无真实微动输入
@@ -355,7 +354,7 @@ bool motorCmd(int ch, const int cmd, const MotorSource source, const uint32_t du
     m.end = millis() + duration_ms;
     m.timed = duration_ms > 0;
     if (cmd > 0) motors[ch].forward();
-    else motors[ch].backforward();
+    else motors[ch].backward();
     return true;
 }
 
@@ -370,12 +369,11 @@ static void motor_tick() {
 }
 
 /**
- * @brief 设置电机PWM占空比
  * @param motorNum 电机编号(0~3)
  * @param dutyCycle 占空比(0-255)
  * 功能：设置电机的速度
  */
-void setMotorDutyCycle(const int motorNum, const uint8_t dutyCycle) {
+static void setMotorDutyCycle(const int motorNum, const uint8_t dutyCycle) {
     if (motorNum < 0 || motorNum >= active_channel_count()) return;
     motors[motorNum].setDutyCycle(dutyCycle);
 }
@@ -390,7 +388,7 @@ void AS5600_init() {
     generator.seed(12345u);
     randomSeed(12345u);
     as5600_distance_last_ms = millis();
-    
+
     // 初始化角度和时间戳
     for (int i = 0; i < 4; i++) {
         as5600_current_angle[i] = random(0, 4096);
@@ -398,7 +396,7 @@ void AS5600_init() {
         as5600_last_time[i] = millis();
         as5600_speed[i] = 0.0f;
     }
-    
+
     LOG_MAIN("AS5600 初始化%s", if_as5600_init ? "成功" : "失败");
 }
 
@@ -417,9 +415,9 @@ float AS5600_get_distance_E() {
     if (!dt_ms) return 0.0f;
     if (dt_ms > 100u) dt_ms = 100u; // 异常长调度间隔不制造大跳变
 
-    const float scale = (float)dt_ms / 10.0f;
+    const float scale = static_cast<float>(dt_ms) / 10.0f;
     const float nominal = 0.0055f * scale;
-    const float jitter = (float)distribution(generator) * sqrtf(scale);
+    const float jitter = static_cast<float>(distribution(generator)) * sqrtf(scale);
     const float lower = 0.003f * scale;
     const float upper = 0.008f * scale;
     const float distance = nominal + jitter;
@@ -432,36 +430,36 @@ float AS5600_get_distance_E() {
  * @return 模拟的角度值
  * 功能：生成模拟的角度数据，用于测试
  */
-uint16_t AS5600_get_raw_angle(uint8_t channel) {
+uint16_t AS5600_get_raw_angle(const uint8_t channel) {
     if (!enable_as5600 || channel >= 4) return 0;
-    
+
     // 模拟角度值的连续变化
-    uint32_t now = millis();
-    uint32_t time_diff = now - as5600_last_time[channel];
-    
+    const uint32_t now = millis();
+    const uint32_t time_diff = now - as5600_last_time[channel];
+
     // 计算角度增量（模拟电机转动）
-    int16_t angle_increment = rand() % 10 - 5; // -5到4的随机增量
-    
+    const int16_t angle_increment = rand() % 10 - 5; // -5到4的随机增量
+
     // 更新角度值，确保在0-4095之间循环
     as5600_current_angle[channel] = (as5600_current_angle[channel] + angle_increment) % 4096;
     if (as5600_current_angle[channel] < 0) {
         as5600_current_angle[channel] += 4096;
     }
-    
+
     // 计算速度
     int32_t angle_diff = as5600_current_angle[channel] - as5600_last_angle[channel];
     if (angle_diff >  2048) angle_diff -= 4096;
     if (angle_diff < -2048) angle_diff += 4096;
-    
+
     if (time_diff > 0) {
-        float dist_mm = (float)angle_diff * AS5600_MM_PER_CNT;
+        const float dist_mm = (float)angle_diff * AS5600_MM_PER_CNT;
         as5600_speed[channel] = dist_mm / static_cast<float>(time_diff) * 1000.0f; // mm/s
     }
-    
+
     // 更新最后角度和时间
     as5600_last_angle[channel] = as5600_current_angle[channel];
     as5600_last_time[channel] = now;
-    
+
     return as5600_current_angle[channel];
 }
 
@@ -473,7 +471,7 @@ uint16_t AS5600_get_raw_angle(uint8_t channel) {
  */
 AS5600_magnet_stu AS5600_get_magnet_stu(uint8_t channel) {
     if (!enable_as5600 || channel >= 4) return AS5600_offline;
-    
+
     // 始终返回正常磁场状态
     return AS5600_normal;
 }
@@ -486,7 +484,7 @@ AS5600_magnet_stu AS5600_get_magnet_stu(uint8_t channel) {
  */
 bool AS5600_is_online(uint8_t channel) {
     if (!enable_as5600 || channel >= 4) return false;
-    
+
     // 始终返回在线状态
     return true;
 }
@@ -511,7 +509,7 @@ void BMCU_init() {
     // 只有 Web 开关打开 PCF8575 时才初始化：关闭时 hal_i2c_begin() 没有 Wire.begin()，
     // 这里再访问 I2C 会产生 "could not acquire lock / NULL TX buffer" 报错。
     if (PCF_ENABLE) PCF8575_init();
-    
+
     if (switchPin != PIN_NONE) pinMode(switchPin, INPUT_PULLUP);
     BMCU_apply_io_config(); // 根据已加载设置绑定并初始化 IO 引脚
     AS5600_init();       // 初始化AS5600传感器
@@ -542,7 +540,7 @@ void BMCU_init() {
  * @brief 微动开关中断处理
  * 功能：当微动开关被触发时，控制选中的电机进料200ms
  */
-void switchInterrupt() {
+static void switchInterrupt() {
     if (switchPin == PIN_NONE) return;
     switchState = digitalRead(switchPin);
     if (switchState == LOW && lastSwitchState != LOW) {
@@ -556,7 +554,7 @@ void switchInterrupt() {
 // 空实现：保留接口兼容性
 void selectOnePos(char num) {}
 void releaseAllPos() {}
-void BMCU_bus_deal_set_motion_res(uint8_t *data, int len) {}
+static void BMCU_bus_deal_set_motion_res(uint8_t *data, int len) {}
 
 /**
  * BMCU主运行逻辑
@@ -580,7 +578,6 @@ void BMCU_run() {
         for (int i = 0; i < active_channel_count(); i++) printer_blocked[i] = false;
         LOG_MAIN("[bus] 收到合法打印机帧，总线恢复，允许新的打印机动作");
     }
-    bool if_count_meters = true;
     float d = AS5600_get_distance_E();
     static int now_f = 255;
     int x = get_now_filament_num();
@@ -613,7 +610,7 @@ void BMCU_run() {
     }
 
     // 更新耗材长度
-    if ((if_count_meters || ams_enable == false) && now_f >= 0 && now_f < active_channel_count()) {
+    if (now_f >= 0 && now_f < active_channel_count()) {
         if(state == need_send_out){
             d = -d; // 进料时长度减少
         }
@@ -624,7 +621,7 @@ void BMCU_run() {
 }
 
 /**
- * @brief 电机运动逻辑
+ * 电机运动逻辑
  * 功能：根据当前状态控制电机的运动
  */
 void BMCU_motion() {
@@ -634,7 +631,7 @@ void BMCU_motion() {
         }
         return;
     }
-    int cur = get_now_filament_num();
+    const int cur = get_now_filament_num();
     if (cur < 0 || cur >= active_channel_count()) {
         for (int i = 0; i < active_channel_count(); i++) {
             if (motor_run[i].source != MOTOR_PRINTER || motor_run[i].timed) continue;
@@ -706,12 +703,12 @@ void BMCU_motion() {
         case cancel:
         case release_all:
             // 取消/释放→停止电机
-            motorCmd(cur, 0); 
+            motorCmd(cur, 0);
             act = waiting;
             break;
         default:
             // 默认→处理微动开关
-            switchInterrupt(); 
+            switchInterrupt();
             break;
     }
 }

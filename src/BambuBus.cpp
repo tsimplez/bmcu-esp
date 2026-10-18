@@ -159,34 +159,34 @@ int get_current_AMS_index() {
 }
 
 
-void reset_filament_meters(int num) {
+void reset_filament_meters(const int num) {
     if (num < 0 || num >= 16) return;
     data_save.filament[num / 4][num % 4].meters = 0;
     filament_ext[num / 4][num % 4].meters_virtual_count = 0;
 }
 
-void add_filament_meters(int num, float meters) {
+void add_filament_meters(const int num, float meters) {
     if (num < 0 || num >= 16) return;
     data_save.filament[num / 4][num % 4].meters += meters;
 }
 
-float get_filament_meters(int num) {
+float get_filament_meters(const int num) {
     if (num < 0 || num >= 16) return 0.0f;
     return data_save.filament[num / 4][num % 4].meters;
 }
 
-bool is_filament_online(int num) {
+bool is_filament_online(const int num) {
     if (num < 0 || num >= 16) return false;
     return data_save.filament[num / 4][num % 4].statu == online;
 }
 
 // 设置耗材在线状态
-void set_filament_online(int num, int count, bool if_online) {
+void set_filament_online(const int num, const int count, const bool if_online) {
     if (num < 0 || num >= 4 || count < 0 || count >= 4) return;
     data_save.filament[num][count].statu = if_online ? online : offline;
 }
 
-String get_now_filament_name(int num) {
+String get_now_filament_name(const int num) {
     if (num < 0 || num >= 16) return {};
     return {data_save.filament[num / 4][num % 4].name};
 }
@@ -203,23 +203,23 @@ static _filament_motion_state_set map_internal_to_api(_filament_motion_internal 
     }
 }
 
-static void set_motion_internal(uint8_t ams_num, uint8_t ch, _filament_motion_internal new_motion) {
+static void set_motion_internal(const uint8_t ams_num, const uint8_t ch, const _filament_motion_internal new_motion) {
     if (ams_num >= 4 || ch >= 4) return;
     if (new_motion == _filament_motion_internal::idle) BMCU_printer_idle(ams_num * 4 + ch);
     filament_ext[ams_num][ch].motion = new_motion;
     data_save.filament[ams_num][ch].motion_set = map_internal_to_api(new_motion);
 }
 
-_filament_motion_state_set get_filament_motion(int num) {
+_filament_motion_state_set get_filament_motion(const int num) {
     if (num < 0 || num >= 16) return waiting;
     return data_save.filament[num / 4][num % 4].motion_set;
 }
 
-void set_filament_motion(int num, _filament_motion_state_set motion) {
+void set_filament_motion(const int num, const _filament_motion_state_set motion) {
     if (num < 0 || num >= 16) return;
     data_save.filament[num / 4][num % 4].motion_set = motion;
-    uint8_t ams = num / 4;
-    uint8_t ch = num % 4;
+    const uint8_t ams = num / 4;
+    const uint8_t ch = num % 4;
     switch (motion) {
         case need_send_out:
             filament_ext[ams][ch].motion = _filament_motion_internal::send_out;
@@ -233,29 +233,29 @@ void set_filament_motion(int num, _filament_motion_state_set motion) {
     }
 }
 
-uint8_t get_filament_color_A(int num) {
+uint8_t get_filament_color_A(const int num) {
     if (num < 0 || num >= 16) return 0;
     return data_save.filament[num / 4][num % 4].color_A;
 }
 
-uint8_t get_filament_color_R(int num) {
+uint8_t get_filament_color_R(const int num) {
     if (num < 0 || num >= 16) return 0;
     return data_save.filament[num / 4][num % 4].color_R;
 }
 
-uint8_t get_filament_color_G(int num) {
+uint8_t get_filament_color_G(const int num) {
     if (num < 0 || num >= 16) return 0;
     return data_save.filament[num / 4][num % 4].color_G;
 }
 
-uint8_t get_filament_color_B(int num) {
+uint8_t get_filament_color_B(const int num) {
     if (num < 0 || num >= 16) return 0;
     return data_save.filament[num / 4][num % 4].color_B;
 }
 
 // ==================== 新协议状态机核心 ====================
-static uint8_t get_loaded_filament(uint8_t ams_num) {
-    int now = data_save.BambuBus_now_filament_num;
+static uint8_t get_loaded_filament(const uint8_t ams_num) {
+    const int now = data_save.BambuBus_now_filament_num;
     if (now >= ams_num * 4 && now < (ams_num + 1) * 4)
         return now % 4;
     return 0xFF;
@@ -331,7 +331,7 @@ static bool process_motion_state_machine(
                 if (time_sendout_onuse_ticks[filament_channel] == 0)
                     time_sendout_onuse_ticks[filament_channel] = now;
 
-                uint32_t dt = now - time_sendout_onuse_ticks[filament_channel];
+                const uint32_t dt = now - time_sendout_onuse_ticks[filament_channel];
                 if (dt < 5000)
                     return true;
                 time_sendout_onuse_ticks[filament_channel] = 0;
@@ -922,7 +922,7 @@ static bool set_cxx_buf(unsigned char *set_buf, unsigned char *buf, int length) 
     return true;
 }
 
-void send_for_Cxx(unsigned char *buf, int length) {
+static void send_for_Cxx(unsigned char *buf, const int length) {
     if (!buf || length < 10) return;
 
     Cxx_res[1] = 0xC0 | (package_num << 3);
@@ -937,7 +937,7 @@ void send_for_Cxx(unsigned char *buf, int length) {
 }
 
 
-unsigned char Dxx_res[] = {
+static unsigned char Dxx_res[] = {
     0x3D, 0xE0, 0x3C, 0x1A, 0x04,
     0x00, 0x75, 0x01, 0x11,
     0x04, 0x04, 0x04, 0xFF,
@@ -951,7 +951,7 @@ static uint8_t res_for_06_num = 0xFF;
 static int last_detect = 0;
 static uint8_t filament_flag_detected = 0;
 
-void send_for_Dxx(unsigned char *buf, const int length) {
+static void send_for_Dxx(const unsigned char *buf, const int length) {
     if (!buf || length < 10) return;
 
     unsigned char filament_flag_on = 0x00;
@@ -975,10 +975,10 @@ void send_for_Dxx(unsigned char *buf, const int length) {
     }
 
     static uint32_t last_ticks[4] = {};
-    uint32_t now_ticks = get_ticks32();
-    uint32_t dt = last_ticks[AMS_num] == 0 ? 0 : (now_ticks - last_ticks[AMS_num]);
+    const uint32_t now_ticks = get_ticks32();
+    const uint32_t dt = last_ticks[AMS_num] == 0 ? 0 : now_ticks - last_ticks[AMS_num];
     last_ticks[AMS_num] = now_ticks;
-    uint32_t time_used = dt > 1000 ? 0 : dt;
+    const uint32_t time_used = dt > 1000 ? 0 : dt;
 
     if (read_num != 0xFF && read_num < 4) {
         process_motion_state_machine(AMS_num, read_num, statu_flags, filament_motion_flag, time_used);
@@ -1060,7 +1060,7 @@ void send_for_Dxx(unsigned char *buf, const int length) {
 }
 
 // ==================== 在线检测（新协议完整注册机制）====================
-unsigned char F00_res[4][29] = {
+static unsigned char F00_res[4][29] = {
     {
         0x3D, 0xC0, 0x1D, 0xB4, 0x05, 0x01, 0x00,
         0x16,
