@@ -23,7 +23,9 @@ import re
 import shutil
 import sys
 
+# 项目根目录（本脚本位于 tools/ 下）
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 固件版本头文件路径，打包时从其中读取 FW_VERSION
 VERSION_H = os.path.join(ROOT, 'src', 'version.h')
 
 # 环境名就是要写进清单的键名，和 version.h 里的 FW_TARGET 一一对应

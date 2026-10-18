@@ -1,8 +1,11 @@
 #include "crc_bus.h"
 
 // 共用表格
+// CRC8 查表：多项式 0x39，共 256 项，由 bus_crc_init() 生成
 static uint8_t  g_crc8_tbl[256]  __attribute__((aligned(4)));
+// CRC16 查表：多项式 0x1021，共 256 项，由 bus_crc_init() 生成
 static uint16_t g_crc16_tbl[256] __attribute__((aligned(4)));
+// 查表初始化标志：0=尚未生成，1=已生成，防止重复计算
 static uint8_t  g_inited = 0;
 
 /**

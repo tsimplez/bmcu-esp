@@ -10,14 +10,19 @@
 extern PCF8575 pcf8575;
 
 // 引脚状态缓存
-static uint16_t pcf8575_pin_states = 0; // 当前引脚状态（16位，对应物理引脚0-15，但注意实际引脚是0-7,10-17）
-static uint16_t pcf8575_pin_modes = 0;  // 引脚模式（0=INPUT, 1=OUTPUT）
-static uint8_t pcf8575_pwm_values[18] = {}; // PWM值缓存（覆盖物理引脚0-17）
-static bool pcf8575_initialized = false; // 初始化状态
+// 16 位输出锁存缓存：bit0..15 对应 PCF8575 的 P0..P15，1=高电平
+static uint16_t pcf8575_pin_states = 0;
+// 16 位引脚模式缓存：0=INPUT，1=OUTPUT，逐位对应 P0..P15
+static uint16_t pcf8575_pin_modes = 0;
+// 各物理引脚最近一次写入的 PWM 占空比；数组覆盖 P0..P17 的虚拟编号
+static uint8_t pcf8575_pwm_values[18] = {};
+// PCF8575 是否已完成初始化；true 时重复调用 PCF8575_init() 直接返回成功
+static bool pcf8575_initialized = false;
 
 #if defined(ARDUINO_ARCH_RP2040)
 // Arduino-Mbed 的全局 Wire 对象没有 setSDA/setSCL；按设置创建一个使用自定义
 // 引脚的 I2C 实例，并把 PCF8575 切换到该实例。设置只在重启后生效。
+// RP2040 专用的 I2C 实例；PCF8575_init() 首次调用时按 PCF_SDA/PCF_SCL 创建
 static arduino::MbedI2C *pcf8575_wire = nullptr;
 #endif
 
@@ -170,7 +175,9 @@ void PCF8575_analogWrite(const uint8_t pin, const uint8_t value) {
     
     // 简单的PWM模拟：根据PWM值设置引脚状态
     // 注意：这是软件模拟的PWM，精度有限
+    // 软件 PWM 上一次推进计数的 millis() 时间
     static uint32_t last_pwm_time = 0;
+    // 软件 PWM 的 0..255 循环计数器，与占空比比较决定高低电平
     static uint8_t pwm_counter = 0;
 
     const uint32_t current_time = millis();

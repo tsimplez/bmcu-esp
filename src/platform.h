@@ -162,9 +162,12 @@ static inline void hal_prepare_gpio() {
 
 // ---------- I2C ----------
 // 从设置加载后使用；未配置时取板级默认值。
+// PCF8575 使用的 I2C SDA 引脚号
 extern int PCF_SDA;
+// PCF8575 使用的 I2C SCL 引脚号
 extern int PCF_SCL;
 // Web 里的 PCF8575 开关：关闭时不初始化 I2C，扩展虚拟引脚也不可选。
+// 0=禁用 PCF8575，1=启用；修改后需重启
 extern int PCF_ENABLE;
 /**
  * 按设置初始化 I2C 总线
@@ -201,6 +204,7 @@ static inline void hal_console_begin() {}
 #endif
 
 // 从持久化设置加载，PIN_BUS_* 仅作为默认值。
+// BambuBus 串口 RX、TX 引脚号；RS485_MODE_RXTX 模式下 DE 不驱动
 extern int BUS_RX, BUS_TX, BUS_DE;
 
 // ---------- 看门狗 / BambuBus 串口 ----------

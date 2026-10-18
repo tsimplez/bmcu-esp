@@ -6,6 +6,7 @@
 // 设置存储管理器 - 存储后端见 platform.cpp（RP2040: 片内Flash / ESP32: NVS）
 // ============================
 
+// BambuBus 自定义序列号的固定长度（不含结尾 NUL）
 #define CUSTOM_SERIAL_LENGTH 15
 
 // 通道状态模式定义
@@ -45,11 +46,11 @@ struct SettingsData {
     int32_t motor_limit;             // 当前格式的同时运行电机上限
     char custom_serial[CUSTOM_SERIAL_LENGTH + 1]; // 自定义序列号（空或 15 位大写字母/数字）
     IoConfig io_config;              // 当前平台的电机/微动引脚配置
-    int32_t pcf_sda;                 // PCF8575 I2C 接线，重启生效
-    int32_t pcf_scl;
-    int32_t bus_rx;
-    int32_t bus_tx;
-    int32_t bus_de;
+    int32_t pcf_sda;                 // PCF8575 I2C SDA 引脚，重启生效
+    int32_t pcf_scl;                 // PCF8575 I2C SCL 引脚，重启生效
+    int32_t bus_rx;                  // BambuBus 串口 RX 引脚
+    int32_t bus_tx;                  // BambuBus 串口 TX 引脚
+    int32_t bus_de;                  // RS485 DE 方向控制引脚；RXTX 模式下不使用
     int32_t pcf_enable;              // Web 里的 PCF8575 开关（0=关 1=开），重启生效
 };
 
@@ -65,10 +66,10 @@ struct SettingsData {
 inline int active_channel_count() { return AMS_COUNT * 4; }
 
 // 默认值定义
-#define DEFAULT_PULLBACK_TIMEOUT    7
+#define DEFAULT_PULLBACK_TIMEOUT    7    // 退料超时默认值（秒）
 constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设置的回退值
-#define DEFAULT_MANUAL_PULSE_MS     300
-#define DEFAULT_AUTO_LOAD_MS        1000
+#define DEFAULT_MANUAL_PULSE_MS     300  // 手动点动默认时长（毫秒）
+#define DEFAULT_AUTO_LOAD_MS        1000 // 微动辅助进料默认时长（毫秒）
 
 // 点动/辅助进料时长上限（毫秒）：只需小于 30 秒
 #define MAX_PULSE_MS                30000
@@ -77,12 +78,12 @@ constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设�
 #define RS485_MODE_RXTX             1   // 只用 RXD/TXD，不驱动 DE（模块自动收发方向）
 #define RS485_MODE_DE               2   // RO/DI/RE/DE 四线，由 PIN_BUS_DE 控制方向（默认）
 #define DEFAULT_RS485_MODE          RS485_MODE_RXTX
-#define DEFAULT_BUS_LOG             1
+#define DEFAULT_BUS_LOG             1   // 默认开启 BambuBus 原始报文日志
 
 // OTA 更新源
-#define OTA_URL_MAX                 128
-#define DEFAULT_OTA_URL             "https://tuanzisimple.github.io/bmcu-esp"
-#define DEFAULT_OTA_NOTIFY          1
+#define OTA_URL_MAX                 128 // OTA 更新源地址缓冲区长度，包含结尾 NUL
+#define DEFAULT_OTA_URL             "https://tuanzisimple.github.io/bmcu-esp" // 默认 OTA 发布目录
+#define DEFAULT_OTA_NOTIFY          1   // 默认进入页面时自动检查更新
 
 // 初始化设置存储（在setup中调用）
 void settings_storage_init();

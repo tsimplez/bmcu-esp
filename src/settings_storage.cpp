@@ -5,18 +5,31 @@
 // ============================
 // 运行期设置变量（初值为默认值，启动时由 settings_storage_init() 覆盖）
 // ============================
+// 各通道退料动作超时时间，单位秒；打印机请求退料时用作电机限时停止保护
 int PULLBACK_TIMEOUT[16] = {7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
+// 各通道工作模式：0=离线，1=在线，2=自动（按微动开关触发辅助进料）
 int CHANNEL_MODE[16] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+// 启用的 AMS 数量（1-4），每个 AMS 固定对应 4 个耗材通道
 int AMS_COUNT = DEFAULT_AMS_COUNT;
+// Web 手动进退料按钮的默认点动时长，单位毫秒
 int MANUAL_PULSE_MS = DEFAULT_MANUAL_PULSE_MS;
+// 微动由无料变有料后的辅助进料时长，单位毫秒；0 表示关闭
 int AUTO_LOAD_MS = DEFAULT_AUTO_LOAD_MS;
+// 允许同时运行的电机数量上限，运行时由设置加载值限制到 active_channel_count()
 int MOTOR_LIMIT = 1;
+// BambuBus 的 RS485 收发模式：RS485_MODE_RXTX 或 RS485_MODE_DE
 int RS485_MODE = DEFAULT_RS485_MODE;
+// 是否把 BambuBus 原始收发报文写入总线日志（0=关，1=开）
 int BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
+// BambuBus 自定义序列号；空串表示按芯片 ID 自动生成
 char CUSTOM_SERIAL[CUSTOM_SERIAL_LENGTH + 1] = {};
+// OTA 固件发布目录，设备会读取该目录下的 manifest.json
 char OTA_URL[OTA_URL_MAX] = DEFAULT_OTA_URL;
+// 打开网页时是否自动检查 OTA 更新（0=关，1=开）
 int OTA_NOTIFY = DEFAULT_OTA_NOTIFY;
+// 各通道电机引脚和微动开关引脚的当前映射
 IoConfig IO_CONFIG = {};
+// BambuBus 串口 RX/TX 和 RS485 DE 引脚；启动时从设置加载
 int BUS_RX = PIN_BUS_RX, BUS_TX = PIN_BUS_TX, BUS_DE = PIN_BUS_DE;
 
 /**
@@ -27,7 +40,9 @@ static void bus_defaults() {
     BUS_RX = PIN_BUS_RX; BUS_TX = PIN_BUS_TX; BUS_DE = PIN_BUS_DE;
 }
 
+// PCF8575 使用的 I2C SDA 引脚，修改后需重启生效
 int PCF_SDA = PIN_I2C_SDA;
+// PCF8575 使用的 I2C SCL 引脚，修改后需重启生效
 int PCF_SCL = PIN_I2C_SCL;
 // Web 里的 PCF8575 开关：默认关闭，只用主控直连 GPIO；打开后通道可改用扩展脚。
 int PCF_ENABLE = 0;

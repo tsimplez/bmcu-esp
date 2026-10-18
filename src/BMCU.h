@@ -57,12 +57,12 @@ extern float as5600_speed[4];
 
     enum MotorSource { MOTOR_IDLE, MOTOR_PRINTER, MOTOR_MANUAL, MOTOR_AUTOLOAD };
     struct MotorStatus {
-        int direction;
-        MotorSource source;
+        int direction;         // 当前方向：1=进料，-1=退料，0=停止
+        MotorSource source;    // 当前动作来源：打印机、手动点动或微动辅助进料
         int32_t remaining_ms; // -1 表示结束时间由打印机决定
         bool blocked;         // 等待打印机结束当前动作，防止停止后重复启动
         int queue_position;    // 0=未排队，1=下一个执行
-        int queued_direction;
+        int queued_direction;  // 排队任务的点动方向：1=进料，-1=退料，0=无排队任务
     };
     bool motorCmd(int motorNum, int cmd, MotorSource source = MOTOR_PRINTER, uint32_t duration_ms = 0);
     MotorStatus BMCU_motor_status(int motorNum);

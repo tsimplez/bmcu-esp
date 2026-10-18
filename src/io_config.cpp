@@ -64,9 +64,11 @@ static bool is_real_gpio(int pin) {
  * 按 platform.h 中的电机和微动默认映射初始化所有通道。
  */
 void io_config_set_defaults(IoConfig &config) {
+    // 各通道 [进料, 退料] 的板级默认引脚
     static const int default_motor[IO_CONFIG_MAX_CHANNELS][2] = {
         MOTOR_PINS_1_4,MOTOR_PINS_5_8,MOTOR_PINS_9_12,MOTOR_PINS_13_16
     };
+    // 各通道微动开关的板级默认引脚
     static const int default_switch[IO_CONFIG_MAX_CHANNELS] = {MSW_PINS_1_4, MSW_PINS_5_8,MSW_PINS_9_12,MSW_PINS_13_16};
 
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {

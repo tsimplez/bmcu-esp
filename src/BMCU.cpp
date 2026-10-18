@@ -31,50 +31,86 @@
 
 // PCF8575地址
 #define PCF8575_ADDR 0x20
+// PCF8575 扩展 IO 对象；仅当 Web 开关启用时由 PCF8575_init() 初始化总线
 PCF8575 pcf8575(PCF8575_ADDR);
 
 // AS5600模拟变量
+// 各通道当前模拟角度（0..4095，对应一圈 4096 个计数）
 int16_t as5600_current_angle[4] = {0, 0, 0, 0};  // 当前角度值
+// 各通道上一次计算速度时的角度，用于求角度差
 int16_t as5600_last_angle[4] = {0, 0, 0, 0};     // 上一次角度值
+// 各通道上一次计算速度时的 millis() 时间戳
 uint32_t as5600_last_time[4] = {0, 0, 0, 0};     // 上一次时间戳
+// 各通道最近一次估算的线速度，单位 mm/s
 float as5600_speed[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // 速度值
 
 // 微动开关引脚
 constexpr int switchPin = PIN_SWITCH;   // 微动开关引脚
 
 // 全局变量
+// 旧版开关切换去抖时间；当前代码保留字段但未参与判断
 static uint32_t last_toggle_time = 0;      // 上次切换时间
+// AS5600 模拟层是否已初始化；AS5600_init() 成功后置为 true
 static bool if_as5600_init = false;        // AS5600初始化状态
+// 上一轮运动逻辑处理的耗材通道号；-1 表示尚未建立基线
 static int last_num = -1;                  // 上次耗材编号
+// 耗材通道号最近一次变化的时间，用于切换后的 100ms 运动稳定期
 static unsigned long last_num_change_time = 0; // 上次耗材变化时间
+// 当前是否允许执行运动；通道切换后的 SERVO_DELAY 内为 false
 static bool execute_motion = true;         // 是否执行运动
+// 旧版运动状态缓存；当前代码保留字段但未读取
 static bool last_execute_motion = false;   // 上次运动状态
+// 旧版最近命令缓存；当前代码保留字段但未读取
 static int last_cmd = BambuBus_package_ERROR;  // 上次命令
+// 旧版耗材编号缓存；当前代码保留字段但未读取
 static int last_filament_num = 255;        // 上次耗材编号
+// 旧版耗材长度平滑缓存；初始化后当前逻辑未再读写
 static float last_meters[max_filament_num];    // 上次耗材长度
+// 各通道开始退料动作时的耗材长度快照，供 act_pull_mm/act_send_mm 计算行程
 static float last_pullback_meters[max_filament_num]; // 上次退料长度
+// 各通道上一轮动作状态，用于识别 need_pull_back 的上升沿并只启动一次退料
 static _filament_motion_state_set last_action[max_filament_num]; // 上次动作
+// 当前选中的耗材通道在本轮要执行的动作状态
 static _filament_motion_state_set act;     // 当前动作状态
+// BambuBus 协议状态机总开关；为 false 时 BMCU_run() 不轮询总线
 static bool ams_enable = true;             // AMS使能
+// act_send_mm/act_pull_mm 兼容动作的目标行程（米）；当前固定为 0
 static float target = 0;                   // 目标值
+// AS5600 模拟接口使能；关闭后角度、速度、在线状态都返回无效值
 static bool enable_as5600 = true;          // AS5600使能
+// 旧版距离累计值；当前代码保留字段但未参与距离计算
 static int32_t now_distance = 0;           // 当前距离
 // 所有电机调用均在 Arduino loop 中串行执行（包括 Web 和总线处理），不在 ISR 中驱动。
 // 同一入口完成检查、占位和 GPIO 操作，任何来源都不能绕过并发上限。
 struct MotorRun {
+    // 当前运动方向：1=进料，-1=退料，0=停止
     int direction = 0;
+    // 本次动作来源，决定互锁优先级和停止方式
     MotorSource source = MOTOR_IDLE;
+    // 限时动作的截止 millis() 时间；仅 timed 为 true 时有效
     uint32_t end = 0;
+    // 是否为限时动作；false 表示由打印机状态机持续控制
     bool timed = false;
 };
+// 各通道当前电机运行记录，是电机并发限制和状态查询的唯一运行期来源
 static MotorRun motor_run[IO_CONFIG_MAX_CHANNELS];
+// 各通道是否被打印机动作阻断；收到打印机 idle 或总线恢复后才解除
 static bool printer_blocked[IO_CONFIG_MAX_CHANNELS] = {};
 // 打印机总线在超过超时窗口后，禁止新的打印机动作，直到收到合法新帧。
 static bool printer_bus_fault = false;
 namespace {
-    struct MotorJob { int channel, direction; uint32_t duration; };
+    struct MotorJob {
+        // 目标通道号
+        int channel;
+        // 点动方向：1=进料，-1=退料
+        int direction;
+        // 点动持续时长（毫秒）
+        uint32_t duration;
+    };
 }
+// 等待启动的手动点动任务，按提交顺序执行
 static MotorJob manual_queue[IO_CONFIG_MAX_CHANNELS];
+// 手动队列中当前有效的任务数量
 static int manual_queued = 0;
 
 /**
@@ -127,20 +163,28 @@ static void run_manual_queue() {
 }
 
 // 随机数生成器（用于模拟传感器数据）
+// 固定种子的随机数生成器，保证每次上电的模拟距离抖动可复现
 std::mt19937 generator(12345);
+// 模拟距离抖动的正态分布，均值 0、标准差约 0.00083
 static std::normal_distribution<> distribution(0.0f, 0.00083f);
+// 上一次生成模拟距离的 millis() 时间，用于按时间增量累计距离
 static uint32_t as5600_distance_last_ms = 0;
 
 // 微动开关状态
+// 旧版总微动开关的当前电平；LOW 表示触发
 static int switchState = 0;                // 当前开关状态
+// 旧版总微动开关的上一轮电平，用于检测 LOW 上升沿
 static int lastSwitchState = 0;            // 上次开关状态
 
 // 微动辅助进料状态（无料→有料边沿触发，限时进料）
 static int8_t   msw_prev[IO_CONFIG_MAX_CHANNELS];                  // 已确认的微动状态：-1 未知 0 无料 1 有料
+// 各通道防抖前的微动原始状态：-1 未知 0 无料 1 有料
 static int8_t   msw_raw[IO_CONFIG_MAX_CHANNELS];                   // 原始微动状态（防抖前）
+// 各通道原始微动状态最近一次变化的 millis() 时间
 static uint32_t msw_raw_time[IO_CONFIG_MAX_CHANNELS];              // 原始状态最后变化时刻
 
 // 电机对象数组；具体引脚由设置加载后在 BMCU_init()/BMCU_apply_io_config() 绑定。
+// 16 个通道的 Motor 实例，负责实际的 GPIO/PWM 输出
 static Motor motors[IO_CONFIG_MAX_CHANNELS];
 
 /**
@@ -176,7 +220,9 @@ void init_io_pins() {
  * 对比新旧配置，先停止并释放变更通道，再绑定新引脚；未变化通道保持运行状态。
  */
 void BMCU_apply_io_config() {
+    // 上一次已应用到硬件的引脚配置，用与 IO_CONFIG 比较找出变更通道
     static IoConfig applied_io = {};
+    // 上一次已应用的启用通道数，用于识别通道增减
     static int applied_channels = 0;
     const int channels = active_channel_count();
     bool changed[IO_CONFIG_MAX_CHANNELS] = {};
@@ -706,6 +752,7 @@ void BMCU_run() {
         LOG_MAIN("[bus] 收到合法打印机帧，总线恢复，允许新的打印机动作");
     }
     float d = AS5600_get_distance_E();
+    // 上一轮看到的当前耗材通道号；255 表示尚未初始化
     static int now_f = 255;
     int x = get_now_filament_num();
     for (int i = 0; i < active_channel_count(); i++) {

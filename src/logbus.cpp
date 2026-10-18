@@ -30,20 +30,27 @@ static portMUX_TYPE log_mux = portMUX_INITIALIZER_UNLOCKED;
 namespace {
     template <uint32_t N>
     struct LogRing {
+        // 固定容量环形缓冲区，写入到达末尾后从头覆盖最旧数据
         char buf[N];
         volatile uint32_t total;  // 累计写入字节数（单调递增，即读游标）
         volatile uint32_t floor;  // 清空后允许读到的最小游标
     };
 }
 
+// 主板日志环形缓冲：记录业务日志，容量由 LOG_SIZE_MAIN 决定
 static LogRing<LOG_SIZE_MAIN> ring_main;
+// 总线日志环形缓冲：记录 BambuBus 原始收发报文，容量由 LOG_SIZE_BUS 决定
 static LogRing<LOG_SIZE_BUS>  ring_bus;
 
 namespace {
     struct RingRef {
+        // 指向目标日志环形缓冲区的数据区
         char *buf;
+        // 环形缓冲区容量（字节）
         uint32_t cap;
+        // 指向该通道单调递增的累计写游标
         volatile uint32_t *total;
+        // 指向清空后允许读取的最小游标
         volatile uint32_t *floor;
     };
 }
@@ -159,6 +166,7 @@ size_t logbus_read(const int ch, uint32_t *seq, char *out, size_t maxlen) {
     if (s > total) s = total;  // 日志被清空过，游标回退
 
     if (s < oldest) {  // 用户太久没来取，中间已被覆盖
+        // 游标落后超过缓冲区容量时，返回给网页的提示文本
         static constexpr char mark[] = "[... 较早日志已滚动丢弃 ...]\n";
         size_t ml = sizeof(mark) - 1;
         if (ml > maxlen - 1) ml = maxlen - 1;
@@ -271,6 +279,7 @@ static char *fmt_i32(char *p, int32_t v) {
  * 每行最多 24 字节，行首携带时间戳、类型和收发标记，便于网页按类型过滤。
  */
 void logbus_hex_typed(const int ch, const char tag, const int type, const uint8_t *data, const uint16_t len) {
+    // 十六进制字符表，避免每次转换都调用格式化函数
     static constexpr char hexd[] = "0123456789ABCDEF";
     char line[128];
     uint16_t i = 0;

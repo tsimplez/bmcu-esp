@@ -358,6 +358,7 @@ const esc=(s)=>{
   const d = document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
 
 // ---------- 标签页 ----------
+// 当前显示的标签页名称：status/wifi/settings/update/logs
 let TAB = 'status';
 /**
  * 切换页面标签页
@@ -387,6 +388,7 @@ const fmtUptime=(s)=>{
 }
 /* 固件里的编译时间是 __DATE__ " " __TIME__，形如 "Sep 26 2026 03:27:29"
    （个位数日期会有两个空格），这里统一显示成 yyyy-MM-dd HH:mm:ss */
+// 英文月份缩写到两位数字月份的映射，供 fmtBuild() 解析固件编译时间
 const MONTHS = {
   Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06',
   Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12'
@@ -403,10 +405,17 @@ const fmtBuild=(s)=>{
   if(!m||!MONTHS[m[1]]) return s||'-'
   return m[3]+'-'+MONTHS[m[1]]+'-'+('0'+m[2]).slice(-2)+' '+m[4]
 }
-let statusPending=false,statusAt=0
+// 是否已有状态请求在途，防止 1 秒轮询叠加请求
+let statusPending=false
+// 最近一次状态请求成功时的 performance.now() 时间；0 表示设备离线
+let statusAt=0
+// mDNS 输入框是否已从设备状态初始化，避免轮询覆盖用户正在输入的内容
 let mdnsLoaded=false
+// 最近一次 /api/status 返回的完整状态对象
 let S;
+// 本次页面加载是否已自动检查过 OTA，避免每轮状态刷新都请求服务器
 let otaAutoTried;
+// 最近一次检查到的可用更新信息；null 表示没有可更新版本
 let gOtaLatest;
 /**
  * 拉取并刷新设备运行状态
@@ -464,6 +473,7 @@ const refreshStatus=()=>{
 }
 
 // 只记录正在发送的请求；运行状态和并发限制以固件为准
+// 按通道记录正在发送的手动电机命令方向，避免重复点击；0 表示停止请求
 const motorPending={},CH_STATUS_NAMES=['离线','在线','自动'];
 // 通道模式是“自动”时，把该通道微动开关状态显示成 自动(有料) / 自动(无料)，随状态轮询实时刷新
 /**
@@ -593,6 +603,7 @@ const saveMdns=async()=>{
     toast(e.message||'mDNS 名称保存失败',6000)
   }finally{el.disabled=false}
 }
+// 配网时提前打开的新标签页，设备切换网络成功后用它跳转到新地址
 let handoffWin = null;
 /**
  * 保存 WiFi 凭据并触发配网
@@ -626,6 +637,7 @@ const saveWifi=()=>{
    AP 断开 -> 手机/电脑自动切回原网络 -> 这里轮询新地址。
    必须先在后台确认能连上再跳，直接跳失败浏览器只会给个错误页，本页也就废了。
    跳转走的是点击时预留的新标签页，所以本页（192.168.4.1）原样保留。 */
+// 等待设备在路由器网段恢复响应的轮询定时器
 let handoffTimer = null;
 /**
  * 等待设备切换 WiFi 并跳转到新地址
@@ -682,7 +694,16 @@ const startHandoff=(ip)=>{
 const doForget=()=>api('/api/forget',{method:'POST'}).then(t=>toast(JSON.parse(t).msg,6000))
 
 // ---------- BambuBus 接线 ----------
-let BUS_MODE=1, BUS_USES={}, BUS_READY=false, BUS_SAVING=false, BUS_APPLIED={}
+// 当前 RS485 模式：1=仅 RXD/TXD，2=使用 DE 方向控制
+let BUS_MODE=1
+// 总线引脚占用表：pin -> [使用该引脚的通道/功能标签]
+let BUS_USES={}
+// 是否已成功读取总线配置，未就绪时禁用保存
+let BUS_READY=false
+// 总线配置是否正在保存，保存期间禁止重复提交
+let BUS_SAVING=false
+// 设备当前已生效的总线引脚映射，用于检测未保存修改
+let BUS_APPLIED={}
 /**
  * 选择 RS485 接线模式
  * @param {number} mode 1 表示仅 RXD/TXD，2 表示带 DE 方向控制
@@ -770,7 +791,14 @@ const saveBus=async()=>{
 }
 
 // ---------- PCF8575 开关与接线 ----------
-let PCF_USES={}, PCF_ENABLED=false, PCF_DEV_ENABLED=false, PCF_SAVING=false
+// PCF8575 引脚占用表：pin -> [使用该引脚的通道/功能标签]
+let PCF_USES={}
+// 页面草稿中的 PCF8575 启用开关
+let PCF_ENABLED=false
+// 设备当前已生效的 PCF8575 启用状态
+let PCF_DEV_ENABLED=false
+// PCF8575 配置是否正在保存
+let PCF_SAVING=false
 /**
  * 切换 PCF8575 启用状态
  * @param {boolean|number} v 是否启用
@@ -861,7 +889,14 @@ const savePcf=async()=>{
   }
 }
 // ---------- 通道与设置 ----------
-let IO_PIN_OPTIONS = [], IO_CHANNELS = 0, IO_DRAFT = null, IO_DIRTY = false;
+// 引脚下拉框可选项，元素格式为 {id, label, ...}
+let IO_PIN_OPTIONS = []
+// 当前启用通道数（AMS_COUNT × 4）
+let IO_CHANNELS = 0
+// 通道引脚配置的页面草稿，保存前不写回设备
+let IO_DRAFT = null
+// 草稿是否有未保存修改；有修改时切换标签页不重新加载
+let IO_DIRTY = false;
 /**
  * 创建一个引脚选择下拉框
  * @param {string} id 控件 ID
@@ -1302,6 +1337,7 @@ const doReboot=()=>{if(confirm('确定重启设备？')) api('/api/reboot').then
 const doFactory=()=>{if(confirm('确定恢复出厂设置？WiFi 凭据也会被清空。')) api('/api/factory',{method:'POST'}).then((t)=>{toast(JSON.parse(t).msg,6000);});}
 
 // ---------- 日志 ----------
+// BambuBus 日志类型定义：type 与固件 package_type 对应，color 用于高亮
 const BUS_LOG_TYPES = [
   {type: 0, label: 'filament_motion_short 短包动作', color: '#67e8f9'},
   {type: 1, label: 'filament_motion_long 长包动作', color: '#2dd4bf'},
@@ -1318,14 +1354,23 @@ const BUS_LOG_TYPES = [
   {type: 12, label: 'set_filament_type2 长包设置耗材', color: '#fda4af'},
   {type: -1, label: 'unknown 未知/未关联', color: '#94a3b8'}
 ];
+// 类型编号到日志颜色的快速索引
 const busLogColors = Object.fromEntries(BUS_LOG_TYPES.map(item=>[item.type,item.color]));
+// 各日志类型是否显示；键为类型编号，false 表示隐藏
 const busLogFilters = {};
+// 日志筛选条件在 localStorage 中的键名
 const busLogFilterStorage = 'bmcu-bus-log-filters';
+// 两路日志的增量拉取状态：[0]=主板日志，[1]=BambuBus 总线日志
+// seq=已读服务端序号，el=输出节点，paused=是否暂停，txt=已拼接文本，
+// records=结构化总线记录，pending=未成行的半截文本，rawBytes=已接收原始字节数
 const LOGS = [
   {seq: 0, el: null, paused: false, txt: ''},
   {seq: 0, el: null, paused: false, txt: '', records: [], pending: '', rawBytes: 0}
 ];
-let activeLog = 0, paused = false;
+// 当前日志页签：0=主板日志，1=总线日志
+let activeLog = 0
+// 当前日志视图是否暂停自动滚动/拉取
+let paused = false;
 /**
  * 判断日志类型是否已定义
  * @param {number} type 日志类型编号
@@ -1480,11 +1525,18 @@ const clearLog=()=>{
 const downloadLog=()=>window.open('/api/log?ch='+activeLog+'&seq=0&dl=1','_blank')
 
 // ---------- BambuBus 报文抓取：抓未来 10 秒的数据，抓完下载 ----------
-const BUS_CAPTURE_MS=30000         // 抓取时长
-const BUS_CAPTURE_STEP=200         // 轮询间隔（毫秒）
-const BUS_CAPTURE_CHUNK=16384      // 服务端单次拉取上限，拿满说明还有积压，立刻续拉
-const BUS_CAPTURE_SYNC=4294967295  // 大于写游标的序号：只同步游标，不取数据
-let busCapture=null, busCaptureBusy=false
+// 单次抓取的持续时间（毫秒）
+const BUS_CAPTURE_MS=30000
+// 无积压时的轮询间隔（毫秒）
+const BUS_CAPTURE_STEP=200
+// 服务端单次拉取上限；拿满说明还有积压，立即继续拉取
+const BUS_CAPTURE_CHUNK=16384
+// 大于写游标的伪序号：只同步游标，不返回旧数据
+const BUS_CAPTURE_SYNC=4294967295
+// 当前抓取任务对象；null 表示未抓取
+let busCapture=null
+// 是否正在同步抓取起点，防止重复启动
+let busCaptureBusy=false
 // 用一个超前序号让服务端把游标退回当前写入位置，保证只抓点击之后的数据
 /**
  * 同步 BambuBus 日志抓取起点
@@ -1645,6 +1697,7 @@ for(let i=0; i<navBtns.length; i++){
   navBtns[i].onclick=e=>showTab(e.currentTarget.dataset.tab)
 }
 S = {};
+// 从 localStorage 恢复上次停留的标签页
 let savedTab = 'status';
 try{savedTab=localStorage.getItem('bmcu-tab')||'status';}catch(e){}
 initBusLogFilters()

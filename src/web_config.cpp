@@ -28,17 +28,27 @@
 #define STA_TIMEOUT_MS  15000      // 连接路由器超时（毫秒）
 #define LOG_PULL_MAX    16384      // 单次拉取日志的最大字节数
 
+// ESP32 内置 HTTP 服务器，监听 80 端口并提供状态、设置、日志和 OTA 接口
 static WebServer   server(80);
+// 配网热点模式下的 DNS 服务，把所有域名解析到设备自身以触发配置页
 static DNSServer   dns;
+// NVS 访问对象，保存 STA 的 SSID、密码和 mDNS 名称
 static Preferences wprefs;
 
 enum { ST_IDLE = 0, ST_CONNECTING };
+// WiFi 连接状态：ST_IDLE=空闲/已连接，ST_CONNECTING=正在连接保存的路由器
 static int      wifi_state = ST_IDLE;
+// 本次 STA 连接的超时截止时间（millis），超过后启动配网热点
 static uint32_t connect_deadline = 0;
+// 当前是否运行在 AP 配网模式
 static bool     ap_mode = false;
+// 已保存的路由器 SSID（最多 63 个可见字符 + NUL）
 static char     sta_ssid[64] = {};
+// 已保存的路由器密码
 static char     sta_pass[64] = {};
+// 当前 mDNS 主机名（不含 .local 后缀）
 static char     mdns_name[MDNS_NAME_MAX + 1] = DEFAULT_MDNS_NAME;
+// 根据芯片 ID 生成的配网热点名，例如 BMCU_1A2B3C
 static char     ap_ssid[16] = {};
 
 // ============================================================
@@ -842,6 +852,7 @@ static void handle_log() {
 
     uint32_t seq = server.hasArg("seq") ? strtoul(server.arg("seq").c_str(), nullptr, 10) : 0;
 
+    // 日志响应复用缓冲区；容量在单次拉取上限外留出格式化余量
     static char buf[LOG_PULL_MAX + 64];
     logbus_read(ch, &seq, buf, sizeof(buf));
 
@@ -885,10 +896,15 @@ static void handle_factory_reset() {
 // ============================================================
 // OTA：在线检查/更新 + 本地上传
 // ============================================================
-static String g_ota_url;    // 从 manifest 里取到的固件下载地址
-static String g_ota_md5;    // 可选的 md5
-static String g_ota_ver;    // 服务器上的版本号
-static String g_ota_notes;  // 更新说明
+// 从 manifest 解析出的固件下载地址；为空表示当前没有可用更新
+static String g_ota_url;
+// manifest 中固件的 32 位 MD5；下载时交给 Update.setMD5() 校验
+static String g_ota_md5;
+// 服务器清单中的版本号，用于和 FW_VERSION 比较
+static String g_ota_ver;
+// 服务器清单中的更新说明，展示在网页更新卡片
+static String g_ota_notes;
+// 固件声明的字节数；0 表示清单未提供，下载时跳过长度比对
 static size_t g_ota_size = 0;
 
 /**
@@ -1404,7 +1420,9 @@ static void handle_ota_pull() {
 }
 
 // ---- 本地升级：浏览器直接传 .bin ----
+// 本次浏览器上传是否已失败；开始新上传时清零
 static bool  ota_up_failed = false;
+// 本地升级失败原因，用于日志和返回给网页的错误提示
 static String ota_up_err;
 
 /**

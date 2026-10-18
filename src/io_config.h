@@ -6,8 +6,8 @@
 #define IO_CONFIG_MAX_CHANNELS 16
 
 struct IoConfig {
-    int32_t motor[IO_CONFIG_MAX_CHANNELS][2]; // [通道][进料/退料]
-    int32_t microswitch[IO_CONFIG_MAX_CHANNELS];
+    int32_t motor[IO_CONFIG_MAX_CHANNELS][2]; // [通道][0=进料引脚, 1=退料引脚]，PIN_NONE 表示未配置
+    int32_t microswitch[IO_CONFIG_MAX_CHANNELS]; // 各通道微动开关引脚，PIN_NONE 表示无输入
 };
 
 // 生成当前平台的固件默认映射。
