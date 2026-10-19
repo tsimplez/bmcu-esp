@@ -13,8 +13,8 @@ struct IoConfig {
 // 生成当前平台的固件默认映射。
 void io_config_set_defaults(IoConfig &config);
 
-// 切换 PCF8575 开关时清空在新状态下不可用的引脚，返回清掉的引脚数。
-int io_config_clear_invalid_pins(IoConfig &config, bool pcf_enable, int sda, int scl);
+// 切换 I2C 总线状态时清空在新状态下不可用的引脚，返回清掉的引脚数。
+int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda, int scl);
 
 // 判断某个引脚是否可以出现在网页的选择列表中。
 bool io_config_pin_available(int pin, bool allow_none = false);

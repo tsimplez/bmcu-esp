@@ -41,7 +41,7 @@
   // GPIO21  排针09 可用 U0TXD            -                UART0，接板载USB转TTL（日志口，921600）
 
   // ---------- 引脚方案：默认 4 通道直连 GPIO ----------
-  // 是否再挂 PCF8575 由 Web 开关决定（见 PCF_ENABLE），固件不预置扩展脚映射。
+  // 是否再挂 PCF8575/温湿度模块由 Web 的 I2C 总线配置决定，固件不预置扩展脚映射。
   // 18 个可引出 IO 里，14-17 给外置 Flash、11 不烧 eFuse 用不了，本方案实际用 15 个：
   //   电机1  IO0  / IO1  微动1  IO2   (strapping：复位瞬间不能为低)
   //   电机2  IO12 / IO13 微动2  IO3
@@ -71,7 +71,7 @@
   #define PIN_BUS_DE       9
 
   // 4 通道直连 GPIO；扩展芯片的通道接线在 Web 里按 AMS 数量配置。
-  #define PIN_I2C_SDA       4  // 启用 PCF8575 时的默认 I2C 接线，Web 里可改
+  #define PIN_I2C_SDA       4  // 旧版默认 I2C SDA；当前默认不启用，可在 Web 中配置
   #define PIN_I2C_SCL       5
   #define MOTOR_PINS_1_4    {0, 1}, {12, 13}, {10, 6}, {7, 8}
   #define MSW_PINS_1_4      2, 3, 4, 5
@@ -161,26 +161,11 @@ static inline void hal_prepare_gpio() {
 }
 
 // ---------- I2C ----------
-// 从设置加载后使用；未配置时取板级默认值。
-// PCF8575 使用的 I2C SDA 引脚号
+// 从设置加载后使用；两个引脚都有效时 I2C 总线才启用。
+// I2C 总线 SDA 引脚号（PCF8575/温湿度模块共用）
 extern int PCF_SDA;
-// PCF8575 使用的 I2C SCL 引脚号
+// I2C 总线 SCL 引脚号（PCF8575/温湿度模块共用）
 extern int PCF_SCL;
-// Web 里的 PCF8575 开关：关闭时不初始化 I2C，扩展虚拟引脚也不可选。
-// 0=禁用 PCF8575，1=启用；修改后需重启
-extern int PCF_ENABLE;
-/**
- * 按设置初始化 I2C 总线
- * 仅在 Web 开关启用 PCF8575 时初始化 Wire，并设置 400kHz 时钟。
- */
-static void hal_i2c_begin() {
-    if (!PCF_ENABLE) return;  // 未启用 PCF8575 时不占用 I2C 引脚
-#if defined(ARDUINO_ARCH_ESP32)
-    Wire.begin(PCF_SDA, PCF_SCL);
-    Wire.setClock(400000);
-#else
-#endif
-}
 
 // ---------- 控制台串口 ----------
 // Arduino-ESP32 只在「USB CDC 上电启动」（ARDUINO_USB_CDC_ON_BOOT）时才自己调用

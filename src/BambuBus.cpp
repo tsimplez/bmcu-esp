@@ -5,6 +5,7 @@
 #include "CRC8.h"
 #include "settings_storage.h"  // 用于访问AMS_COUNT设置
 #include "logbus.h"
+#include "env_sensor.h"
 
 #if defined(ARDUINO_ARCH_RP2040)
 #include <hardware/sync.h>
@@ -1328,7 +1329,7 @@ static void send_for_Cxx(unsigned char *buf, const int length) {
  */
 static unsigned char Dxx_res[] = {
     0x3D, 0xE0, 0x3C, 0x1A, 0x04,
-    0x00, 0x75, 0x01, 0x11,
+    0x00, 0x75, 0x01, 0x11,  // [6..7]=温度 0.1℃ 小端（默认 37.3℃），[8]=湿度 %（默认 17%）
     0x04, 0x04, 0x04, 0xFF,
     0x00, 0x00, 0x00, 0x00,
     C_test 0x00, 0x00, 0x00, 0x00,
@@ -1449,6 +1450,29 @@ static void send_for_Dxx(const unsigned char *buf, const int length) {
             Dxx_res[20] = filament_flag_detected;
         }
         last_detect--;
+    }
+
+    // AHT20 有效时把温湿度写入 AMS 长包回复；无效或未检测时恢复固定默认值，
+    // 避免把上一次的旧读数继续发给打印机。
+    Dxx_res[6] = 0x75;
+    Dxx_res[7] = 0x01;
+    Dxx_res[8] = 0x11;
+    float aht_temperature = 0.0f;
+    float aht_humidity = 0.0f;
+    if (env_sensor_get_aht20(&aht_temperature, &aht_humidity)) {
+        if (aht_temperature < -40.0f) aht_temperature = -40.0f;
+        if (aht_temperature > 125.0f) aht_temperature = 125.0f;
+        if (aht_humidity < 0.0f) aht_humidity = 0.0f;
+        if (aht_humidity > 100.0f) aht_humidity = 100.0f;
+
+        const int32_t temperature_tenths = static_cast<int32_t>(
+            aht_temperature >= 0.0f ? aht_temperature * 10.0f + 0.5f
+                                    : aht_temperature * 10.0f - 0.5f);
+        const uint16_t temperature_raw = static_cast<uint16_t>(static_cast<int16_t>(temperature_tenths));
+        const int32_t humidity_percent = static_cast<int32_t>(aht_humidity + 0.5f);
+        Dxx_res[6] = static_cast<unsigned char>(temperature_raw & 0xFF);
+        Dxx_res[7] = static_cast<unsigned char>(temperature_raw >> 8);
+        Dxx_res[8] = static_cast<unsigned char>(humidity_percent);
     }
 
     package_send_with_crc(Dxx_res, sizeof(Dxx_res));

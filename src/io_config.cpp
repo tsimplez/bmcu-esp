@@ -2,6 +2,7 @@
 #include "platform.h"
 #include "settings_storage.h"
 #include "PCF8575_PinMap.h"
+#include "i2c_bus.h"
 
 // 是否是预留引脚
 /**
@@ -78,46 +79,46 @@ void io_config_set_defaults(IoConfig &config) {
     }
 }
 
-// 该引脚在切换 PCF8575 开关后是否还能用：启用后 SDA/SCL 不能再用作通道引脚，
-// 关闭后扩展虚拟引脚不再存在。
+// 该引脚在 I2C 总线状态变化后是否还能用：配置后 SDA/SCL 不能再用作通道引脚，
+// 未配置时扩展虚拟引脚不再存在。
 /**
- * 判断引脚在 PCF8575 状态切换后是否失效
+ * 判断引脚在 I2C 总线状态切换后是否失效
  * @param pin 引脚号
- * @param pcf_enable 切换后的 PCF8575 开关状态
+ * @param i2c_configured 切换后的 I2C 总线是否启用
  * @param sda I2C SDA 引脚
  * @param scl I2C SCL 引脚
  * @return true 表示该引脚不再可用
- * 启用 PCF 时 SDA/SCL 不能再作通道脚；关闭时扩展虚拟引脚全部失效。
+ * 启用 I2C 时 SDA/SCL 不能再作通道脚；关闭时扩展虚拟引脚全部失效。
  */
-static bool pin_invalid_after_switch(int pin, bool pcf_enable, int sda, int scl) {
+static bool pin_invalid_after_switch(int pin, bool i2c_configured, int sda, int scl) {
     if (pin == PIN_NONE) return false;
-    if (!pcf_enable) return IS_PCF8575_VIRTUAL_PIN(pin);
+    if (!i2c_configured) return IS_PCF8575_VIRTUAL_PIN(pin);
     return pin == sda || pin == scl;
 }
 
-// 切换 PCF8575 开关时只清掉不再合法的引脚，其余接线原样保留，避免覆盖用户已接线。
+// 切换 I2C 总线配置时只清掉不再合法的引脚，其余接线原样保留，避免覆盖用户已接线。
 // 电机是一对，任一脚被占用就整对清掉；清成 PIN_NONE(无) 表示该通道待配置。
 // 返回清掉的引脚数量，供日志使用。
 /**
  * 清理切换后失效的通道引脚
  * @param config 待清理的 IO 配置
- * @param pcf_enable PCF8575 开关状态
+ * @param i2c_configured I2C 总线是否启用
  * @param sda I2C SDA 引脚
  * @param scl I2C SCL 引脚
  * @return 被清空的引脚数量
  * 电机任一脚失效就整对清成 PIN_NONE，微动脚单独清理，其余接线保持不变。
  */
-int io_config_clear_invalid_pins(IoConfig &config, bool pcf_enable, int sda, int scl) {
+int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda, int scl) {
     int cleared = 0;
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
-        if (pin_invalid_after_switch(config.motor[i][0], pcf_enable, sda, scl) ||
-            pin_invalid_after_switch(config.motor[i][1], pcf_enable, sda, scl)) {
+        if (pin_invalid_after_switch(config.motor[i][0], i2c_configured, sda, scl) ||
+            pin_invalid_after_switch(config.motor[i][1], i2c_configured, sda, scl)) {
             if (config.motor[i][0] != PIN_NONE) cleared++;
             if (config.motor[i][1] != PIN_NONE) cleared++;
             config.motor[i][0] = PIN_NONE;
             config.motor[i][1] = PIN_NONE;
         }
-        if (pin_invalid_after_switch(config.microswitch[i], pcf_enable, sda, scl)) {
+        if (pin_invalid_after_switch(config.microswitch[i], i2c_configured, sda, scl)) {
             config.microswitch[i] = PIN_NONE;
             cleared++;
         }
@@ -145,9 +146,9 @@ static bool bus_uses_pin(int pin) {
  */
 bool io_config_pin_available(int pin, bool allow_none) {
     if (allow_none && pin == PIN_NONE) return true;
-    // 虚拟引脚只在 Web 开关打开 PCF8575 后可选；关闭时 I2C 引脚可作普通 IO。
-    if (IS_PCF8575_VIRTUAL_PIN(pin)) return PCF_ENABLE != 0;
-    if (PCF_ENABLE && (pin == PCF_SDA || pin == PCF_SCL)) return false;
+    // 虚拟引脚只在 I2C 总线已配置后可选；未配置时 I2C 引脚可作普通 IO。
+    if (IS_PCF8575_VIRTUAL_PIN(pin)) return i2c_bus_configured();
+    if (i2c_bus_configured() && (pin == PCF_SDA || pin == PCF_SCL)) return false;
     return is_real_gpio(pin) && !bus_uses_pin(pin);
 }
 
@@ -267,7 +268,7 @@ bool io_config_validate(const IoConfig &config, int active_channels, String *err
     for (int ch = 0; ch < active_channels; ch++) {
         for (int role = 0; role < 3; role++) {
             const int pin = role < 2 ? config.motor[ch][role] : config.microswitch[ch];
-            // "无"(PIN_NONE) 合法：切换 PCF8575 开关会先清空不再可用的引脚，
+            // "无"(PIN_NONE) 合法：切换 I2C 配置会先清空不再可用的引脚，
             // 该通道等用户在网页里补配置。
             if (!io_config_pin_available(pin, true)) {
                 if (error)
@@ -354,9 +355,9 @@ bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
             if (error) *error = "RX、TX、DE 不能重复";
             return false;
         }
-        // 只有启用 PCF8575 后 SDA/SCL 才真正占用引脚。
-        if (PCF_ENABLE && (pin == sda || pin == scl)) {
-            if (error) *error = io_config_pin_label(pin) + " 已被 PCF8575 SDA/SCL 占用";
+        // 只有 SDA/SCL 同时配置后 I2C 才真正占用引脚。
+        if (i2c_bus_configured() && (pin == sda || pin == scl)) {
+            if (error) *error = io_config_pin_label(pin) + " 已被 I2C SDA/SCL 占用";
             return false;
         }
         for (int ch = 0; ch < active_channels; ch++) {

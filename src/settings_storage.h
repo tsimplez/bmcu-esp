@@ -46,12 +46,12 @@ struct SettingsData {
     int32_t motor_limit;             // 当前格式的同时运行电机上限
     char custom_serial[CUSTOM_SERIAL_LENGTH + 1]; // 自定义序列号（空或 15 位大写字母/数字）
     IoConfig io_config;              // 当前平台的电机/微动引脚配置
-    int32_t pcf_sda;                 // PCF8575 I2C SDA 引脚，重启生效
-    int32_t pcf_scl;                 // PCF8575 I2C SCL 引脚，重启生效
+    int32_t pcf_sda;                 // I2C SDA 引脚（PCF8575/温湿度模块共用），PIN_NONE 表示未配置
+    int32_t pcf_scl;                 // I2C SCL 引脚（PCF8575/温湿度模块共用），PIN_NONE 表示未配置
     int32_t bus_rx;                  // BambuBus 串口 RX 引脚
     int32_t bus_tx;                  // BambuBus 串口 TX 引脚
     int32_t bus_de;                  // RS485 DE 方向控制引脚；RXTX 模式下不使用
-    int32_t pcf_enable;              // Web 里的 PCF8575 开关（0=关 1=开），重启生效
+    int32_t pcf_enable;              // 旧版 PCF8575 开关字段，仅保留结构兼容，不再作为运行开关
 };
 
 // 当前开发格式使用 CRC32；格式不匹配时恢复默认值。

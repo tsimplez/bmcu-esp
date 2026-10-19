@@ -3,6 +3,8 @@
 #include "logbus.h"
 #include "web_config.h"
 #include "version.h"
+#include "i2c_bus.h"
+#include "env_sensor.h"
 
 /**
  * Arduino 启动初始化入口
@@ -19,7 +21,8 @@ void setup(){
     settings_log_all();   // 启动时把保存的设置全部打印一遍，方便排查
 
     hal_prepare_gpio(); // 先释放可重分配的 USB 焊盘，再初始化所有外设
-    hal_i2c_begin();   // PCF8575 扩展芯片走 I2C
+    i2c_bus_begin();   // PCF8575 与温湿度模块共用 I2C 总线
+    env_sensor_init(); // 扫描 AHT20/BMP280，未检测到则忽略
     BMCU_init();
 
     web_config_init(); // ESP32: 配网 + Web 管理页面；其它平台为空实现
@@ -34,6 +37,7 @@ void loop(){
         // 原有核心逻辑：喂狗 → 串口调试 → BMCU业务
         hal_watchdog_feed();
         BMCU_run();      // Handles BMCU protocol and BambuBus
+        env_sensor_run(); // 非阻塞刷新 AHT20/BMP280 读数
 
         // 检查微动开关状态并更新自动模式下的通道状态
         check_microswitch_status();

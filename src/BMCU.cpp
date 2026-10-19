@@ -17,6 +17,7 @@
 #include "PCF8575_PinMap.h"
 #include "settings_storage.h"
 #include "logbus.h"
+#include "i2c_bus.h"
 
 // 硬件参数定义
 #define max_filament_num 16        // 最大耗材数量
@@ -31,7 +32,7 @@
 
 // PCF8575地址
 #define PCF8575_ADDR 0x20
-// PCF8575 扩展 IO 对象；仅当 Web 开关启用时由 PCF8575_init() 初始化总线
+// PCF8575 扩展 IO 对象；I2C 总线配置有效时由 PCF8575_init() 初始化
 PCF8575 pcf8575(PCF8575_ADDR);
 
 // AS5600模拟变量
@@ -134,7 +135,7 @@ static void remove_job(int index) {
     --manual_queued;
 }
 
-// 进料/退料引脚都配置好了才能驱动电机：切换 PCF8575 开关后会先清掉不可用的引脚，
+// 进料/退料引脚都配置好了才能驱动电机：切换 I2C 配置后会先清掉不可用的引脚，
 // 「无」的通道必须拒绝启动，否则界面显示在进退料而实际没有任何输出。
 /**
  * 检查通道电机引脚是否配置完整
@@ -144,7 +145,15 @@ static void remove_job(int index) {
  */
 bool BMCU_channel_motor_ready(int ch) {
     if (ch < 0 || ch >= IO_CONFIG_MAX_CHANNELS) return false;
-    return IO_CONFIG.motor[ch][0] != PIN_NONE && IO_CONFIG.motor[ch][1] != PIN_NONE;
+    const int forward_pin = IO_CONFIG.motor[ch][0];
+    const int backward_pin = IO_CONFIG.motor[ch][1];
+    if (forward_pin == PIN_NONE || backward_pin == PIN_NONE) return false;
+    // 扩展引脚依赖 PCF8575；芯片未检测到时不能假装电机已就绪。
+    if ((IS_PCF8575_VIRTUAL_PIN(forward_pin) || IS_PCF8575_VIRTUAL_PIN(backward_pin)) &&
+        !PCF8575_is_online()) {
+        return false;
+    }
+    return true;
 }
 
 /**
@@ -297,6 +306,11 @@ void check_microswitch_status() {
             msw_prev[i] = msw_raw[i] = -1;
             continue;
         }
+        // PCF8575 未检测到时不能读取扩展输入，保持未知状态并跳过辅助进料。
+        if (IS_PCF8575_VIRTUAL_PIN(pin) && !PCF8575_is_online()) {
+            msw_prev[i] = msw_raw[i] = -1;
+            continue;
+        }
 
         // sw 微动高低电平 默认拉低是在线
         const bool sw = IS_PCF8575_VIRTUAL_PIN(pin) ? PCF8575_digitalRead(pin) : digitalRead(pin);
@@ -371,7 +385,10 @@ void BMCU_apply_channel_modes() {
         if (enabled && CHANNEL_MODE[i] == CHANNEL_MODE_AUTO &&
             IO_CONFIG.microswitch[i] != PIN_NONE) {
             int pin = IO_CONFIG.microswitch[i];
-            online_now = !(IS_PCF8575_VIRTUAL_PIN(pin) ? PCF8575_digitalRead(pin) : digitalRead(pin));
+            if (!IS_PCF8575_VIRTUAL_PIN(pin) || PCF8575_is_online())
+                online_now = !(IS_PCF8575_VIRTUAL_PIN(pin) ? PCF8575_digitalRead(pin) : digitalRead(pin));
+            else
+                online_now = false;
         }
         set_filament_online(i / 4, i % 4, online_now);
     }
@@ -663,10 +680,11 @@ float AS5600_get_speed(uint8_t channel) {
  * 初始化IO引脚、传感器、通信等
  */
 void BMCU_init() {
-    // 初始化PCF8575虚拟引脚映射
-    // 只有 Web 开关打开 PCF8575 时才初始化：关闭时 hal_i2c_begin() 没有 Wire.begin()，
-    // 这里再访问 I2C 会产生 "could not acquire lock / NULL TX buffer" 报错。
-    if (PCF_ENABLE) PCF8575_init();
+    // 初始化 PCF8575 虚拟引脚映射；I2C 未配置时不访问总线。
+    if (i2c_bus_configured()) {
+        PCF8575_init();
+        LOG_MAIN("[i2c] PCF8575=%s", PCF8575_is_online() ? "已检测" : "未检测");
+    }
 
     if (switchPin != PIN_NONE) pinMode(switchPin, INPUT_PULLUP);
     BMCU_apply_io_config(); // 根据已加载设置绑定并初始化 IO 引脚
@@ -735,6 +753,7 @@ static void BMCU_bus_deal_set_motion_res(uint8_t *data, int len) {}
  */
 void BMCU_run() {
     motor_tick();
+    PCF8575_poll();
     const int bus_stu = ams_enable ? BambuBus_run() : 0;
     if (bus_stu < 0) {
         if (!printer_bus_fault)

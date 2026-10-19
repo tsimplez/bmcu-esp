@@ -1,6 +1,7 @@
 #include "settings_storage.h"
 #include "platform.h"
 #include "logbus.h"
+#include "i2c_bus.h"
 
 // ============================
 // 运行期设置变量（初值为默认值，启动时由 settings_storage_init() 覆盖）
@@ -40,20 +41,18 @@ static void bus_defaults() {
     BUS_RX = PIN_BUS_RX; BUS_TX = PIN_BUS_TX; BUS_DE = PIN_BUS_DE;
 }
 
-// PCF8575 使用的 I2C SDA 引脚，修改后需重启生效
-int PCF_SDA = PIN_I2C_SDA;
-// PCF8575 使用的 I2C SCL 引脚，修改后需重启生效
-int PCF_SCL = PIN_I2C_SCL;
-// Web 里的 PCF8575 开关：默认关闭，只用主控直连 GPIO；打开后通道可改用扩展脚。
-int PCF_ENABLE = 0;
+// I2C 总线 SDA 引脚；默认未配置，需在网页中同时选择 SDA/SCL 后重启启用
+int PCF_SDA = PIN_NONE;
+// I2C 总线 SCL 引脚；默认未配置，需在网页中同时选择 SDA/SCL 后重启启用
+int PCF_SCL = PIN_NONE;
 
 /**
- * 恢复 PCF8575 I2C 引脚默认值
- * 把 SDA、SCL 恢复为当前平台的默认 I2C 引脚。
+ * 恢复 I2C 引脚默认值
+ * 默认不占用任何引脚；用户需在网页中同时选择 SDA、SCL 后才启用总线。
  */
 static void pcf_defaults() {
-    PCF_SDA = PIN_I2C_SDA;
-    PCF_SCL = PIN_I2C_SCL;
+    PCF_SDA = PIN_NONE;
+    PCF_SCL = PIN_NONE;
 }
 
 // 当前设置记录使用 CRC32，计算时把 checksum 字段视为 0，避免校验值自引用。
@@ -153,14 +152,29 @@ static void apply_settings_values(const SettingsData& data) {
     // 先加载整组候选接线，再交叉校验，避免用旧总线引脚误判新配置。
     IoConfig loaded = data.io_config;
     BUS_RX = data.bus_rx; BUS_TX = data.bus_tx; BUS_DE = data.bus_de;
-    // PCF8575 开关要先于接线校验生效：关闭时虚拟引脚不可用、I2C 引脚可作普通 IO。
-    PCF_ENABLE = data.pcf_enable == 0 || data.pcf_enable == 1 ? data.pcf_enable : 0;
+    // I2C 总线由 SDA/SCL 是否同时配置决定，旧版 pcf_enable 字段只用于兼容旧记录。
     pcf_defaults();
     PCF_SDA = data.pcf_sda; PCF_SCL = data.pcf_scl;
+    // 旧版记录在关闭 PCF8575 时仍保存板级默认 4/5，迁移为“未配置”，
+    // 避免升级后被自动启用并和原有微动引脚冲突。
+    if (data.pcf_enable == 0 && PCF_SDA == PIN_I2C_SDA && PCF_SCL == PIN_I2C_SCL) {
+        PCF_SDA = PIN_NONE;
+        PCF_SCL = PIN_NONE;
+    }
+    // 只配置单个引脚属于非法状态，按未配置处理。
+    if ((PCF_SDA == PIN_NONE) != (PCF_SCL == PIN_NONE)) {
+        PCF_SDA = PIN_NONE;
+        PCF_SCL = PIN_NONE;
+    }
+    // 两脚相同、越界或旧版脏数据都按“总线未配置”处理，避免网页锁死在无效组合。
+    if (!i2c_bus_configured()) {
+        PCF_SDA = PIN_NONE;
+        PCF_SCL = PIN_NONE;
+    }
     String io_error;
     bool wiring_valid = io_config_bus_validate(BUS_RX, BUS_TX, BUS_DE, RS485_MODE,
         PCF_SDA, PCF_SCL, loaded, active_channel_count(), &io_error);
-    if (PCF_ENABLE)
+    if (i2c_bus_configured())
         wiring_valid = wiring_valid && io_config_i2c_validate(PCF_SDA, PCF_SCL, loaded, active_channel_count(), &io_error);
     wiring_valid = wiring_valid && io_config_validate(loaded, active_channel_count(), &io_error);
     if (wiring_valid) {
@@ -234,7 +248,7 @@ SettingsData settings_snapshot() {
     data.pcf_sda = PCF_SDA;
     data.pcf_scl = PCF_SCL;
     data.bus_rx = BUS_RX; data.bus_tx = BUS_TX; data.bus_de = BUS_DE;
-    data.pcf_enable = PCF_ENABLE;
+    data.pcf_enable = i2c_bus_configured() ? 1 : 0;
     data.checksum = calculate_crc32(&data);
     return data;
 }
@@ -265,7 +279,7 @@ bool settings_save_to_flash() {
 
 /**
  * 恢复所有设置默认值
- * 重置参数、引脚映射、PCF8575 开关和 OTA 配置，不直接写存储。
+ * 重置参数、引脚映射、I2C 总线和 OTA 配置，不直接写存储。
  */
 void settings_reset_to_defaults() {
     for (int i = 0; i < 16; i++) {
@@ -281,7 +295,6 @@ void settings_reset_to_defaults() {
     memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL));
     memset(OTA_URL, 0, sizeof(OTA_URL));
     OTA_NOTIFY = DEFAULT_OTA_NOTIFY;
-    PCF_ENABLE = 0;
     io_config_set_defaults(IO_CONFIG);
     bus_defaults();
     pcf_defaults();
@@ -328,10 +341,10 @@ void settings_log_all() {
              CUSTOM_SERIAL[0] ? CUSTOM_SERIAL : "自动生成");
     LOG_MAIN("[settings] AMS 数量=%d，手动进退料点动时长=%dms", AMS_COUNT, MANUAL_PULSE_MS);
     LOG_MAIN("[settings] 同时运行电机上限=%d", MOTOR_LIMIT);
-    if (PCF_ENABLE)
-        LOG_MAIN("[settings] PCF8575 已启用：SDA=IO%d，SCL=IO%d", PCF_SDA, PCF_SCL);
+    if (i2c_bus_configured())
+        LOG_MAIN("[settings] I2C 总线已配置：SDA=IO%d，SCL=IO%d（PCF8575/温湿度模块共用）", PCF_SDA, PCF_SCL);
     else
-        LOG_MAIN("[settings] PCF8575 已关闭，通道使用直连 GPIO");
+        LOG_MAIN("[settings] I2C 总线未配置，PCF8575/温湿度模块不启用");
     for (int i = 0; i < active_channel_count(); i++) {
         LOG_MAIN("[settings] 通道 %d IO=进料%s/退料%s/微动%s", i + 1,
                  io_config_pin_label(IO_CONFIG.motor[i][0]).c_str(),

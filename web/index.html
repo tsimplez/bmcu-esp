@@ -111,6 +111,18 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="kv"><span>编译时间</span><b id="s-build">-</b></div>
   </div>
   <div class="card">
+    <h2>I2C 设备与温湿度</h2>
+    <div class="kv"><span>I2C 总线</span><b id="s-i2c">-</b></div>
+    <div class="kv"><span>PCF8575（0x20）</span><b id="s-pcf">-</b></div>
+    <div class="kv"><span>AHT20（0x38）</span><b id="s-aht">-</b></div>
+    <div class="kv"><span>BMP280（0x76/0x77）</span><b id="s-bmp">-</b></div>
+    <div class="kv"><span>AHT20 温度</span><b id="s-aht-temp">-</b></div>
+    <div class="kv"><span>AHT20 湿度</span><b id="s-aht-hum">-</b></div>
+    <div class="kv"><span>BMP280 温度</span><b id="s-bmp-temp">-</b></div>
+    <div class="kv"><span>大气压</span><b id="s-bmp-press">-</b></div>
+    <div class="hint">未检测到的传感器会自动停用并定期重试；网页显示“未检测”时不会使用旧读数。</div>
+  </div>
+  <div class="card">
     <div class="row" style="margin-bottom:10px">
       <h2 style="margin:0">通道参数与手动进退料</h2>
       <span class="spacer"></span>
@@ -204,19 +216,15 @@ button:disabled{opacity:.45;cursor:not-allowed}
   <div class="card">
     <h2>BambuBus 与 IO 引脚配置</h2>
     <div class="io-config" id="card-pcf">
-      <h3>PCF8575 接线</h3>
-      <div class="row">
-        <span style="color:var(--dim);width:90px">扩展芯片</span>
-        <button id="pcf-en1" onclick="setPcfEnable(1)">启用 PCF8575：开</button>
-        <button id="pcf-en0" onclick="setPcfEnable(0)">关闭 PCF8575</button>
-      </div>
+      <h3>I2C 总线配置（PCF8575 / 温湿度模块）</h3>
       <div class="row">
         <label for="pcf-sda">SDA（数据）</label><select id="pcf-sda" style="max-width:260px" onchange="updatePcfLabels()" disabled></select>
         <label for="pcf-scl">SCL（时钟）</label><select id="pcf-scl" style="max-width:260px" onchange="updatePcfLabels()" disabled></select>
         <button id="save-pcf" class="primary" onclick="savePcf()" disabled>保存并重启</button>
       </div>
-      <div class="hint">关闭时 4 通道直连 GPIO，不占用 I2C；启用后通道可改用 PCF8575 扩展脚（在下方按 AMS 数量选 PCF8575 Px），I2C 占用所选 GPIO。
-        切换开关只清掉在新状态下不能用的引脚（启用时是与 SDA/SCL 冲突的，关闭时是扩展脚），其余接线保留；保存后重启，请先断电换线。</div>
+      <div class="hint">PCF8575、AHT20 和 BMP280 共用这一条 I2C 总线，只需要 SDA、SCL 两根线。
+        SDA 和 SCL 必须同时选择或同时选“无”；只配置其中一个不能保存。配置后通道可使用 PCF8575 Px 扩展脚，
+        扫描不到的设备会自动停用并在状态页提示。保存后重启，请先断电换线。</div>
       <div class="hint" id="pcf-state" role="status">正在读取接线配置…</div>
     </div>
     <div class="row">
@@ -418,6 +426,31 @@ let otaAutoTried;
 // 最近一次检查到的可用更新信息；null 表示没有可更新版本
 let gOtaLatest;
 /**
+ * 更新 I2C 设备在线状态文字
+ * @param {string} id 页面元素 ID
+ * @param {boolean} configured I2C 总线是否已配置
+ * @param {boolean} online 设备是否检测到
+ * 未配置总线时显示“未配置”，已配置但扫描不到时显示“未检测”。
+ */
+const showI2cDevice=(id,configured,online)=>{
+  const el=$(id)
+  el.textContent=!configured?'未配置':online?'已检测':'未检测'
+  el.style.color=!configured?'var(--dim)':online?'var(--ok)':'var(--err)'
+}
+/**
+ * 更新可选传感器读数
+ * @param {string} id 页面元素 ID
+ * @param {number|null} value 读数；null 表示无效
+ * @param {string} unit 显示单位
+ * 无效值显示“暂无读数”，避免把旧值误当成当前测量结果。
+ */
+const showSensorValue=(id,value,unit)=>{
+  const el=$(id)
+  if(value===null||value===undefined){el.textContent='暂无读数';el.style.color='var(--dim)';return}
+  el.textContent=Number(value).toFixed(2)+unit
+  el.style.color='var(--fg)'
+}
+/**
  * 拉取并刷新设备运行状态
  * @return {Promise<void>|undefined} 请求完成后的 Promise；已有请求时返回 undefined
  * 带 3 秒超时读取 /api/status，更新状态、电机和 OTA 区域，首次成功时自动检查更新。
@@ -455,6 +488,16 @@ const refreshStatus=()=>{
     $('u-ver').textContent = d.version||'-'
     $('u-target').textContent = d.target||'-'
     $('u-build').textContent = fmtBuild(d.build)
+    const i2c=d.i2c||{},env=d.env||{}
+    $('s-i2c').textContent = i2c.configured?'SDA/SCL 已配置':'未配置'
+    $('s-i2c').style.color = i2c.configured?'var(--ok)':'var(--dim)'
+    showI2cDevice('s-pcf',i2c.configured,i2c.pcf)
+    showI2cDevice('s-aht',i2c.configured,i2c.aht20)
+    showI2cDevice('s-bmp',i2c.configured,i2c.bmp280)
+    showSensorValue('s-aht-temp',env.aht_temp,' ℃')
+    showSensorValue('s-aht-hum',env.humidity,' %')
+    showSensorValue('s-bmp-temp',env.bmp_temp,' ℃')
+    showSensorValue('s-bmp-press',env.pressure,' hPa')
     $('hdr').textContent = (d.mode==='AP'?'配网中 ':'')+d.ip
     $('b1').classList.toggle('on', d.buslog==1)
     $('b0').classList.toggle('on', d.buslog==0)
@@ -757,7 +800,7 @@ const renderBus=(d)=>{
     const pins=[...(d.io?.motor[ch]||[]),d.io?.microswitch[ch]]
     pins.forEach((pin,role)=>add(BUS_USES,pin,'通道'+(ch+1)+['进料','退料','微动'][role]))
   }
-  if(d.pcf?.enabled){add(BUS_USES,d.pcf.sda,'PCF8575 SDA');add(BUS_USES,d.pcf.scl,'PCF8575 SCL')}
+  if(d.pcf?.configured||d.pcf?.enabled){add(BUS_USES,d.pcf.sda,'I2C SDA');add(BUS_USES,d.pcf.scl,'I2C SCL')}
   for(const key of ['rx','tx','de']){
     const sel=$('bus-'+key);sel.textContent='';sel.disabled=!BUS_READY
     for(const pin of b.pins||[]){
@@ -790,63 +833,64 @@ const saveBus=async()=>{
   }
 }
 
-// ---------- PCF8575 开关与接线 ----------
-// PCF8575 引脚占用表：pin -> [使用该引脚的通道/功能标签]
+// ---------- I2C 总线配置 ----------
+// I2C 引脚占用表：pin -> [使用该引脚的通道/功能标签]
 let PCF_USES={}
-// 页面草稿中的 PCF8575 启用开关
-let PCF_ENABLED=false
-// 设备当前已生效的 PCF8575 启用状态
+// 设备当前已生效的 I2C 总线是否已配置
 let PCF_DEV_ENABLED=false
-// PCF8575 配置是否正在保存
+// I2C 配置是否正在保存
 let PCF_SAVING=false
 /**
- * 切换 PCF8575 启用状态
- * @param {boolean|number} v 是否启用
- * 保存中禁止切换，更新页面开关和引脚占用提示。
+ * 判断下拉框是否选择了“无”
+ * @param {HTMLSelectElement} sel 引脚下拉框
+ * @return {boolean} true 表示未配置引脚
+ * 空值和固件使用的 255 都表示“无”。
  */
-const setPcfEnable=(v)=>{if(PCF_SAVING) return;PCF_ENABLED=!!v;updatePcfLabels()}
+const pcfPinIsNone=(sel)=>sel.value===''||sel.value==='255'
 /**
- * 刷新 PCF8575 引脚标签和保存状态
- * 检查 SDA/SCL 重复、BambuBus 冲突和通道占用，显示对应的保存提示。
+ * 刷新 I2C 引脚标签和保存状态
+ * 检查 SDA/SCL 是否成对配置、重复、BambuBus 冲突和通道占用。
  */
 const updatePcfLabels=()=>{
   const sda=$('pcf-sda'),scl=$('pcf-scl'),warnings=[]
-  const duplicate=PCF_ENABLED&&sda.value!==''&&sda.value===scl.value
-  const changed=PCF_ENABLED!==PCF_DEV_ENABLED
-  // 通道占用不拦截保存：固件会在切换开关时自动清空这些引脚。
+  const sdaNone=pcfPinIsNone(sda),sclNone=pcfPinIsNone(scl)
+  const configured=!sdaNone||!sclNone
+  const half=sdaNone!==sclNone
+  const duplicate=configured&&!sdaNone&&!sclNone&&sda.value===scl.value
+  const changed=configured!==PCF_DEV_ENABLED
+  // 通道占用不拦截保存：固件会清空与 SDA/SCL 冲突的通道引脚。
   // 只有 BambuBus 占用必须先去改总线接线。
   let busConflict=false, channelConflict=false
-  $('pcf-en1').classList.toggle('on',PCF_ENABLED)
-  $('pcf-en0').classList.toggle('on',!PCF_ENABLED)
-  sda.disabled=scl.disabled=!PCF_ENABLED
   for(const sel of [sda,scl]){
+    const isNone=pcfPinIsNone(sel)
     for(const op of sel.options){
       const uses=(PCF_USES[op.value]||[]).slice()
-      if(PCF_ENABLED&&op.value===sda.value) uses.push('PCF8575 SDA')
-      if(PCF_ENABLED&&op.value===scl.value) uses.push('PCF8575 SCL')
+      if(!isNone&&op.value===sel.value) uses.push(sel===sda?'I2C SDA':'I2C SCL')
       op.textContent=op.dataset.label+(op.title?' ⚠':'')+(uses.length?'（'+uses.join('、')+'）':'')
     }
     sel.title=sel.selectedOptions[0]?.title||''
-    if(PCF_ENABLED&&sel.title) warnings.push(sel.title)
-    if(PCF_ENABLED&&(PCF_USES[sel.value]||[]).some(u=>u.indexOf('通道')===0)) channelConflict=true
-    if(PCF_ENABLED&&(BUS_APPLIED[sel.value]||[]).length) busConflict=true
+    if(!isNone&&sel.title) warnings.push(sel.title)
+    if(!isNone&&(PCF_USES[sel.value]||[]).some(u=>u.indexOf('通道')===0)) channelConflict=true
+    if(!isNone&&(BUS_APPLIED[sel.value]||[]).length) busConflict=true
   }
-  $('save-pcf').disabled=PCF_SAVING||(PCF_ENABLED&&(duplicate||busConflict||sda.value===''||scl.value===''))
+  $('save-pcf').disabled=PCF_SAVING||half||duplicate||busConflict
   const hint=warnings.join(' ')
-  $('pcf-state').textContent=duplicate?'SDA 和 SCL 不能相同':
+  $('pcf-state').textContent=half?'SDA 和 SCL 必须同时配置，或同时选择“无”':
+    duplicate?'SDA 和 SCL 不能相同':
     busConflict?'所选 GPIO 已被 BambuBus 占用，请先修改并保存总线接线':
     hint?hint:
     channelConflict?'SDA/SCL 占用了通道引脚，保存时会清空这些通道接线':
-    changed?(PCF_ENABLED?'保存后启用 PCF8575，可用扩展脚并重启':'保存后关闭 PCF8575，扩展脚会被清空并重启'):'接线配置已加载，保存后重启生效'
+    changed?(configured?'保存后启用 I2C 总线，可用 PCF8575 扩展脚并重启':'保存后关闭 I2C 总线，扩展脚会被清空并重启'):
+    configured?'I2C 总线已配置，保存后重启生效':'I2C 总线未配置；同时选择 SDA、SCL 后保存启用'
 }
 /**
- * 渲染 PCF8575 配置
+ * 渲染 I2C 总线配置
  * @param {Object} d /api/settings 返回的完整配置
- * 载入启用状态和 SDA/SCL 下拉框，建立通道及总线引脚占用表。
+ * 载入 SDA/SCL 下拉框，建立通道及总线引脚占用表。
  */
 const renderPcf=(d)=>{
   const p=d.pcf||{}
-  PCF_ENABLED=PCF_DEV_ENABLED=!!p.enabled
+  PCF_DEV_ENABLED=!!(p.enabled||p.configured)
   PCF_USES=JSON.parse(JSON.stringify(BUS_APPLIED))
   for(let ch=0;ch<d.channels;ch++){
     const pins=[...(d.io?.motor[ch]||[]),d.io?.microswitch[ch]]
@@ -858,33 +902,37 @@ const renderPcf=(d)=>{
   }
   for(const key of ['sda','scl']){
     const sel=$('pcf-'+key);sel.textContent=''
+    const none=new Option('无','255');none.dataset.label='无';sel.add(none)
     for(const pin of p.pins||[]){
       const op=new Option(pin.label,pin.id);op.dataset.label=pin.label;op.title=pin.warning_text||'';sel.add(op)
     }
-    sel.value=String(p[key])
+    sel.value=String(p[key] ?? 255)
+    sel.disabled=!BUS_READY
   }
   updatePcfLabels()
 }
 /**
- * 保存 PCF8575 配置
+ * 保存 I2C 总线配置
  * @return {Promise<void>} 请求处理完成的 Promise
- * 切换启用状态前要求确认，提交 SDA/SCL 到 /api/pcf，并在失败时恢复界面。
+ * 提交 SDA/SCL 到 /api/pcf；只选一个引脚时按钮保持禁用。
  */
 const savePcf=async()=>{
   if($('save-pcf').disabled) return
-  const changed=PCF_ENABLED!==PCF_DEV_ENABLED
-  if(changed&&!confirm(PCF_ENABLED?'启用 PCF8575：会清掉与 SDA/SCL 冲突的通道引脚并重启，确定继续？':'关闭 PCF8575：会清掉所有扩展脚引脚并重启，确定继续？')) return
+  const sdaNone=pcfPinIsNone($('pcf-sda')),sclNone=pcfPinIsNone($('pcf-scl'))
+  const configured=!sdaNone
+  const changed=configured!==PCF_DEV_ENABLED
+  if(changed&&!confirm(configured?'保存 I2C 总线配置：会清空与 SDA/SCL 冲突的通道引脚并重启，确定继续？':'关闭 I2C 总线：会清空所有 PCF8575 扩展脚并重启，确定继续？')) return
   PCF_SAVING=true;updatePcfLabels()
   $('pcf-sda').disabled=$('pcf-scl').disabled=true
   try{
-    const body=new URLSearchParams({enable:PCF_ENABLED?1:0})
-    if(PCF_ENABLED) body.set('sda',$('pcf-sda').value), body.set('scl',$('pcf-scl').value)
+    const body=new URLSearchParams({sda:$('pcf-sda').value,scl:$('pcf-scl').value})
     const r=await fetch('/api/pcf',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body.toString()})
     const d=await r.json()
     if(!r.ok||!d.ok) throw Error(d.msg||'保存失败')
     $('pcf-state').textContent=d.msg;toast(d.msg,12000)
   }catch(e){
     PCF_SAVING=false;updatePcfLabels()
+    $('pcf-sda').disabled=$('pcf-scl').disabled=!BUS_READY
     $('pcf-state').textContent=e.message||'连接中断，请重新读取确认是否保存';toast($('pcf-state').textContent,8000)
   }
 }

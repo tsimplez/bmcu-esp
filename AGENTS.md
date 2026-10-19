@@ -13,12 +13,13 @@
 
 ## 启动与数据流
 
-1. `src/main.cpp`：`setup()` 初始化控制台、看门狗、日志、设置、GPIO/I2C、BMCU 和 Web。
-2. `src/main.cpp`：`loop()` 持续执行 `BMCU_run()`、`check_microswitch_status()`、`web_config_run()` 并喂狗。
+1. `src/main.cpp`：`setup()` 初始化控制台、看门狗、日志、设置、GPIO、I2C、环境传感器、BMCU 和 Web。
+2. `src/main.cpp`：`loop()` 持续执行 `BMCU_run()`、`env_sensor_run()`、`check_microswitch_status()`、`web_config_run()` 并喂狗。
 3. 打印机报文：RS485 -> `RX_IRQ()` 组帧 -> 双缓冲 -> `BambuBus_run()` -> `get_package_type()` -> `send_for_*()` 回复。
 4. 运动控制：`BambuBus` 状态机 -> `get_filament_motion()` -> `BMCU_run()` / `BMCU_motion()` -> `motorCmd()` -> `Motor`。
 5. 网页配置：HTTP handler -> `settings_*` -> 写入 Flash/NVS -> `BMCU_apply_io_config()` / `BMCU_apply_channel_modes()` 应用。
 6. 掉电保存：`Bambubus_set_need_to_save()` 标记，`BambuBus_run()` 限频调用 `Bambubus_save()` 并回读校验。
+7. 环境数据：AHT20/BMP280 -> `env_sensor_run()` -> `env_sensor_get_aht20()` -> `send_for_Dxx()` 写入 AMS 长包的温度/湿度字段。
 
 ## 目录与功能地图
 
@@ -26,6 +27,8 @@
 |---|---|---|
 | `src/main.cpp` | 程序入口与主循环 | `setup()`、`loop()` |
 | `src/platform.h` / `src/platform.cpp` | 平台适配：引脚、I2C、UART、看门狗、片内 ID、Flash/NVS 存储 | `hal_*()` |
+| `src/i2c_bus.cpp` / `.h` | I2C 总线配置判断、初始化和地址探测；SDA/SCL 同时有效才启用 | `i2c_bus_configured()`、`i2c_bus_begin()`、`i2c_bus_probe()` |
+| `src/env_sensor.cpp` / `.h` | AHT20 温湿度与 BMP280 温度/气压采集，缺失设备定期重试 | `env_sensor_init()`、`env_sensor_run()`、`env_sensor_get_aht20()` |
 | `src/BMCU.cpp` / `src/BMCU.h` | 核心业务：电机、手动队列、微动辅助进料、AS5600 模拟、运行调度 | `BMCU_run()`、`BMCU_motion()`、`motorCmd()`、`check_microswitch_status()` |
 | `src/BambuBus.cpp` / `src/BambuBus.h` | BambuBus 协议：组帧、校验、状态机、长短包回复、耗材记录 | `BambuBus_run()`、`RX_IRQ()`、`get_package_type()`、`process_motion_state_machine()` |
 | `src/settings_storage.cpp` / `.h` | 设置结构、默认值、加载/保存/快照/回滚、CRC32 | `settings_storage_init()`、`settings_save_to_flash()`、`apply_settings_values()` |
@@ -47,9 +50,11 @@
 - AS5600 模拟：`AS5600_init()`、`AS5600_get_raw_angle()`、`AS5600_get_speed()`、`AS5600_is_online()`。
 - 协议解析：`package_check_crc16()`、`package_send_with_crc()`、`Bambubus_long_package_analysis()`、`get_package_type()`。
 - 协议回复：`send_for_Cxx()`、`send_for_Dxx()`、`send_for_Fxx()`、`send_for_long_packge_*()`、`send_for_Set_filament*()`。
+- AMS 温湿度：`send_for_Dxx()` 中 `Dxx_res[6..7]` 为 0.1℃ 小端温度，`Dxx_res[8]` 为湿度百分比；数据来自 `env_sensor_get_aht20()`。
 - 协议状态：内部枚举 `_filament_motion_internal` 与对外枚举 `_filament_motion_state_set` 的转换在 `map_internal_to_api()`、`set_filament_motion()`。
 - 设置：`settings_snapshot()` 收集，`settings_restore_snapshot()` 回滚，`settings_save_to_flash()` 写入并回读校验。
 - 网页接口：`handle_status()`、`handle_settings_get()`、`handle_settings_save()`、`handle_bus_save()`、`handle_pcf_save()`、`handle_manual_motor()`。
+- I2C/传感器配置：`handle_pcf_save()` 保存 SDA/SCL；`handle_status()` 返回 `i2c` 设备在线状态和 `env` 温湿度读数。
 - OTA：`ota_fetch_manifest()`、`ota_flash_from_url()`、`handle_ota_check()`、`handle_ota_pull()`、`handle_ota_upload()`。
 
 ## 查找方法
@@ -68,6 +73,7 @@
   `@brief` 一句话说明职责，`@param` 说明参数，`@return` 说明返回值，`` 说明关键行为或副作用。
 - 平台差异只放在 `src/platform.*`；Web/OTA 差异只放在 `src/web_config.*`，并用 `#if defined(ARDUINO_ARCH_ESP32)` 隔离。
 - 引脚一律使用 `PIN_NONE` 和配置结构，不直接硬编码 GPIO；物理/PCF8575 引脚统一走 `pinMode_PCF8575()` / `digitalWrite_PCF8575()` / `digitalRead_PCF8575()`。
+- I2C 总线由 `PCF_SDA`、`PCF_SCL` 是否同时有效决定，不再使用运行期开关；PCF8575、AHT20、BMP280 共用该总线。
 - 有效通道数统一使用 `active_channel_count()`（`AMS_COUNT * 4`）。
 - 电机命令统一走 `motorCmd()`，不要在中断或回调中直接驱动电机。
 - 修改设置结构时必须同时处理默认值、范围校验、CRC、加载兼容和网页字段。

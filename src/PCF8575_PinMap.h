@@ -58,6 +58,19 @@ static const uint8_t VIRTUAL_TO_PCF8575_MAP[16] = {
 bool PCF8575_init();
 
 /**
+ * 查询 PCF8575 是否在线
+ * @return true 表示芯片已完成初始化且可以读写
+ * 未配置 I2C 或芯片未应答时返回 false，调用方应停用扩展虚拟引脚。
+ */
+bool PCF8575_is_online();
+
+/**
+ * 定期重试离线 PCF8575
+ * 未在线的芯片每 5 秒重新探测一次，避免启动时接触不良导致永久禁用。
+ */
+void PCF8575_poll();
+
+/**
  * 更新所有PCF8575引脚状态
  * 需要在loop()中定期调用
  */

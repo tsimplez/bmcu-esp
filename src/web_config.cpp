@@ -16,6 +16,9 @@
 #include "settings_storage.h"
 #include "BMCU.h"
 #include "version.h"
+#include "i2c_bus.h"
+#include "env_sensor.h"
+#include "PCF8575_PinMap.h"
 
 // ============================================================
 // 常量
@@ -307,14 +310,26 @@ static void handle_root() {
 }
 
 /**
+ * 把传感器读数格式化为 JSON 数字
+ * @param valid 读数是否有效
+ * @param value 读数值
+ * @param digits 小数位数
+ * @return JSON 数字文本；无效时返回 null
+ * 网页据此区分“未检测/读取失败”和真实的 0 值。
+ */
+static String sensor_json_value(bool valid, float value, int digits) {
+    return valid ? String(value, digits) : String("null");
+}
+
+/**
  * 处理运行状态查询
- * 汇总 WiFi、IP、堆内存、总线、电机、耗材、维护状态和版本信息为 JSON。
+ * 汇总 WiFi、IP、堆内存、总线、电机、耗材、I2C/温湿度、维护状态和版本信息为 JSON。
  */
 static void handle_status() {
     IPAddress ip = ap_mode ? WiFi.softAPIP() : WiFi.localIP();
 
     String j;
-    j.reserve(1600);
+    j.reserve(2200);
     j  = "{\"mode\":\"" + String(ap_mode ? "AP" : "STA") + "\"";
     j += ",\"ip\":\"" + ip.toString() + "\"";
     j += ",\"ssid\":\"" + json_escape(ap_mode ? "" : sta_ssid) + "\"";
@@ -365,6 +380,15 @@ static void handle_status() {
     j += ",\"otaurl\":\"" + json_escape(OTA_URL) + "\"";
     j += ",\"otanotify\":" + String(OTA_NOTIFY);
     j += ",\"otasize\":" + String(ESP.getSketchSize());
+    const EnvSensorStatus &env = env_sensor_status();
+    j += ",\"i2c\":{\"configured\":" + String(i2c_bus_configured() ? "true" : "false") +
+         ",\"pcf\":" + String(PCF8575_is_online() ? "true" : "false") +
+         ",\"aht20\":" + String(env.aht20_online ? "true" : "false") +
+         ",\"bmp280\":" + String(env.bmp280_online ? "true" : "false") + "}";
+    j += ",\"env\":{\"aht_temp\":" + sensor_json_value(env.aht20_online && env.aht20_valid, env.temperature_c, 2) +
+         ",\"humidity\":" + sensor_json_value(env.aht20_online && env.aht20_valid, env.humidity_pct, 2) +
+         ",\"bmp_temp\":" + sensor_json_value(env.bmp280_online && env.bmp280_valid, env.bmp_temperature_c, 2) +
+         ",\"pressure\":" + sensor_json_value(env.bmp280_online && env.bmp280_valid, env.pressure_hpa, 2) + "}";
     j += "}";
     server.send(200, "application/json", j);
 }
@@ -397,7 +421,8 @@ static void handle_settings_get() {
     }
     j += "],\"pins\":";
     io_config_append_pin_options(j);
-    j += "},\"pcf\":{\"enabled\":" + String(PCF_ENABLE ? "true" : "false") +
+    j += "},\"pcf\":{\"enabled\":" + String(i2c_bus_configured() ? "true" : "false") +
+         ",\"configured\":" + String(i2c_bus_configured() ? "true" : "false") +
          ",\"sda\":" + String(PCF_SDA) + ",\"scl\":" + String(PCF_SCL) + ",\"pins\":";
     io_config_append_pin_options(j, true);
     j += "},\"bus\":{\"rx\":" + String(BUS_RX) + ",\"tx\":" + String(BUS_TX) +
@@ -443,41 +468,58 @@ static bool parse_io_pin(const String &key, int &value, bool allow_none) {
     return io_config_pin_available(value, allow_none);
 }
 
-// PCF8575 开关 + I2C 接线：切换只清掉在新状态下不能用的引脚，保存后重启生效。
+// I2C 总线配置：SDA/SCL 同时有效才启用，同时留空表示关闭；保存后重启生效。
 /**
- * 处理 PCF8575 开关与 I2C 接线保存
- * 校验 SDA/SCL、清理切换后失效的通道引脚、写入设置并重启使接线生效。
+ * 解析 I2C 引脚参数
+ * @param key 请求参数名
+ * @param value 输出引脚号，PIN_NONE 表示“无”
+ * @return true 表示参数存在且格式合法
+ * 接受 0-255 的数字或 none/255（表示未配置）。
+ */
+static bool parse_i2c_pin(const String &key, int &value) {
+    if (!server.hasArg(key)) return false;
+    String raw = server.arg(key);
+    raw.trim();
+    if (raw.equalsIgnoreCase("none") || raw == "255") {
+        value = PIN_NONE;
+        return true;
+    }
+    char *end = nullptr;
+    const long parsed = strtol(raw.c_str(), &end, 10);
+    if (end == raw.c_str() || *end || parsed < 0 || parsed > 255) return false;
+    value = static_cast<int>(parsed);
+    return true;
+}
+
+/**
+ * 处理 I2C 总线配置保存
+ * 校验 SDA/SCL 必须同时配置或同时留空，清理冲突通道引脚，写入设置并重启。
  */
 static void handle_pcf_save() {
-    if (server.hasArg("enable") && !valid_number("enable", 0, 1)) {
-        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"启用开关取值无效\"}");
+    int sda = PIN_NONE;
+    int scl = PIN_NONE;
+    if (!parse_i2c_pin("sda", sda) || !parse_i2c_pin("scl", scl)) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请选择有效的 SDA 和 SCL 引脚\"}");
         return;
     }
-    // 兼容旧页面：只带 sda/scl 的请求按"启用并保存接线"处理。
-    const bool enable = !server.hasArg("enable") || server.arg("enable").toInt() != 0;
-    int sda = PCF_SDA, scl = PCF_SCL;
-    if (enable) {
-        if (!server.hasArg("sda") || !server.hasArg("scl") ||
-            !valid_number("sda", 0, 48) || !valid_number("scl", 0, 48)) {
-            server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请完整填写 SDA 和 SCL 的主控 GPIO\"}");
-            return;
-        }
-        sda = server.arg("sda").toInt();
-        scl = server.arg("scl").toInt();
+    if ((sda == PIN_NONE) != (scl == PIN_NONE)) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"msg\":\"SDA 和 SCL 必须同时配置，或同时选择“无”关闭总线\"}");
+        return;
     }
+    const bool configured = sda != PIN_NONE;
     if (!maintenance_required()) return;
     const SettingsData previous = settings_snapshot();
-    PCF_ENABLE = enable ? 1 : 0;
-    if (enable) {
-        PCF_SDA = sda;
-        PCF_SCL = scl;
-    }
-    // 只清掉在新状态下不可用的引脚：开启时是与 SDA/SCL 冲突的，关闭时是扩展脚，
+    PCF_SDA = sda;
+    PCF_SCL = scl;
+    // 只清掉在新状态下不可用的引脚：配置时是与 SDA/SCL 冲突的，关闭时是扩展脚，
     // 其余接线保留，用户已有接线不会被整套冲掉。
-    const int cleared = io_config_clear_invalid_pins(IO_CONFIG, enable, PCF_SDA, PCF_SCL);
+    const int cleared = io_config_clear_invalid_pins(IO_CONFIG, configured, PCF_SDA, PCF_SCL);
     String error;
-    bool wiring_ok = !enable ||
-        io_config_i2c_validate(PCF_SDA, PCF_SCL, IO_CONFIG, active_channel_count(), &error);
+    bool wiring_ok = !configured ||
+        (io_config_i2c_validate(PCF_SDA, PCF_SCL, IO_CONFIG, active_channel_count(), &error) &&
+         io_config_bus_validate(BUS_RX, BUS_TX, BUS_DE, RS485_MODE, PCF_SDA, PCF_SCL,
+                                IO_CONFIG, active_channel_count(), &error));
     if (wiring_ok) wiring_ok = io_config_validate(IO_CONFIG, active_channel_count(), &error);
     if (!wiring_ok) {
         settings_restore_snapshot(previous);
@@ -490,13 +532,17 @@ static void handle_pcf_save() {
         server.send(500, "application/json", "{\"ok\":false,\"msg\":\"保存或回读校验失败，未切换接线，请重新保存\"}");
         return;
     }
-    String msg = String("PCF8575 已") + (enable ? "启用" : "关闭") + "，设备正在重启";
+    String msg = configured ? "I2C 总线已配置，设备正在重启"
+                            : "I2C 总线已关闭，设备正在重启";
     if (cleared)
         msg += "；已清空 " + String(cleared) + " 个不再可用的引脚，请到「电机与微动引脚」重新配置";
-    else if (enable)
+    else if (configured)
         msg += "；请断电后按新引脚接线";
-    LOG_MAIN("[web] PCF8575 已%s：SDA=IO%d，SCL=IO%d，清空引脚数=%d，重启生效",
-             enable ? "启用" : "关闭", PCF_SDA, PCF_SCL, cleared);
+    if (configured)
+        LOG_MAIN("[web] I2C 总线已配置：SDA=IO%d，SCL=IO%d，清空引脚数=%d，重启生效",
+                 PCF_SDA, PCF_SCL, cleared);
+    else
+        LOG_MAIN("[web] I2C 总线已关闭，清空引脚数=%d，重启生效", cleared);
     server.send(200, "application/json",
                 String("{\"ok\":true,\"msg\":\"") + json_escape(msg.c_str()) + "\"}");
     delay(300);

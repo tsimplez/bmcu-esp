@@ -5,6 +5,7 @@
  */
 #include "PCF8575_PinMap.h"
 #include "platform.h"
+#include "i2c_bus.h"
 
 // 使用在BMCU.cpp中已经定义的PCF8575对象
 extern PCF8575 pcf8575;
@@ -18,6 +19,8 @@ static uint16_t pcf8575_pin_modes = 0;
 static uint8_t pcf8575_pwm_values[18] = {};
 // PCF8575 是否已完成初始化；true 时重复调用 PCF8575_init() 直接返回成功
 static bool pcf8575_initialized = false;
+// 上一次尝试初始化 PCF8575 的 millis() 时间，用于离线重试限频
+static uint32_t pcf8575_last_attempt_ms = 0;
 
 #if defined(ARDUINO_ARCH_RP2040)
 // Arduino-Mbed 的全局 Wire 对象没有 setSDA/setSCL；按设置创建一个使用自定义
@@ -35,6 +38,10 @@ bool PCF8575_init() {
     if (pcf8575_initialized) {
         return true;
     }
+    if (!i2c_bus_configured()) {
+        return false;
+    }
+    pcf8575_last_attempt_ms = millis();
 
 #if defined(ARDUINO_ARCH_RP2040)
     if (!pcf8575_wire) {
@@ -57,6 +64,25 @@ bool PCF8575_init() {
     
     pcf8575_initialized = true;
     return true;
+}
+
+/**
+ * 查询 PCF8575 是否在线
+ * @return true 表示芯片已完成初始化且可以读写
+ * 未配置 I2C 或芯片未应答时返回 false，调用方应停用扩展虚拟引脚。
+ */
+bool PCF8575_is_online() {
+    return pcf8575_initialized;
+}
+
+/**
+ * 定期重试离线 PCF8575
+ * 未在线的芯片每 5 秒重新探测一次，避免启动时接触不良导致永久禁用。
+ */
+void PCF8575_poll() {
+    if (pcf8575_initialized || !i2c_bus_configured()) return;
+    if (millis() - pcf8575_last_attempt_ms < 5000) return;
+    PCF8575_init();
 }
 
 /**
@@ -128,7 +154,7 @@ void PCF8575_digitalWrite(const uint8_t pin, const uint8_t value) {
  * 输出模式返回缓存电平；输入模式先写高电平上拉，读取后再恢复原输出状态。
  */
 int PCF8575_digitalRead(const uint8_t pin) {
-    if (!IS_PCF8575_VIRTUAL_PIN(pin)) {
+    if (!IS_PCF8575_VIRTUAL_PIN(pin) || !pcf8575_initialized) {
         return LOW;
     }
     
