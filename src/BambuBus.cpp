@@ -1,8 +1,7 @@
 // BambuBus.cpp - 完整移植版本，支持最新固件
 // 包含：完整状态机、序列号响应、长包设置耗材、动态压力等
 #include "BambuBus.h"
-#include "CRC16.h"
-#include "CRC8.h"
+#include "crc_bus.h"
 #include "settings_storage.h"  // 用于访问AMS_COUNT设置
 #include "log_bus.h"
 #include "env_sensor.h"
@@ -12,10 +11,6 @@
 #endif
 
 // ==================== 原有变量完全保留 ====================
-// CRC16 计算实例：校验完整 BambuBus 报文
-static CRC16 crc_16;
-// CRC8 计算实例：校验短包/长包的头部字段
-static CRC8 crc_8;
 // 单帧最大容量：接收组帧、双缓冲和发送缓冲区共用该上限
 static constexpr uint16_t BUS_FRAME_CAPACITY = 1000u;
 /**
@@ -138,12 +133,12 @@ struct _filament {
     int16_t temperature_max = 240;
     // 耗材名称，最多 19 个可见字符加结尾 NUL
     char name[20] = "PETG";
-    // 耗材在线状态：offline/online/NFC_waiting
-    _filament_status statu = online;
+    // 耗材在线状态
+    filament_status statu = online;
     // 累计进料长度（米）
     float meters = 0;
     // 对上层暴露的运动状态
-    _filament_motion_state_set motion_set = waiting;
+    filament_motion_state_set motion_set = waiting;
 };
 
 namespace {
@@ -324,7 +319,7 @@ String get_now_filament_name(const int num) {
  * @return waiting、need_send_out 或 need_pull_back
  * 隐藏 before_on_use、on_use 等中间状态。
  */
-static _filament_motion_state_set map_internal_to_api(filament_motion_internal m) {
+static filament_motion_state_set map_internal_to_api(filament_motion_internal m) {
     switch (m) {
         case filament_motion_internal::send_out:
             return need_send_out;
@@ -379,7 +374,7 @@ static void set_motion_internal(const uint8_t ams_num, const uint8_t ch, const f
  * @return 当前运动状态；越界返回 waiting
  * 供 BMCU 运动层查询打印机请求。
  */
-_filament_motion_state_set get_filament_motion(const int num) {
+filament_motion_state_set get_filament_motion(const int num) {
     if (num < 0 || num >= 16) return waiting;
     return data_save.filament[num / 4][num % 4].motion_set;
 }
@@ -390,7 +385,7 @@ _filament_motion_state_set get_filament_motion(const int num) {
  * @param motion 新的对外状态
  * 同步更新内部状态机，保证 BMCU 与协议层状态一致。
  */
-void set_filament_motion(const int num, const _filament_motion_state_set motion) {
+void set_filament_motion(const int num, const filament_motion_state_set motion) {
     if (num < 0 || num >= 16) return;
     data_save.filament[num / 4][num % 4].motion_set = motion;
     const uint8_t ams = num / 4;
@@ -643,12 +638,6 @@ static volatile uint16_t completed_len[2] = {};
 static uint8_t rx_publish_slot = 0;
 // 因双缓冲槽位已占用而丢弃的完整帧数量
 static volatile uint32_t rx_dropped_frames = 0;
-/**
- * 接收组帧使用的 CRC8 实例
- * 每收到帧头 0x3D 时重置，按短包/长包头部长度累计 CRC8，用于在组帧阶段丢弃坏帧。
- */
-CRC8 _RX_IRQ_crcx(0x39, 0x66, 0x00, false, false);
-
 #if defined(ARDUINO_ARCH_RP2040)
 /**
  * 递增接收丢帧计数（RP2040）
@@ -759,7 +748,8 @@ static int8_t completed_slot_take() {
 /**
  * 逐字节解析 BambuBus 接收帧
  * @param _RX_IRQ_data 串口收到的单个字节
- * 从帧头 0x3D 开始组帧，解析短包/长包长度并校验 CRC8，完整帧写入双缓冲供主循环处理。
+ * 从帧头 0x3D 开始组帧，解析短包/长包长度；收到 CRC8 字节时对已缓存的头部查表校验，
+ * 完整帧写入双缓冲供主循环处理。
  */
 static void RX_IRQ(unsigned char _RX_IRQ_data) {
     // 当前帧已写入 BambuBus_data_buf 的字节数；0 表示等待下一个帧头
@@ -782,8 +772,6 @@ static void RX_IRQ(unsigned char _RX_IRQ_data) {
     if (_index == 0) {
         if (data == 0x3D) {
             BambuBus_data_buf[0] = 0x3D;
-            _RX_IRQ_crcx.restart();
-            _RX_IRQ_crcx.add(0x3D);
             data_length_index = 4;
             length = 0;
             _index = 1;
@@ -824,10 +812,8 @@ static void RX_IRQ(unsigned char _RX_IRQ_data) {
             }
         }
 
-        if (_index < data_CRC8_index) {
-            _RX_IRQ_crcx.add(data);
-        } else if (_index == data_CRC8_index) {
-            if (data != _RX_IRQ_crcx.calc()) {
+        if (_index == data_CRC8_index) {
+            if (data != bus_crc8(BambuBus_data_buf, data_CRC8_index)) {
                 if (BUS_LOG_ENABLE)
                     log_bus_hex_typed(LOG_CH_BUS, 'R', -1, BambuBus_data_buf,
                                      static_cast<uint16_t>(_index) + 1u);
@@ -890,14 +876,10 @@ static void BambuBUS_UART_Init(const uint32_t baud) {
 }
 
 // ==================== 初始化 ====================
-/**
- * 初始化 BambuBus 协议层
- * 加载耗材记录、配置 CRC 参数和 RS485 DE、复位状态机，并以 1.2288Mbps 启动串口。
- */
+
+// 初始化 BambuBus 协议层 加载耗材记录、初始化 CRC 查表接口和 RS485 DE、复位状态机，并以 1.2288Mbps 启动串口。
 void BambuBus_init() {
     const bool _init_ready = BambuBus_read();
-    crc_8.reset(0x39, 0x66, 0, false, false);
-    crc_16.reset(0x1021, 0x913D, 0, false, false);
     if (RS485_MODE == RS485_MODE_DE) {
         digitalWrite(BUS_DE, LOW);
         pinMode(BUS_DE, OUTPUT);
@@ -988,18 +970,14 @@ void BambuBus_init() {
  * @param data 完整报文
  * @param data_length 报文长度
  * @return true 表示 CRC 正确
- * 对除末两字节外的数据计算 CRC16，并与报文中的小端校验值比较。
+ * 对除末两字节外的数据查表计算 CRC16，并与报文中的小端校验值比较。
  */
 static bool package_check_crc16(const uint8_t *data, int data_length) {
     if (!data || data_length < 7 || data_length > BUS_FRAME_CAPACITY)
         return false;
 
-    crc_16.restart();
     data_length -= 2;
-    for (auto i = 0; i < data_length; i++) {
-        crc_16.add(data[i]);
-    }
-    const uint16_t num = crc_16.calc();
+    const uint16_t num = bus_crc16(data, data_length);
     if (data[data_length] == (num & 0xFF) && (data[(data_length + 1)] == ((num >> 8) & 0xFF)))
         return true;
     return false;
@@ -1009,27 +987,16 @@ static bool package_check_crc16(const uint8_t *data, int data_length) {
  * 填充 CRC 并发送报文
  * @param data 待发送报文
  * @param data_length 报文总长度
- * 按短包或长包位置填充 CRC8 和 CRC16，然后调用 send_uart() 发送。
+ * 按短包或长包位置查表填充 CRC8 和小端 CRC16，然后调用 send_uart() 发送。
  */
 static void package_send_with_crc(uint8_t *data, int data_length) {
-    crc_8.restart();
     if (data[1] & 0x80) {
-        for (auto i = 0; i < 3; i++) {
-            crc_8.add(data[i]);
-        }
-        data[3] = crc_8.calc();
+        data[3] = bus_crc8(data, 3);
     } else {
-        for (auto i = 0; i < 6; i++) {
-            crc_8.add(data[i]);
-        }
-        data[6] = crc_8.calc();
+        data[6] = bus_crc8(data, 6);
     }
-    crc_16.restart();
     data_length -= 2;
-    for (auto i = 0; i < data_length; i++) {
-        crc_16.add(data[i]);
-    }
-    const uint16_t num = crc_16.calc();
+    const uint16_t num = bus_crc16(data, data_length);
     data[data_length] = num & 0xFF;
     data[(data_length + 1)] = num >> 8;
     data_length += 2;

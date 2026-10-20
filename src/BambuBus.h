@@ -11,13 +11,13 @@ extern "C" {
 #define BambuBus_pin_rx 1
 #define BambuBus_pin_de 6
 
-enum _filament_status {
+enum filament_status {
     offline, // 通道无耗材或未检测到
     online, // 检测到耗材且可正常使用
     NFC_waiting // 等待读取 NFC/耗材信息
 };
 
-enum _filament_motion_state_set {
+enum filament_motion_state_set {
     need_pull_back, // 打印机要求退料
     need_send_out, // 打印机要求进料
     waiting, // 空闲等待
@@ -90,11 +90,11 @@ extern int get_cmd_type();
 
 extern unsigned char get_now_op_num();
 
-extern void set_filament_motion(int num, _filament_motion_state_set motion);
+extern void set_filament_motion(int num, filament_motion_state_set motion);
 
 extern void send_uart(const unsigned char *data, uint16_t length);
 
-_filament_motion_state_set get_filament_motion(int num);
+filament_motion_state_set get_filament_motion(int num);
 
 String get_now_filament_name(int num);
 

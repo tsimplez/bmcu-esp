@@ -38,8 +38,14 @@
 - 群 735647789
 - [教程 https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9](https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9)
 
-## 波兰固件
+### 波兰固件
 [仓库](https://github.com/jarczakpawel/BMCU-C-PJARCZAK)
+
+#### 和 bmcu-esp(本项目) 的区别
+本项目基于[Tianshu](https://github.com/hu504011383/Tianshu)
+然后 Tianshu 似乎是基于 BMCU-C-PJARCZAK 的 V9 PJarczak 2026/2/24 07:04 修改而来
+所以 本项目一样也是
+不过 后续会同步一些相同的地方，文件上方有标记
 
 ### 其他
 欢迎补充内容
@@ -107,8 +113,7 @@ src/
 ├── log_bus.cpp/h        # 日志总线：两路环形缓冲 + 增量读取
 ├── web_config.cpp/h    # 网页管理（仅 ESP32，其它平台为空实现）
 ├── PCF8575_PinMap.cpp/h# PCF8575 GPIO 扩展
-├── FIFO_buffer.c/h     # 环形缓冲区
-├── crc_bus.c/h         # CRC8 / CRC16 校验
+├── crc_bus.c/h         # BambuBus 收发 CRC8 / CRC16 查表校验（不依赖 lib/CRC）
 ├── time64.cpp/h        # 64 位时间工具
 └── version.h           # 固件版本与 OTA 板型键名（FW_VERSION / FW_TARGET）
 
@@ -206,9 +211,6 @@ pio run -t clean             # 清理
 - 公共依赖在 `[env]` 中声明（PCF8575），网页 `web/index.html` 通过 `board_build.embed_txtfiles` 编入固件
 - `pico` 环境需 `lib_ignore` 忽略 ESP32 专用库（WiFi/DNSServer/ESPmDNS/WebServer/Preferences）；`upload_protocol = picotool`
 - C3 默认日志走 UART0；若要用板载 USB 看日志需追加 `-DARDUINO_USB_CDC_ON_BOOT=1`
-
-## 其他
-本项目基于[Tianshu](https://github.com/hu504011383/Tianshu)
 
 ## 待处理
 打印机退料 -> 5秒后打印机要求停止 -> 打印机进料

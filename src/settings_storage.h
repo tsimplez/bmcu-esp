@@ -61,7 +61,7 @@ struct SettingsData {
 /**
  * 获取当前启用通道数
  * @return AMS 数量乘以 4
- * 所有运动逻辑和界面都以此作为有效通道上限。
+ * 所有运动逻辑和界面都以此作为有效通道上限
  */
 inline int active_channel_count() { return AMS_COUNT * 4; }
 

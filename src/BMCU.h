@@ -95,11 +95,8 @@ int BMCU_channel_filament_state(int motorNum);
 
 void BMCU_apply_channel_modes();
 
-void setMainMotorDutyCycle(uint8_t dutyCycle);
-
 void BMCU_apply_io_config();
 
-void init_io_pins();
 extern void BMCU_init();
 extern void BMCU_run();
 extern void BMCU_motion();

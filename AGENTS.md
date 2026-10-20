@@ -9,7 +9,7 @@
 - 通信：BambuBus 协议，UART + RS485（支持 RXTX 与 DE 两种模式）。
 - 平台：RP2040（Pico）、ESP32-S3、ESP32-C3、合宙 AirM2M CORE ESP32-C3。
 - 主要能力：多通道耗材管理、电机进退料、微动开关检测、AS5600 磁编码器模拟、设置持久化、日志总线、ESP32 网页管理与 OTA。
-- 第三方库：`lib/AS5600`、`lib/CRC`，属于外部依赖，非必要不要修改。
+- 第三方库：`lib/AS5600` 属于外部依赖，非必要不要修改；`lib/CRC` 已排除构建，BambuBus 收发统一使用 `src/crc_bus.c`。
 
 ## 启动与数据流
 
@@ -36,7 +36,6 @@
 | `src/PCF8575_PinMap.cpp` / `.h` | PCF8575 虚拟引脚映射与 GPIO 透明分发 | `PCF8575_*()`、`pinMode_PCF8575()`、`digitalRead_PCF8575()` |
 | `src/log_bus.cpp` / `.h` | 主板/总线两路环形日志，网页按游标增量读取 | `log_bus_write()`、`log_bus_read()`、`log_bus_hex_typed()` |
 | `src/crc_bus.c` / `.h` | BambuBus 专用 CRC8/CRC16 查表 | `bus_crc_init()`、`bus_crc8()`、`bus_crc16()` |
-| `src/FIFO_buffer.c` / `.h` | 通用环形 FIFO | `FIFO_buffer_*()` |
 | `src/Motor.cpp` / `.h` | 单个电机的两线方向控制 | `Motor::forward()`、`Motor::backward()`、`Motor::stop()` |
 | `src/web_config.cpp` / `.h` | ESP32 WiFi 配网、REST API、日志、OTA；RP2040 为空实现 | `web_config_init()`、`handle_settings_save()`、`handle_ota_*()` |
 | `web/index.html` | 网页管理界面，编译时嵌入固件 | 页面与 REST 字段 |
@@ -51,7 +50,7 @@
 - 协议解析：`package_check_crc16()`、`package_send_with_crc()`、`BambuBus_long_package_analysis()`、`get_package_type()`。
 - 协议回复：`send_for_Cxx()`、`send_for_Dxx()`、`send_for_Fxx()`、`send_for_long_packge_*()`、`send_for_Set_filament*()`。
 - AMS 温湿度：`send_for_Dxx()` 中 `Dxx_res[6..7]` 为 0.1℃ 小端温度，`Dxx_res[8]` 为湿度百分比；数据来自 `env_sensor_get_aht20()`。
-- 协议状态：内部枚举 `filament_motion_internal` 与对外枚举 `_filament_motion_state_set` 的转换在 `map_internal_to_api()`、`set_filament_motion()`。
+- 协议状态：内部枚举 `filament_motion_internal` 与对外枚举 `filament_motion_state_set` 的转换在 `map_internal_to_api()`、`set_filament_motion()`。
 - 设置：`settings_snapshot()` 收集，`settings_restore_snapshot()` 回滚，`settings_save_to_flash()` 写入并回读校验。
 - 网页接口：`handle_status()`、`handle_settings_get()`、`handle_settings_save()`、`handle_bus_save()`、`handle_pcf_save()`、`handle_manual_motor()`。
 - I2C/传感器配置：`handle_pcf_save()` 保存 SDA/SCL；`handle_status()` 返回 `i2c` 设备在线状态和 `env` 温湿度读数。
@@ -59,10 +58,10 @@
 
 ## 查找方法
 
-- `src/` 下每个 C/C++ 函数定义前都有中文 Doxygen 注释，统一格式：`@brief`、`@param`、`@return`、``。
+- `src/` 下每个 C/C++ 函数定义前都有中文 Doxygen 注释，统一格式：`@param`、`@return`、``。
 - `web/index.html` 的命名 JavaScript 函数使用同样的 JSDoc 中文格式；`tools/make_ota.py` 的每个函数都有中文 docstring。
 - 优先按函数名搜索，例如：`rg -n "BambuBus_run|send_for_Dxx" src/BambuBus.cpp`。
-- 按功能搜索注释：`rg -n "@brief.*(OTA|微动|电机|引脚|设置)" src`。
+- 按功能搜索注释：`rg -n ".*(OTA|微动|电机|引脚|设置)" src`。
 - 前端方法按声明名搜索：`rg -n "const (refreshStatus|renderBus|saveIoConfig|checkUpdate|pollLog)" web/index.html`。
 - OTA 发布工具入口：`tools/make_ota.py` 的 `main()`；版本、MD5 和清单写入分别由 `read_fw_version()`、`md5_of()`、`main()` 完成。
 - 行号会随改动变化，AGENTS.md 只记录文件和函数名，不记录固定行号。
@@ -70,7 +69,7 @@
 ## 编码约定
 
 - 新增或修改函数必须补中文说明，参考 `src/BMCU.cpp` 中的 `AS5600_is_online()`：
-  `@brief` 一句话说明职责，`@param` 说明参数，`@return` 说明返回值，`` 说明关键行为或副作用。
+  一句话说明职责，`@param` 说明参数，`@return` 说明返回值，`` 说明关键行为或副作用。
 - 平台差异只放在 `src/platform.*`；Web/OTA 差异只放在 `src/web_config.*`，并用 `#if defined(ARDUINO_ARCH_ESP32)` 隔离。
 - 引脚一律使用 `PIN_NONE` 和配置结构，不直接硬编码 GPIO；物理/PCF8575 引脚统一走 `pinMode_PCF8575()` / `digitalWrite_PCF8575()` / `digitalRead_PCF8575()`。
 - I2C 总线由 `PCF_SDA`、`PCF_SCL` 是否同时有效决定，不再使用运行期开关；PCF8575、AHT20、BMP280 共用该总线。
@@ -91,8 +90,7 @@ pio run -e esp32c3 -t upload       # 编译并烧录
 pio device monitor                 # 查看串口日志
 ```
 
-- 提交前至少编译 `esp32c3` 和 `pico`，分别覆盖 Web/OTA 与 RP2040 条件分支。
-- 当前两个环境均已验证通过。构建警告中的 `unused` 多为既有代码，不代表本次改动失败。
+- 只需要编译 `esp32c3` 减少时间 构建警告中的 `unused` 多为既有代码，不代表本次改动失败。
 
 ## Never 规则
 

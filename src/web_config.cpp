@@ -15,6 +15,7 @@
 #include "platform.h"
 #include "settings_storage.h"
 #include "BMCU.h"
+#include "BambuBus.h"
 #include "version.h"
 #include "i2c_bus.h"
 #include "env_sensor.h"
