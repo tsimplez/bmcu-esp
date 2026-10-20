@@ -1,7 +1,5 @@
 #pragma once
 
-#include <Arduino.h>
-
 // 温湿度/气压传感器的当前状态与最新读数
 struct EnvSensorStatus {
     bool aht20_online;        // AHT20 是否已检测到并成功完成初始化

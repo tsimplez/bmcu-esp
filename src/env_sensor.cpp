@@ -3,8 +3,7 @@
 #include <Wire.h>
 
 #include "i2c_bus.h"
-#include "logbus.h"
-#include "platform.h"
+#include "log_bus.h"
 
 // AHT20 温湿度传感器 I2C 地址
 #define AHT20_ADDR 0x38

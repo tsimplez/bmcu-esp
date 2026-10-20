@@ -18,7 +18,7 @@
 3. 打印机报文：RS485 -> `RX_IRQ()` 组帧 -> 双缓冲 -> `BambuBus_run()` -> `get_package_type()` -> `send_for_*()` 回复。
 4. 运动控制：`BambuBus` 状态机 -> `get_filament_motion()` -> `BMCU_run()` / `BMCU_motion()` -> `motorCmd()` -> `Motor`。
 5. 网页配置：HTTP handler -> `settings_*` -> 写入 Flash/NVS -> `BMCU_apply_io_config()` / `BMCU_apply_channel_modes()` 应用。
-6. 掉电保存：`Bambubus_set_need_to_save()` 标记，`BambuBus_run()` 限频调用 `Bambubus_save()` 并回读校验。
+6. 掉电保存：`BambuBus_set_need_to_save()` 标记，`BambuBus_run()` 限频调用 `BambuBus_save()` 并回读校验。
 7. 环境数据：AHT20/BMP280 -> `env_sensor_run()` -> `env_sensor_get_aht20()` -> `send_for_Dxx()` 写入 AMS 长包的温度/湿度字段。
 
 ## 目录与功能地图
@@ -34,7 +34,7 @@
 | `src/settings_storage.cpp` / `.h` | 设置结构、默认值、加载/保存/快照/回滚、CRC32 | `settings_storage_init()`、`settings_save_to_flash()`、`apply_settings_values()` |
 | `src/io_config.cpp` / `.h` | 引脚合法性、冲突校验、网页引脚选项 | `io_config_validate()`、`io_config_bus_validate()`、`io_config_pin_available()` |
 | `src/PCF8575_PinMap.cpp` / `.h` | PCF8575 虚拟引脚映射与 GPIO 透明分发 | `PCF8575_*()`、`pinMode_PCF8575()`、`digitalRead_PCF8575()` |
-| `src/logbus.cpp` / `.h` | 主板/总线两路环形日志，网页按游标增量读取 | `logbus_write()`、`logbus_read()`、`logbus_hex_typed()` |
+| `src/log_bus.cpp` / `.h` | 主板/总线两路环形日志，网页按游标增量读取 | `log_bus_write()`、`log_bus_read()`、`log_bus_hex_typed()` |
 | `src/crc_bus.c` / `.h` | BambuBus 专用 CRC8/CRC16 查表 | `bus_crc_init()`、`bus_crc8()`、`bus_crc16()` |
 | `src/FIFO_buffer.c` / `.h` | 通用环形 FIFO | `FIFO_buffer_*()` |
 | `src/Motor.cpp` / `.h` | 单个电机的两线方向控制 | `Motor::forward()`、`Motor::backward()`、`Motor::stop()` |
@@ -48,10 +48,10 @@
 - 电机与通道：`BMCU_channel_motor_ready()`、`BMCU_manual_pulse()`、`BMCU_stop_motor()`、`BMCU_motor_status()`、`BMCU_can_maintain()`。
 - 微动与自动进料：`check_microswitch_status()`、`autoload_blocked()`、`BMCU_apply_channel_modes()`。
 - AS5600 模拟：`AS5600_init()`、`AS5600_get_raw_angle()`、`AS5600_get_speed()`、`AS5600_is_online()`。
-- 协议解析：`package_check_crc16()`、`package_send_with_crc()`、`Bambubus_long_package_analysis()`、`get_package_type()`。
+- 协议解析：`package_check_crc16()`、`package_send_with_crc()`、`BambuBus_long_package_analysis()`、`get_package_type()`。
 - 协议回复：`send_for_Cxx()`、`send_for_Dxx()`、`send_for_Fxx()`、`send_for_long_packge_*()`、`send_for_Set_filament*()`。
 - AMS 温湿度：`send_for_Dxx()` 中 `Dxx_res[6..7]` 为 0.1℃ 小端温度，`Dxx_res[8]` 为湿度百分比；数据来自 `env_sensor_get_aht20()`。
-- 协议状态：内部枚举 `_filament_motion_internal` 与对外枚举 `_filament_motion_state_set` 的转换在 `map_internal_to_api()`、`set_filament_motion()`。
+- 协议状态：内部枚举 `filament_motion_internal` 与对外枚举 `_filament_motion_state_set` 的转换在 `map_internal_to_api()`、`set_filament_motion()`。
 - 设置：`settings_snapshot()` 收集，`settings_restore_snapshot()` 回滚，`settings_save_to_flash()` 写入并回读校验。
 - 网页接口：`handle_status()`、`handle_settings_get()`、`handle_settings_save()`、`handle_bus_save()`、`handle_pcf_save()`、`handle_manual_motor()`。
 - I2C/传感器配置：`handle_pcf_save()` 保存 SDA/SCL；`handle_status()` 返回 `i2c` 设备在线状态和 `env` 温湿度读数。

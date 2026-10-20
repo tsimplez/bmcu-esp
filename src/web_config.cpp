@@ -11,7 +11,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 
-#include "logbus.h"
+#include "log_bus.h"
 #include "platform.h"
 #include "settings_storage.h"
 #include "BMCU.h"
@@ -596,6 +596,8 @@ static void handle_settings_save() {
     }
     int buslog_before = BUS_LOG_ENABLE;
     const SettingsData previous = settings_snapshot();
+    bool timeout_changed[IO_CONFIG_MAX_CHANNELS] = {};
+    uint32_t timeout_previous_ms[IO_CONFIG_MAX_CHANNELS] = {};
     const bool ams_valid = valid_number("ams", 1, BMCU_max_ams_count());
     const int candidate_ams = ams_valid && server.hasArg("ams") ? server.arg("ams").toInt() : AMS_COUNT;
     const int candidate_channels = candidate_ams * 4;
@@ -685,7 +687,13 @@ static void handle_settings_save() {
         String kt = "to" + String(i), kc = "cm" + String(i);
         if (server.hasArg(kt)) {
             int v = server.arg(kt).toInt();
-            if (v >= 3 && v <= 30) PULLBACK_TIMEOUT[i] = v;
+            if (v >= 3 && v <= 30) {
+                if (v != PULLBACK_TIMEOUT[i]) {
+                    timeout_changed[i] = true;
+                    timeout_previous_ms[i] = static_cast<uint32_t>(PULLBACK_TIMEOUT[i]) * 1000u;
+                }
+                PULLBACK_TIMEOUT[i] = v;
+            }
         }
         if (server.hasArg(kc)) {
             int v = server.arg(kc).toInt();
@@ -707,6 +715,9 @@ static void handle_settings_save() {
     }
     if (io_changed || count_changed) BMCU_apply_io_config();
     BMCU_apply_channel_modes();
+    for (int i = 0; i < candidate_channels; i++) {
+        if (timeout_changed[i]) BMCU_apply_pullback_timeout(i, timeout_previous_ms[i]);
+    }
     LOG_MAIN("[web] 设置已保存");
     if (BUS_LOG_ENABLE != buslog_before) {
         LOG_MAIN("[web] BambuBus 原始报文日志已%s", BUS_LOG_ENABLE ? "启用" : "关闭");
@@ -883,14 +894,16 @@ static void handle_scan() {
 /**
  * 处理日志读取请求
  * 支持按游标增量读取、清空和下载；主板日志和 BambuBus 日志通过 ch 参数选择。
+ * 响应同时携带 X-Log-Seq 与 X-Uptime-Ms，网页据此增量读取并把开机毫秒换算成本地时间。
  */
 static void handle_log() {
     int ch = server.hasArg("ch") ? server.arg("ch").toInt() : LOG_CH_MAIN;
     if (ch < 0 || ch >= LOG_CH_COUNT) ch = LOG_CH_MAIN;
 
     if (server.hasArg("clear")) {
-        logbus_clear(ch);
-        server.sendHeader("X-Log-Seq", String(logbus_total(ch)));
+        log_bus_clear(ch);
+        server.sendHeader("X-Log-Seq", String(log_bus_total(ch)));
+        server.sendHeader("X-Uptime-Ms", String(millis()));
         server.sendHeader("Cache-Control", "no-store");
         server.send(200, "text/plain; charset=utf-8", "");
         return;
@@ -900,9 +913,10 @@ static void handle_log() {
 
     // 日志响应复用缓冲区；容量在单次拉取上限外留出格式化余量
     static char buf[LOG_PULL_MAX + 64];
-    logbus_read(ch, &seq, buf, sizeof(buf));
+    log_bus_read(ch, &seq, buf, sizeof(buf));
 
     server.sendHeader("X-Log-Seq", String(seq));
+    server.sendHeader("X-Uptime-Ms", String(millis()));
     server.sendHeader("Cache-Control", "no-store");
     if (server.hasArg("dl")) {
         server.sendHeader("Content-Disposition",

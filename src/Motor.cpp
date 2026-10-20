@@ -2,7 +2,15 @@
 #include "PCF8575_PinMap.h"
 #include "platform.h"
 
-const uint8_t DEFAULT_PWM_DUTY_CYCLE = 255; // 默认 PWM 占空比（0-255）
+#define DEFAULT_PWM_DUTY_CYCLE 255 // 默认 PWM 占空比（0-255）
+
+/**
+ * 默认电机构造函数
+ * 创建一个尚未绑定引脚的电机对象，后续可通过 setPins() 绑定。
+ */
+Motor::Motor()
+    : pin1(PIN_NONE), pin2(PIN_NONE), pwmDutyCycle(DEFAULT_PWM_DUTY_CYCLE) {
+}
 
 /**
  * 带引脚参数的电机构造函数
@@ -17,20 +25,12 @@ Motor::Motor(const int pin1, const int pin2)
 }
 
 /**
- * 默认电机构造函数
- * 创建一个尚未绑定引脚的电机对象，后续可通过 setPins() 绑定。
- */
-Motor::Motor()
-    : pin1(PIN_NONE), pin2(PIN_NONE), pwmDutyCycle(DEFAULT_PWM_DUTY_CYCLE) {
-}
-
-/**
  * 重新绑定电机方向引脚
  * @param newPin1 新的进料方向引脚
  * @param newPin2 新的退料方向引脚
  * 先停止电机并把旧引脚拉低，再配置新引脚为输出，避免切换接线时误转。
  */
-void Motor::setPins(int newPin1, int newPin2) {
+void Motor::setPins(const int newPin1, const int newPin2) {
     // 重新绑定前先把旧输出拉低，避免切换配置时留下高电平。
     stop();
     pin1 = newPin1;
@@ -48,7 +48,7 @@ void Motor::setPins(int newPin1, int newPin2) {
  * @param dutyCycle 占空比，范围 0-255
  * 把占空比限制在 0-255 范围内并保存，供上层读取或后续扩展 PWM 使用。
  */
-void Motor::setDutyCycle(uint8_t dutyCycle) {
+void Motor::setDutyCycle(const uint8_t dutyCycle) {
     pwmDutyCycle = constrain(dutyCycle, 0, 255);
 }
 
@@ -97,7 +97,6 @@ void Motor::stop() {
 /**
  * 查询电机是否停止
  * @return true 表示已停止，false 表示正在转动
- * 返回电机对象保存的停止状态。
  */
 bool Motor::getStopState() const {
     return isStop;
@@ -106,7 +105,6 @@ bool Motor::getStopState() const {
 /**
  * 获取电机状态文本
  * @return 当前状态字符串（前进/后退/停止）
- * 返回供界面和日志显示的中文状态。
  */
 String Motor::getState() {
     return state;

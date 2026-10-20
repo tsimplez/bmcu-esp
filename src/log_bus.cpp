@@ -1,9 +1,9 @@
-#include "logbus.h"
+#include "log_bus.h"
 #include "platform.h"
 
-#include <stdio.h>
-#include <string.h>
-#include <stdarg.h>
+#include <cstdio>
+#include <cstring>
+#include <cstdarg>
 
 // ============================================================
 // 环形缓冲实现
@@ -11,7 +11,7 @@
 
 #if defined(ARDUINO_ARCH_ESP32)
 
-#define LOG_SIZE_MAIN 4096
+#define LOG_SIZE_MAIN 65536
 #define LOG_SIZE_BUS  65536
 static portMUX_TYPE log_mux = portMUX_INITIALIZER_UNLOCKED;
 #define LOG_LOCK()   portENTER_CRITICAL(&log_mux)
@@ -19,7 +19,7 @@ static portMUX_TYPE log_mux = portMUX_INITIALIZER_UNLOCKED;
 
 #else
 
-#define LOG_SIZE_MAIN 2048
+#define LOG_SIZE_MAIN 8192
 #define LOG_SIZE_BUS  8192
 #include <hardware/sync.h>
 #define LOG_LOCK()   uint32_t _log_irq = save_and_disable_interrupts()
@@ -78,7 +78,7 @@ static bool ring_ref(const int ch, RingRef &r) {
  * 初始化日志环形缓冲
  * 清空两路日志缓冲区并把累计写游标和清空下限归零。
  */
-void logbus_init() {
+void log_bus_init() {
     memset(ring_main.buf, 0, sizeof(ring_main.buf));
     memset(ring_bus.buf, 0, sizeof(ring_bus.buf));
     ring_main.total = ring_main.floor = 0;
@@ -92,7 +92,7 @@ void logbus_init() {
  * @param len 数据长度
  * 在临界区内循环写入并在末尾覆盖旧数据，写入过程不会阻塞。
  */
-void logbus_write(const int ch, const char *data, const size_t len) {
+void log_bus_write(const int ch, const char *data, const size_t len) {
     RingRef r{};
     if (!data || !ring_ref(ch, r)) return;
 
@@ -113,7 +113,7 @@ void logbus_write(const int ch, const char *data, const size_t len) {
  * @param ch 日志通道
  * 清空缓冲区并把 floor 推进到当前写游标，客户端不会重复读到旧内容。
  */
-void logbus_clear(const int ch) {
+void log_bus_clear(const int ch) {
     RingRef r{};
     if (!ring_ref(ch, r)) return;
 
@@ -129,7 +129,7 @@ void logbus_clear(const int ch) {
  * @return 累计写游标
  * 返回单调递增的写游标，可用于清空后同步客户端序号。
  */
-uint32_t logbus_total(const int ch) {
+uint32_t log_bus_total(const int ch) {
     RingRef r{};
     if (!ring_ref(ch, r)) return 0;
     uint32_t t;
@@ -144,12 +144,12 @@ uint32_t logbus_total(const int ch) {
  * @param ch 日志通道
  * @param seq 输入上次游标，输出新游标
  * @param out 输出缓冲区
- * @param maxlen 输出缓冲区大小
+ * @param max_len 输出缓冲区大小
  * @return 实际写入 out 的字节数
  * 从游标位置读取未消费日志；若中间数据已被覆盖，会先插入丢弃提示。
  */
-size_t logbus_read(const int ch, uint32_t *seq, char *out, size_t maxlen) {
-    if (!seq || !out || maxlen == 0) return 0;
+size_t log_bus_read(const int ch, uint32_t *seq, char *out, size_t max_len) {
+    if (!seq || !out || max_len == 0) return 0;
     out[0] = 0;
 
     RingRef r{};
@@ -169,13 +169,13 @@ size_t logbus_read(const int ch, uint32_t *seq, char *out, size_t maxlen) {
         // 游标落后超过缓冲区容量时，返回给网页的提示文本
         static constexpr char mark[] = "[... 较早日志已滚动丢弃 ...]\n";
         size_t ml = sizeof(mark) - 1;
-        if (ml > maxlen - 1) ml = maxlen - 1;
+        if (ml > max_len - 1) ml = max_len - 1;
         memcpy(out, mark, ml);
         n = ml;
         s = oldest;
     }
 
-    const size_t room = maxlen - 1 - n;
+    const size_t room = max_len - 1 - n;
     uint32_t avail = total > s ? total - s : 0;
     if (avail > room) avail = static_cast<uint32_t>(room);
 
@@ -216,7 +216,7 @@ static void console_echo(const char *s, size_t len) {
  * @param ... 可变参数
  * 添加毫秒时间戳后写入环形缓冲，主板日志同时回显到控制台。
  */
-void logbus_printf(int ch, const char *fmt, ...) {
+void log_bus_printf(const int ch, const char *fmt, ...) {
     char body[224];
     char line[256];
 
@@ -229,7 +229,7 @@ void logbus_printf(int ch, const char *fmt, ...) {
     if (n <= 0) return;
     const size_t len = static_cast<size_t>(n) < sizeof(line) ? static_cast<size_t>(n) : sizeof(line) - 1;
 
-    logbus_write(ch, line, len);
+    log_bus_write(ch, line, len);
     if (ch == LOG_CH_MAIN) console_echo(line, len);
 }
 
@@ -261,7 +261,7 @@ static char *fmt_u32(char *p, uint32_t v) {
  * @return 写入结束后的新位置
  * 先处理负号，再复用无符号转换逻辑。
  */
-static char *fmt_i32(char *p, int32_t v) {
+static char *fmt_i32(char *p, const int32_t v) {
     if (v < 0) {
         *p++ = '-';
         return fmt_u32(p, static_cast<uint32_t>(-static_cast<int64_t>(v)));
@@ -278,7 +278,7 @@ static char *fmt_i32(char *p, int32_t v) {
  * @param len 数据长度
  * 每行最多 24 字节，行首携带时间戳、类型和收发标记，便于网页按类型过滤。
  */
-void logbus_hex_typed(const int ch, const char tag, const int type, const uint8_t *data, const uint16_t len) {
+void log_bus_hex_typed(const int ch, const char tag, const int type, const uint8_t *data, const uint16_t len) {
     // 十六进制字符表，避免每次转换都调用格式化函数
     static constexpr char hexd[] = "0123456789ABCDEF";
     char line[128];
@@ -311,7 +311,7 @@ void logbus_hex_typed(const int ch, const char tag, const int type, const uint8_
         }
         if (i < len) *p++ = '>';
         *p++ = '\n';
-        logbus_write(ch, line, static_cast<size_t>(p - line));
+        log_bus_write(ch, line, static_cast<size_t>(p - line));
     }
 }
 
@@ -321,8 +321,8 @@ void logbus_hex_typed(const int ch, const char tag, const int type, const uint8_
  * @param tag R 表示接收，T 表示发送
  * @param data 待转储数据
  * @param len 数据长度
- * 以 type=-1 调用 logbus_hex_typed()，用于没有完整报文类型的原始字节。
+ * 以 type=-1 调用 log_bus_hex_typed()，用于没有完整报文类型的原始字节。
  */
-void logbus_hex(const int ch, const char tag, const uint8_t *data, const uint16_t len) {
-    logbus_hex_typed(ch, tag, -1, data, len);
+void log_bus_hex(const int ch, const char tag, const uint8_t *data, const uint16_t len) {
+    log_bus_hex_typed(ch, tag, -1, data, len);
 }

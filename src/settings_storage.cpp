@@ -1,6 +1,6 @@
 #include "settings_storage.h"
 #include "platform.h"
-#include "logbus.h"
+#include "log_bus.h"
 #include "i2c_bus.h"
 
 // ============================
@@ -376,14 +376,13 @@ void settings_log_all() {
              OTA_URL[0] ? OTA_URL : "(未设置)", OTA_NOTIFY ? "开" : "关");
 }
 
-// 获取指定电机的退料超时时间
 /**
  * 读取通道退料超时
  * @param motor_index 通道编号 0-15
  * @return 退料超时秒数
- * 编号越界时返回默认值。
+ * 编号越界时返回默认值
  */
-int get_motor_pullback_timeout(int motor_index) {
+int get_motor_pullback_timeout(const int motor_index) {
     if (motor_index >= 0 && motor_index < 16) {
         return PULLBACK_TIMEOUT[motor_index];
     }

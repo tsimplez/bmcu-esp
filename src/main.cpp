@@ -1,6 +1,6 @@
 #include "main.h"
 #include "settings_storage.h"
-#include "logbus.h"
+#include "log_bus.h"
 #include "web_config.h"
 #include "version.h"
 #include "i2c_bus.h"
@@ -13,7 +13,7 @@
 void setup(){
     hal_console_begin();  // 串口控制台：不 begin 的话下面所有 LOG_MAIN 都写不出去
     hal_watchdog_init();
-    logbus_init();     // 日志环形缓冲，越早越好，方便抓到启动过程
+    log_bus_init();     // 日志环形缓冲，越早越好，方便抓到启动过程
 
     // 初始化设置存储（在BMCU_init之前，确保变量先被加载）
     settings_storage_init();

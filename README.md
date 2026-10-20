@@ -38,6 +38,9 @@
 - 群 735647789
 - [教程 https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9](https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9)
 
+## 波兰固件
+[仓库](https://github.com/jarczakpawel/BMCU-C-PJARCZAK)
+
 ### 其他
 欢迎补充内容
 
@@ -101,7 +104,7 @@ src/
 ├── Motor.cpp/h         # 电机驱动封装
 ├── io_config.cpp/h     # 电机/微动引脚配置：默认值、校验、可选引脚与标签
 ├── settings_storage.cpp/h  # 设置存储（V6 格式、CRC32、默认值与迁移）
-├── logbus.cpp/h        # 日志总线：两路环形缓冲 + 增量读取
+├── log_bus.cpp/h        # 日志总线：两路环形缓冲 + 增量读取
 ├── web_config.cpp/h    # 网页管理（仅 ESP32，其它平台为空实现）
 ├── PCF8575_PinMap.cpp/h# PCF8575 GPIO 扩展
 ├── FIFO_buffer.c/h     # 环形缓冲区
@@ -137,7 +140,7 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 - 保存失败时用内存快照回退，避免读到不完整 Flash
 - 启动与保存后都会把生效设置打印到主板日志，便于排查
 
-### 日志总线（`logbus`）
+### 日志总线（`log_bus`）
 
 - 两路固定大小环形缓冲：主板日志（`LOG_MAIN`）与 BambuBus 原始报文（`LOG_BUS`）
 - 缓冲区大小：ESP32 为主板 4 KB / 总线 64 KB，RP2040 为主板 2 KB / 总线 8 KB
@@ -206,3 +209,7 @@ pio run -t clean             # 清理
 
 ## 其他
 本项目基于[Tianshu](https://github.com/hu504011383/Tianshu)
+
+## 待处理
+打印机退料 -> 5秒后打印机要求停止 -> 打印机进料
+似乎和 AS5600_get_distance_E _filament meters 长度有关系

@@ -111,18 +111,6 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="kv"><span>编译时间</span><b id="s-build">-</b></div>
   </div>
   <div class="card">
-    <h2>I2C 设备与温湿度</h2>
-    <div class="kv"><span>I2C 总线</span><b id="s-i2c">-</b></div>
-    <div class="kv"><span>PCF8575（0x20）</span><b id="s-pcf">-</b></div>
-    <div class="kv"><span>AHT20（0x38）</span><b id="s-aht">-</b></div>
-    <div class="kv"><span>BMP280（0x76/0x77）</span><b id="s-bmp">-</b></div>
-    <div class="kv"><span>AHT20 温度</span><b id="s-aht-temp">-</b></div>
-    <div class="kv"><span>AHT20 湿度</span><b id="s-aht-hum">-</b></div>
-    <div class="kv"><span>BMP280 温度</span><b id="s-bmp-temp">-</b></div>
-    <div class="kv"><span>大气压</span><b id="s-bmp-press">-</b></div>
-    <div class="hint">未检测到的传感器会自动停用并定期重试；网页显示“未检测”时不会使用旧读数。</div>
-  </div>
-  <div class="card">
     <div class="row" style="margin-bottom:10px">
       <h2 style="margin:0">通道参数与手动进退料</h2>
       <span class="spacer"></span>
@@ -154,6 +142,18 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <tbody id="chbody"></tbody>
     </table>
     <div id="manual-state" class="hint">正在读取设备状态…</div>
+  </div>
+  <div class="card">
+    <h2>I2C 设备与温湿度</h2>
+    <div class="kv"><span>I2C 总线</span><b id="s-i2c">-</b></div>
+    <div class="kv"><span>PCF8575（0x20）</span><b id="s-pcf">-</b></div>
+    <div class="kv"><span>AHT20（0x38）</span><b id="s-aht">-</b></div>
+    <div class="kv"><span>BMP280（0x76/0x77）</span><b id="s-bmp">-</b></div>
+    <div class="kv"><span>AHT20 温度</span><b id="s-aht-temp">-</b></div>
+    <div class="kv"><span>AHT20 湿度</span><b id="s-aht-hum">-</b></div>
+    <div class="kv"><span>BMP280 温度</span><b id="s-bmp-temp">-</b></div>
+    <div class="kv"><span>大气压</span><b id="s-bmp-press">-</b></div>
+    <div class="hint">未检测到的传感器会自动停用并定期重试；网页显示“未检测”时不会使用旧读数。</div>
   </div>
 </div>
 
@@ -319,6 +319,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     </div>
     <pre id="log0" class="logbox"></pre>
     <pre id="log1" class="logbox hide"></pre>
+    <div class="hint">日志行首显示浏览器本地时间；设备没有实时时钟，时间由日志里的开机毫秒数结合浏览器时钟换算。</div>
     <div class="hint bus-only-control hide">BambuBus 面板显示 RS485 上的原始十六进制报文：<b>RX</b> = 收到、<b>TX</b> = 发出，以及解析出的包类型。「抓取 30 秒」按当前勾选的显示类型抓取未来 30 秒的报文，抓完自动下载 .log 文件。</div>
   </div>
 </div>
@@ -1385,6 +1386,62 @@ const doReboot=()=>{if(confirm('确定重启设备？')) api('/api/reboot').then
 const doFactory=()=>{if(confirm('确定恢复出厂设置？WiFi 凭据也会被清空。')) api('/api/factory',{method:'POST'}).then((t)=>{toast(JSON.parse(t).msg,6000);});}
 
 // ---------- 日志 ----------
+// 设备开机毫秒数到浏览器本地时间的换算基准；null 表示尚未同步
+let logClockOffset = null
+/**
+ * 同步日志时间基准
+ * @param {number} uptimeMs 设备当前开机毫秒数
+ * 记录浏览器本地时间与设备运行时间的差值，供日志行首时间换算使用。
+ */
+const setLogClock=(uptimeMs)=>{
+  const n=Number(uptimeMs)
+  if(!isFinite(n)||n<0) return
+  logClockOffset=Date.now()-n
+}
+/**
+ * 从日志响应头同步设备运行时间
+ * @param {Response} r fetch 返回的响应对象
+ * 读取 X-Uptime-Ms；响应头缺失时保留上一次的时间基准。
+ */
+const syncLogClock=(r)=>{
+  const s=r.headers.get('X-Uptime-Ms')
+  if(s!==null) setLogClock(parseInt(s,10))
+}
+/**
+ * 把日志行首的开机毫秒数转换成浏览器本地时间
+ * @param {string} line 原始日志行
+ * @return {string} 使用 [yyyy-MM-dd HH:mm:ss.SSS] 前缀的日志行
+ * 只替换形如“[1234] ”的时间前缀，其余内容和未识别行保持原样。
+ */
+const fmtLogLine=(line)=>{
+  const m=/^\[(\d+)\] /.exec(line)
+  if(!m||logClockOffset===null) return line
+  const d=new Date(logClockOffset+parseInt(m[1],10))
+  if(isNaN(d.getTime())) return line
+  const pad=(v,n)=>String(v).padStart(n,'0')
+  const ts= pad(d.getHours(),2)+':'+pad(d.getMinutes(),2)+':'+pad(d.getSeconds(),2)+'.'+ pad(d.getMilliseconds(),3)
+  return '['+ts+'] '+line.slice(m[0].length)
+}
+/**
+ * 批量转换日志文本中的时间前缀
+ * @param {string} text 原始日志文本
+ * @return {string} 使用浏览器本地时间前缀的日志文本
+ * 按行调用 fmtLogLine()，用于日志显示和下载文件。
+ */
+const fmtLogText=(text)=>String(text||'').split('\n').map(fmtLogLine).join('\n')
+/**
+ * 触发浏览器下载文本文件
+ * @param {string} name 下载文件名
+ * @param {string} text 文件内容
+ * 创建临时 Blob 和隐藏链接，点击后释放 URL。
+ */
+const saveTextFile=(name,text)=>{
+  const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}))
+  const a=document.createElement('a')
+  a.href=url;a.download=name
+  document.body.appendChild(a);a.click();a.remove()
+  setTimeout(()=>URL.revokeObjectURL(url),10000)
+}
 // BambuBus 日志类型定义：type 与固件 package_type 对应，color 用于高亮
 const BUS_LOG_TYPES = [
   {type: 0, label: 'filament_motion_short 短包动作', color: '#67e8f9'},
@@ -1410,10 +1467,11 @@ const busLogFilters = {};
 const busLogFilterStorage = 'bmcu-bus-log-filters';
 // 两路日志的增量拉取状态：[0]=主板日志，[1]=BambuBus 总线日志
 // seq=已读服务端序号，el=输出节点，paused=是否暂停，txt=已拼接文本，
-// records=结构化总线记录，pending=未成行的半截文本，rawBytes=已接收原始字节数
+// records=结构化总线记录，pending=未成行的半截文本，rawBytes=已接收原始字节数，
+// busy=是否有未完成的拉取请求，防止慢请求叠加
 const LOGS = [
-  {seq: 0, el: null, paused: false, txt: ''},
-  {seq: 0, el: null, paused: false, txt: '', records: [], pending: '', rawBytes: 0}
+  {seq: 0, el: null, paused: false, txt: '', pending: '', busy: false},
+  {seq: 0, el: null, paused: false, txt: '', records: [], pending: '', rawBytes: 0, busy: false}
 ];
 // 当前日志页签：0=主板日志，1=总线日志
 let activeLog = 0
@@ -1499,7 +1557,7 @@ const renderBusLog=()=>{
     const line = document.createElement('span');
     line.style.color=busLogColors[rec.type]||busLogColors[-1]
     // type=... 是给筛选器使用的元数据；页面保留原来的可读日志格式。
-    line.textContent=rec.text.replace(/\btype=-?\d+\s+/,'')
+    line.textContent=fmtLogLine(rec.text.replace(/\btype=-?\d+\s+/,''))
     out.appendChild(line)
   }
   $('log1').replaceChildren(out)
@@ -1508,7 +1566,8 @@ const renderBusLog=()=>{
 /**
  * 追加 BambuBus 原始日志
  * @param {string} text 新收到的日志文本
- * 按行切分并解析类型，缓存完整行；超过 256KB 时裁剪到约 128KB 后重绘。
+ * 按行切分并解析类型，缓存完整行；超过 256KB 时裁剪到约 128KB，
+ * 只有当前页签为 BambuBus 时才重绘页面。
  */
 const appendBusLog=(text)=>{
   const L = LOGS[1];
@@ -1524,7 +1583,7 @@ const appendBusLog=(text)=>{
     const target = 131072;
     while(L.records.length&&L.rawBytes>target){L.rawBytes-=L.records.shift().text.length}
   }
-  renderBusLog()
+  if(activeLog===1) renderBusLog()
 }
 /**
  * 切换日志显示通道
@@ -1540,6 +1599,7 @@ const showLog=(ch)=>{
   const bs = document.querySelectorAll('[data-log]');
   for(let i=0; i<bs.length; i++) bs[i].classList.toggle('on',+bs[i].getAttribute('data-log')===ch)
   if(ch===1) renderBusLog()
+  else $('log0').textContent=LOGS[0].txt
   const el = $('log' + ch);
   el.scrollTop=el.scrollHeight
 }
@@ -1562,15 +1622,41 @@ const clearLog=()=>{
     const L = LOGS[ch];
     L.seq=parseInt(r.headers.get('X-Log-Seq')||'0',10)
     L.txt=''
-    if(ch===1){L.records=[];L.pending='';L.rawBytes=0;renderBusLog();}
+    L.pending=''
+    if(ch===1){L.records=[];L.rawBytes=0;renderBusLog();}
     else $('log'+ch).textContent=''
   })
 }
 /**
  * 下载当前日志文件
- * 在新标签页打开带下载参数的日志接口，由服务端返回完整日志。
+ * 拉取当前通道的完整环形缓冲，把行首毫秒数转换为浏览器本地时间后下载。
  */
-const downloadLog=()=>window.open('/api/log?ch='+activeLog+'&seq=0&dl=1','_blank')
+const downloadLog=()=>{
+  const ch=activeLog, parts=[]
+  /**
+   * 分块拉取完整日志
+   * @param {number} seq 服务端读取游标
+   * @return {Promise<string>} 拼接后的完整日志文本
+   * 单次接口最多返回 16KB，拿满后继续按新游标拉取，避免下载内容被截断。
+   */
+  const readAll=(seq)=>{
+    return fetch('/api/log?ch='+ch+'&seq='+seq).then((r)=>{
+      syncLogClock(r)
+      const next=parseInt(r.headers.get('X-Log-Seq')||'0',10)
+      return r.blob().then((blob)=>{
+        if(blob.size) parts.push(blob)
+        if(blob.size>=BUS_CAPTURE_CHUNK) return readAll(next)
+        return new Response(new Blob(parts)).text()
+      })
+    })
+  }
+  readAll(0).then((text)=>{
+    const d=new Date(),pad=(v)=>String(v).padStart(2,'0')
+    const name=(ch===1?'bambubus-':'main-')+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'-'+
+               pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds())+'.log'
+    saveTextFile(name,fmtLogText(text))
+  }).catch(()=>toast('日志下载失败',4000))
+}
 
 // ---------- BambuBus 报文抓取：抓未来 10 秒的数据，抓完下载 ----------
 // 单次抓取的持续时间（毫秒）
@@ -1593,6 +1679,7 @@ let busCaptureBusy=false
  */
 const busCaptureSyncSeq=()=>
   fetch('/api/log?ch=1&seq='+BUS_CAPTURE_SYNC).then((r)=>{
+    syncLogClock(r)
     const s=r.headers.get('X-Log-Seq')
     return r.text().then(()=>{
       const seq=s===null?NaN:parseInt(s,10)
@@ -1624,7 +1711,7 @@ const busCaptureAppend=(cap,text)=>{
     if(!lines[i]) continue                       // 空行不入档
     const type=busLogTypeFromLine(lines[i])
     if(cap.filters[type]===false) continue       // 显示类型里没勾选的类型不抓
-    cap.lines.push(lines[i])
+    cap.lines.push(fmtLogLine(lines[i]))
   }
 }
 /**
@@ -1643,11 +1730,7 @@ const busCaptureSave=(cap)=>{
   const name='bambubus-'+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'-'+
              pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds())+'.log'
   const text=cap.lines.length?(cap.lines.join('\n')+'\n'):''
-  const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}))
-  const a=document.createElement('a')
-  a.href=url;a.download=name
-  document.body.appendChild(a);a.click();a.remove()
-  setTimeout(()=>URL.revokeObjectURL(url),10000)
+  saveTextFile(name,text)
 }
 /**
  * 结束并保存报文抓取
@@ -1672,6 +1755,7 @@ const busCapturePoll=()=>{
   if(!cap) return
   cap.timer=null
   fetch('/api/log?ch=1&seq='+cap.seq).then((r)=>{
+    syncLogClock(r)
     const s=r.headers.get('X-Log-Seq')
     if(s!==null) cap.seq=parseInt(s,10)
     return r.text()
@@ -1714,28 +1798,38 @@ const startBusCapture=()=>{
  * 追加指定通道的日志文本
  * @param {number} ch 日志通道，0 为主板，1 为 BambuBus
  * @param {string} text 新日志
- * BambuBus 走按类型缓存的渲染逻辑；主板日志按 256KB/128KB 上限裁剪并自动滚动。
+ * BambuBus 走按类型缓存的渲染逻辑；主板日志按 256KB/128KB 上限裁剪。
+ * 非当前页签只更新缓存，不写 DOM，切回时由 showLog() 统一渲染。
  */
 const appendLog=(ch,text)=>{
   if(ch===1){appendBusLog(text);return}
   const L = LOGS[ch], el = $('log' + ch);
-  L.txt+=text
+  L.pending+=text
+  const lines=L.pending.split('\n')
+  L.pending=lines.pop()
+  for(let i=0;i<lines.length;i++) L.txt+=fmtLogLine(lines[i])+'\n'
   if(L.txt.length>262144) L.txt=L.txt.slice(-131072)
+  if(ch!==activeLog) return
   el.textContent=L.txt
-  if(ch===activeLog) el.scrollTop=el.scrollHeight
+  el.scrollTop=el.scrollHeight
 }
 /**
- * 增量轮询当前日志通道
- * 只在日志标签页且未暂停时请求新内容，更新服务端游标并追加到页面。
+ * 增量轮询指定日志通道
+ * @param {number} ch 日志通道，0 为主板，1 为 BambuBus
+ * 只在日志标签页且未暂停时请求新内容；busy 防止同一通道重复请求，
+ * 非当前页签只更新缓存，由 showLog() 在切换时渲染。
  */
-const pollLog=()=>{
+const pollLogChannel=(ch)=>{
   if(TAB!=='logs'||paused) return
-  const ch = activeLog, L = LOGS[ch];
+  const L = LOGS[ch];
+  if(L.busy) return
+  L.busy=true
   fetch('/api/log?ch='+ch+'&seq='+L.seq).then((r)=>{
+    syncLogClock(r)
     const s = r.headers.get('X-Log-Seq');
     if(s!==null) L.seq=parseInt(s,10)
     return r.text()
-  }).then((t)=>{ if(t) appendLog(ch,t); }).catch(()=>{})
+  }).then((t)=>{ if(t) appendLog(ch,t); }).catch(()=>{}).finally(()=>{L.busy=false})
 }
 
 // ---------- 启动 ----------
@@ -1754,7 +1848,8 @@ refreshStatus()
 loadPara()
 setInterval(refreshStatus,1000)
 setInterval(renderMotorControls,200)
-setInterval(pollLog,800)
+setInterval(()=>pollLogChannel(activeLog),800)
+setInterval(()=>pollLogChannel(1-activeLog),2000)
 </script>
 </body>
 </html>

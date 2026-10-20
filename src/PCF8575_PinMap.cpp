@@ -162,7 +162,7 @@ int PCF8575_digitalRead(const uint8_t pin) {
     const uint8_t pcf_pin = VIRTUAL_TO_PCF8575_PIN(pin);
     
     // 检查引脚模式
-    bool is_output = pcf8575_pin_modes & (1 << pcf_pin);
+    const bool is_output = pcf8575_pin_modes & (1 << pcf_pin);
     
     if (is_output) {
         // 输出模式：返回当前设置的输出状态
