@@ -21,7 +21,7 @@
 
 namespace {
 constexpr uint32_t CHANNEL_SWITCH_DELAY_MS = 100; // 通道切换后的运动稳定期
-constexpr uint32_t FEED_STOP_DELAY_MS = 2000;     // 打印机停止进料后的延迟停车时间
+constexpr uint32_t FEED_STOP_DELAY_MS = 1000;     // 打印机停止进料后的延迟停车时间
 constexpr uint32_t MSW_DEBOUNCE_MS = 30;          // 微动开关防抖时间
 constexpr float ACT_TARGET_METERS = 0.0f;         // 兼容动作的目标行程
 
@@ -47,7 +47,7 @@ struct ChannelState {
     filament_motion_state_set previous_motion = waiting;
     float pullback_start_meters = 0.0f;    // 退料开始时的耗材长度
     uint32_t msw_raw_time = 0;             // 原始状态最近变化时间
-    // 单字节字段集中放在末尾，减少结构体对齐填充。
+    // 单字节字段集中放在末尾，减少结构体对齐填充
     bool printer_blocked = false;         // 等待打印机 idle 或总线恢复
     bool feed_stop_pending = false;       // 正在等待进料延迟停车
     int8_t msw_previous = -1;              // 防抖后的微动状态：-1 未知，0 无料，1 有料
@@ -58,8 +58,8 @@ struct ChannelState {
 // PCF8575 扩展 IO 对象；I2C 总线配置有效时由 PCF8575_init() 初始化
 PCF8575 pcf8575(PCF8575_ADDR);
 
-// 所有电机调用均在 Arduino loop 中串行执行，不在 ISR 中驱动。
-// 每个通道的运行、互锁、延迟停车和微动状态集中保存在这里。
+// 所有电机调用均在 Arduino loop 中串行执行，不在 ISR 中驱动
+// 每个通道的运行、互锁、延迟停车和微动状态集中保存在这里
 static ChannelState channel_state[IO_CONFIG_MAX_CHANNELS];
 // 打印机总线超时后禁止新的打印机动作，直到收到合法新帧
 static bool printer_bus_fault = false;
@@ -73,7 +73,7 @@ static int manual_queued = 0;
  * 查询通道在手动队列中的位置
  * @param ch 通道编号
  * @return 从 1 开始的排队位置；未排队返回 0
- * 顺序扫描手动动作队列，供状态接口显示排队位置。
+ * 顺序扫描手动动作队列，供状态接口显示排队位置
  */
 static int queue_position(const int ch) {
     for (int i = 0; i < manual_queued; i++) if (manual_queue[i].channel == ch) return i + 1;
@@ -83,7 +83,7 @@ static int queue_position(const int ch) {
 /**
  * 从手动队列删除指定任务
  * @param index 队列下标
- * 把后续任务前移并减少队列长度。
+ * 把后续任务前移并减少队列长度
  */
 static void remove_job(const int index) {
     for (int i = index; i + 1 < manual_queued; i++) manual_queue[i] = manual_queue[i + 1];
@@ -94,7 +94,7 @@ static void remove_job(const int index) {
  * 获取电机动作来源名称
  * @param source 电机动作来源
  * @return 供主板日志显示的中文名称
- * 未知来源按空闲处理，避免日志输出枚举数字难以排查。
+ * 未知来源按空闲处理，避免日志输出枚举数字难以排查
  */
 static const char *motor_source_name(const MotorSource source) {
     switch (source) {
@@ -109,7 +109,7 @@ static const char *motor_source_name(const MotorSource source) {
  * 获取电机方向名称
  * @param cmd 电机命令：1=进料，-1=退料，0=停止
  * @return 供主板日志显示的中文方向
- * 仅用于日志格式化，不参与运动判断。
+ * 仅用于日志格式化，不参与运动判断
  */
 static const char *motor_direction_name(const int cmd) {
     return cmd > 0 ? "进料" : cmd < 0 ? "退料" : "停止";
@@ -119,7 +119,7 @@ static const char *motor_direction_name(const int cmd) {
  * 检查通道编号是否在固定容量内
  * @param motorNum 通道编号
  * @return true 表示编号可用于索引 channel_state
- * 用于配置、停止和状态查询等允许访问未启用通道的场景。
+ * 用于配置、停止和状态查询等允许访问未启用通道的场景
  */
 static bool valid_channel(const int motorNum) {
     return motorNum >= 0 && motorNum < IO_CONFIG_MAX_CHANNELS;
@@ -129,7 +129,7 @@ static bool valid_channel(const int motorNum) {
  * 检查通道是否处于当前启用范围
  * @param motorNum 通道编号
  * @return true 表示通道已启用
- * 电机启动、手动操作和状态展示只处理启用通道。
+ * 电机启动、手动操作和状态展示只处理启用通道
  */
 static bool is_active_channel(const int motorNum) {
     return motorNum >= 0 && motorNum < IO_CONFIG_MAX_CHANNELS && motorNum < active_channel_count();
@@ -139,7 +139,7 @@ static bool is_active_channel(const int motorNum) {
  * 判断当前通道是否已经通过切换稳定期
  * @param motorNum 当前耗材通道
  * @return true 表示可以执行运动
- * 首次看到某个通道时只建立基线并返回 false，等待 CHANNEL_SWITCH_DELAY_MS 后放行。
+ * 首次看到某个通道时只建立基线并返回 false，等待 CHANNEL_SWITCH_DELAY_MS 后放行
  */
 static bool channel_switch_ready(const int motorNum) {
     static int previous_channel = -1;
@@ -156,14 +156,14 @@ static bool channel_switch_ready(const int motorNum) {
  * 检查通道电机引脚是否配置完整
  * @param motorNum 通道编号
  * @return true 表示进料和退料引脚都已配置
- * 任一方向引脚为 PIN_NONE 时拒绝启动电机，避免界面显示运行但硬件无输出。
+ * 任一方向引脚为 PIN_NONE 时拒绝启动电机，避免界面显示运行但硬件无输出
  */
 bool BMCU_channel_motor_ready(const int motorNum) {
     if (!valid_channel(motorNum)) return false;
     const int forward_pin = IO_CONFIG.motor[motorNum][0];
     const int backward_pin = IO_CONFIG.motor[motorNum][1];
     if (forward_pin == PIN_NONE || backward_pin == PIN_NONE) return false;
-    // 扩展引脚依赖 PCF8575；芯片未检测到时不能假装电机已就绪。
+    // 扩展引脚依赖 PCF8575；芯片未检测到时不能假装电机已就绪
     if ((IS_PCF8575_VIRTUAL_PIN(forward_pin) || IS_PCF8575_VIRTUAL_PIN(backward_pin)) &&
         !PCF8575_is_online()) {
         return false;
@@ -173,7 +173,7 @@ bool BMCU_channel_motor_ready(const int motorNum) {
 
 /**
  * 启动排队中的手动电机动作
- * 在并发上限内依次取出队首任务启动；无效通道或引脚未配置的任务会被丢弃。
+ * 在并发上限内依次取出队首任务启动；无效通道或引脚未配置的任务会被丢弃
  */
 static void run_manual_queue() {
     while (manual_queued && BMCU_running_count() < MOTOR_LIMIT) {
@@ -182,7 +182,7 @@ static void run_manual_queue() {
             remove_job(0);
             continue;
         }
-        // 该通道没有电机引脚：丢掉这次请求，别让它卡住后面的排队动作。
+        // 该通道没有电机引脚：丢掉这次请求，别让它卡住后面的排队动作
         if (!BMCU_channel_motor_ready(job.channel)) {
             remove_job(0);
             continue;
@@ -192,13 +192,13 @@ static void run_manual_queue() {
     }
 }
 
-// 电机对象数组；具体引脚由设置加载后在 BMCU_init()/BMCU_apply_io_config() 绑定。
+// 电机对象数组；具体引脚由设置加载后在 BMCU_init()/BMCU_apply_io_config() 绑定
 // 16 个通道的 Motor 实例，负责实际的 GPIO/PWM 输出
 static Motor motors[IO_CONFIG_MAX_CHANNELS];
 
 /**
  * 应用最新的通道引脚配置
- * 对比新旧配置，先停止并释放变更通道，再绑定新引脚；未变化通道保持运行状态。
+ * 对比新旧配置，先停止并释放变更通道，再绑定新引脚；未变化通道保持运行状态
  */
 void BMCU_apply_io_config() {
     // 上一次已应用到硬件的引脚配置，用与 IO_CONFIG 比较找出变更通道
@@ -207,7 +207,7 @@ void BMCU_apply_io_config() {
     static int applied_channels = 0;
     const int channels = active_channel_count();
     bool changed[IO_CONFIG_MAX_CHANNELS] = {};
-    // 先释放所有变更/停用通道，再绑定新引脚，避免引脚交换时旧通道拉低新输出。
+    // 先释放所有变更/停用通道，再绑定新引脚，避免引脚交换时旧通道拉低新输出
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
         changed[i] = (i < applied_channels) != (i < channels) ||
                      (i < channels && (applied_io.motor[i][0] != IO_CONFIG.motor[i][0] ||
@@ -238,19 +238,19 @@ void BMCU_apply_io_config() {
 /**
  * 获取当前启用通道数
  * @return AMS 数量乘以 4
- * 供状态接口、网页和运动逻辑统一使用。
+ * 供状态接口、网页和运动逻辑统一使用
  */
 int BMCU_motor_count() { return active_channel_count(); }
 /**
  * 获取硬件支持的最大 AMS 数量
  * @return 最大 AMS 数量
- * 由固定通道容量除以 4 得到。
+ * 由固定通道容量除以 4 得到
  */
 int BMCU_max_ams_count() { return IO_CONFIG_MAX_CHANNELS / 4; }
 /**
  * 判断是否存在手动动作
  * @return true 表示有手动任务在运行或排队
- * 检查手动队列和所有手动来源的电机。
+ * 检查手动队列和所有手动来源的电机
  */
 bool BMCU_manual_active() {
     if (manual_queued) return true;
@@ -262,7 +262,7 @@ bool BMCU_manual_active() {
  * 读取通道耗材状态
  * @param motorNum 通道编号
  * @return 1=有料，0=无料，-1=无微动或通道无效
- * 供网页显示自动检测结果。
+ * 供网页显示自动检测结果
  */
 int BMCU_channel_filament_state(const int motorNum) {
     if (!is_active_channel(motorNum)) return -1;
@@ -272,7 +272,7 @@ int BMCU_channel_filament_state(const int motorNum) {
 
 /**
  * 按通道模式刷新在线状态
- * 在线模式直接标记有料；自动模式读取微动；其余模式标记无料。
+ * 在线模式直接标记有料；自动模式读取微动；其余模式标记无料
  */
 void BMCU_apply_channel_modes() {
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
@@ -293,10 +293,10 @@ void BMCU_apply_channel_modes() {
 /**
  * 判断当前是否允许维护操作
  * @return true 表示可以安全修改配置或升级
- * 要求没有手动排队、没有电机运行、所有通道处于停止且打印机状态为 waiting。
+ * 要求没有手动排队、没有电机运行、所有通道处于停止且打印机状态为 waiting
  */
 bool BMCU_can_maintain() {
-    // 手动维护不再因为打印机总线近期有通信而被拒绝，只检查本地运动状态。
+    // 手动维护不再因为打印机总线近期有通信而被拒绝，只检查本地运动状态
     if (BMCU_running_count() || manual_queued) return false;
     for (int i = 0; i < active_channel_count(); i++) {
         if (!motors[i].getStopState() || get_filament_motion(i) != waiting) return false;
@@ -307,7 +307,7 @@ bool BMCU_can_maintain() {
 /**
  * 统计正在运行的电机数量
  * @return 当前方向非零的通道数
- * 用于限制同时运行的电机数量。
+ * 用于限制同时运行的电机数量
  */
 int BMCU_running_count() {
     int count = 0;
@@ -318,7 +318,7 @@ int BMCU_running_count() {
 /**
  * 查询打印机总线故障状态
  * @return true 表示总线超时并已阻止打印机动作
- * 返回最近一次总线合法性判断的结果。
+ * 返回最近一次总线合法性判断的结果
  */
 bool BMCU_printer_bus_fault() {
     return printer_bus_fault;
@@ -328,7 +328,7 @@ bool BMCU_printer_bus_fault() {
  * 读取通道电机完整状态
  * @param motorNum 通道编号
  * @return 包含方向、来源、剩余时间、阻断和排队信息的 MotorStatus
- * 越界通道返回默认空闲状态。
+ * 越界通道返回默认空闲状态
  */
 MotorStatus BMCU_motor_status(const int motorNum) {
     if (!is_active_channel(motorNum)) return {};
@@ -351,13 +351,13 @@ MotorStatus BMCU_motor_status(const int motorNum) {
 /**
  * 解除通道的打印机阻断
  * @param motorNum 通道编号
- * 收到打印机 idle 后清除 blocked 标志，并把上一次动作恢复为 waiting。
+ * 收到打印机 idle 后清除 blocked 标志，并把上一次动作恢复为 waiting
  */
 void BMCU_printer_idle(const int motorNum) {
     if (!is_active_channel(motorNum)) return;
     auto &ch = channel_state[motorNum];
     if (ch.motor.source == MOTOR_PRINTER && ch.motor.timed && ch.motor.direction < 0) {
-        // 退料由 Web 超时独立控制，打印机提前空闲也必须跑满设定时间。
+        // 退料由 Web 超时独立控制，打印机提前空闲也必须跑满设定时间
         LOG_MAIN("[motor] 通道 %d 打印机已空闲，但退料定时未到，继续运行", motorNum + 1);
     }
     ch.printer_blocked = false;
@@ -367,7 +367,7 @@ void BMCU_printer_idle(const int motorNum) {
 /**
  * 清除通道的进料延迟停止
  * @param ch 通道编号
- * 主动停车、配置变更或打印机恢复进料时调用；只清除延迟标记，不直接驱动电机。
+ * 主动停车、配置变更或打印机恢复进料时调用；只清除延迟标记，不直接驱动电机
  */
 static void clear_feed_stop_delay(const int ch) {
     if (!valid_channel(ch)) return;
@@ -379,7 +379,7 @@ static void clear_feed_stop_delay(const int ch) {
  * 安排打印机进料结束后的延迟停止
  * @param ch 通道编号
  * @return true 表示本次新安排了延迟停止
- * 仅对打印机来源、正转且未设定时长的进料生效；重复的待机帧不会延长时限。
+ * 仅对打印机来源、正转且未设定时长的进料生效；重复的待机帧不会延长时限
  */
 static bool arm_feed_stop_delay(const int ch) {
     if (!valid_channel(ch) || channel_state[ch].feed_stop_pending) return false;
@@ -395,19 +395,19 @@ static bool arm_feed_stop_delay(const int ch) {
 /**
  * 停止指定通道并清理排队
  * @param motorNum 通道编号
- * 移除该通道的排队任务、停止电机并回到 waiting；打印机来源的动作会设置阻断，等待总线确认。
+ * 移除该通道的排队任务、停止电机并回到 waiting；打印机来源的动作会设置阻断，等待总线确认
  */
 void BMCU_stop_motor(const int motorNum) {
     if (!valid_channel(motorNum)) return;
     auto &ch = channel_state[motorNum];
     const int pos = queue_position(motorNum);
     if (pos) remove_job(pos - 1);
-    // 内部设置 waiting 不解锁；只在总线真正收到 idle 后允许打印机再次启动。
+    // 内部设置 waiting 不解锁；只在总线真正收到 idle 后允许打印机再次启动
     if (ch.motor.source == MOTOR_PRINTER || get_filament_motion(motorNum) != waiting)
         ch.printer_blocked = true;
     motorCmd(motorNum, 0);
     set_filament_motion(motorNum, waiting);
-    // 强制停车后同步清掉边沿缓存，避免打印机再次请求退料时被误判为重复命令。
+    // 强制停车后同步清掉边沿缓存，避免打印机再次请求退料时被误判为重复命令
     ch.previous_motion = waiting;
 }
 
@@ -417,7 +417,7 @@ void BMCU_stop_motor(const int motorNum) {
  * @param cmd 1=进料，-1=退料
  * @param duration_ms 点动时长（毫秒）
  * @return true 表示已启动或已排队
- * 校验参数、通道状态和并发限制后加入手动队列并尝试立即启动。
+ * 校验参数、通道状态和并发限制后加入手动队列并尝试立即启动
  */
 bool BMCU_manual_pulse(const int motorNum, const int cmd, const uint32_t duration_ms) {
     if (!is_active_channel(motorNum) || (cmd != 1 && cmd != -1) || !duration_ms ||
@@ -439,7 +439,7 @@ bool BMCU_manual_pulse(const int motorNum, const int cmd, const uint32_t duratio
  * @param source 动作来源
  * @param duration_ms 限时动作时长，0 表示不自动停止
  * @return true 表示命令被接受
- * 检查来源互锁、并发上限和通道占用后驱动 Motor，并记录动作截止时间；重复命令不续期。
+ * 检查来源互锁、并发上限和通道占用后驱动 Motor，并记录动作截止时间；重复命令不续期
  */
 bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const uint32_t duration_ms) {
     if (!valid_channel(motorNum) || cmd < -1 || cmd > 1) return false;
@@ -464,7 +464,7 @@ bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const
     if ((source != MOTOR_MANUAL && queue_position(motorNum)) ||
         (m.direction && m.source != source) ||
         (!m.direction && BMCU_running_count() >= MOTOR_LIMIT)) {
-        // 拒绝本次打印机动作，不在名额空出后悄悄执行积压命令。
+        // 拒绝本次打印机动作，不在名额空出后悄悄执行积压命令
         if (source == MOTOR_PRINTER) {
             ch.printer_blocked = true;
             LOG_MAIN("[motor] 通道 %d 忙碌或达到并发上限，打印机动作已拒绝", motorNum + 1);
@@ -493,7 +493,7 @@ bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const
  * 同步正在运行的打印机退料超时
  * @param motorNum 通道编号
  * @param previous_timeout_ms 修改前本次动作使用的超时时间（毫秒）
- * 仅更新打印机来源的限时动作，并按已经运行的时间重算剩余时间；其他来源不受影响。
+ * 仅更新打印机来源的限时动作，并按已经运行的时间重算剩余时间；其他来源不受影响
  */
 void BMCU_apply_pullback_timeout(const int motorNum, const uint32_t previous_timeout_ms) {
     if (!is_active_channel(motorNum)) return;
@@ -512,14 +512,14 @@ void BMCU_apply_pullback_timeout(const int motorNum, const uint32_t previous_tim
 
 /**
  * 处理限时电机和手动队列
- * 停止已到期的限时动作，并继续启动排队中的手动任务。
+ * 停止已到期的限时动作，并继续启动排队中的手动任务
  */
 static void motor_tick() {
     const uint32_t now = millis();
     for (int i = 0; i < active_channel_count(); i++) {
         auto &ch = channel_state[i];
         auto &m = ch.motor;
-        // 打印机停止进料后先保持运行；动作失效时直接清除，避免残留延时。
+        // 打印机停止进料后先保持运行；动作失效时直接清除，避免残留延时
         if (ch.feed_stop_pending) {
             if (m.source != MOTOR_PRINTER || m.direction <= 0 || m.timed) {
                 clear_feed_stop_delay(i);
@@ -531,7 +531,7 @@ static void motor_tick() {
         if (!m.direction || !m.timed) continue;
         if (static_cast<int32_t>(now - m.end) < 0) continue;
         if (m.source == MOTOR_PRINTER) {
-            // 打印机动作已按 Web 设定的时长完整跑完，属于正常结束，不再等待打印机 idle。
+            // 打印机动作已按 Web 设定的时长完整跑完，属于正常结束，不再等待打印机 idle
             LOG_MAIN("[motor] 通道 %d 打印机定时动作到期，按设定时长停止", i + 1);
             motorCmd(i, 0);
             set_filament_motion(i, waiting);
@@ -568,7 +568,7 @@ float as5600_speed[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // 速度值
  * 初始化模拟的AS5600角度传感器
  */
 void AS5600_init() {
-    // 固定种子便于回放；该数据仍是模拟反馈，不代表真实传感器测量值。
+    // 固定种子便于回放；该数据仍是模拟反馈，不代表真实传感器测量值
     generator.seed(12345u);
     randomSeed(12345u);
     as5600_distance_last_ms = millis();
@@ -590,7 +590,7 @@ void AS5600_init() {
  * 生成模拟的距离数据，用于测试
  */
 float AS5600_get_distance_E() {
-    // 以时间增量生成模拟送料距离，避免主循环频率改变累计速度。
+    // 以时间增量生成模拟送料距离，避免主循环频率改变累计速度
     const uint32_t now = millis();
     uint32_t dt_ms = now - as5600_distance_last_ms;
     as5600_distance_last_ms = now;
@@ -710,7 +710,7 @@ static void switchInterrupt() {
  * 判断通道是否禁止微动辅助进料
  * @param motorNum 通道编号
  * @return true 表示当前不能触发辅助进料
- * 非自动模式、无微动输入、正被手动或打印机占用时返回 true。
+ * 非自动模式、无微动输入、正被手动或打印机占用时返回 true
  */
 static bool autoload_blocked(const int motorNum) {
     if (!is_active_channel(motorNum)) return true;
@@ -723,7 +723,7 @@ static bool autoload_blocked(const int motorNum) {
 
 /**
  * 检测微动开关并触发自动进料
- * 轮询各通道微动状态，做 30ms 防抖；自动模式下由无料变有料时启动限时辅助进料。
+ * 轮询各通道微动状态，做 30ms 防抖；自动模式下由无料变有料时启动限时辅助进料
  */
 void check_microswitch_status() {
     const uint32_t now = millis();
@@ -745,7 +745,7 @@ void check_microswitch_status() {
             ch.msw_previous = ch.msw_raw = -1;
             continue;
         }
-        // PCF8575 未检测到时不能读取扩展输入，保持未知状态并跳过辅助进料。
+        // PCF8575 未检测到时不能读取扩展输入，保持未知状态并跳过辅助进料
         if (IS_PCF8575_VIRTUAL_PIN(pin) && !PCF8575_is_online()) {
             ch.msw_previous = ch.msw_raw = -1;
             continue;
@@ -783,7 +783,7 @@ void check_microswitch_status() {
  * 初始化IO引脚、传感器、通信等
  */
 void BMCU_init() {
-    // 初始化 PCF8575 虚拟引脚映射；I2C 未配置时不访问总线。
+    // 初始化 PCF8575 虚拟引脚映射；I2C 未配置时不访问总线
     if (i2c_bus_configured()) {
         PCF8575_init();
         LOG_MAIN("[i2c] PCF8575=%s", PCF8575_is_online() ? "已检测" : "未检测");
@@ -816,7 +816,7 @@ void BMCU_run() {
         for (int i = 0; i < active_channel_count(); i++) {
             if (channel_state[i].motor.source == MOTOR_PRINTER || get_filament_motion(i) != waiting)
                 BMCU_stop_motor(i);
-            // 即使当前没有运行中的电机，也阻止超时期间的新动作。
+            // 即使当前没有运行中的电机，也阻止超时期间的新动作
             channel_state[i].printer_blocked = true;
         }
     } else if (bus_stu == 1 && printer_bus_fault) {
@@ -845,7 +845,7 @@ void BMCU_run() {
     if (current_valid) {
         auto &ch = channel_state[now_f];
         if (state == need_pull_back) {
-            // 进料延迟停止尚未到期时先继续进料，等延迟结束后再启动退料。
+            // 进料延迟停止尚未到期时先继续进料，等延迟结束后再启动退料
             if (ch.previous_motion != need_pull_back && !ch.feed_stop_pending) {
                 ch.previous_motion = need_pull_back;
                 ch.pullback_start_meters = get_filament_meters(now_f);
@@ -894,7 +894,7 @@ void BMCU_motion() {
     }
     auto &ch = channel_state[cur];
     auto &m = ch.motor;
-    // 打印机发起的定时退料不接受打印机后续状态干扰，必须由 Web 超时参数决定停止时间。
+    // 打印机发起的定时退料不接受打印机后续状态干扰，必须由 Web 超时参数决定停止时间
     if (m.source == MOTOR_PRINTER && m.timed && m.direction < 0) {
         return;
     }
@@ -923,10 +923,10 @@ void BMCU_motion() {
             }
             break;
         case waiting:
-            // 待机：打印机结束进料时先延迟停车，其他来源仍立即停止。
+            // 待机：打印机结束进料时先延迟停车，其他来源仍立即停止
             if (!m.timed) {
                 if (ch.feed_stop_pending) {
-                    // 已安排延迟，等待 motor_tick() 到期停止。
+                    // 已安排延迟，等待 motor_tick() 到期停止
                 } else if (!arm_feed_stop_delay(cur)) {
                     motorCmd(cur, 0);
                 }

@@ -42,6 +42,7 @@ enum package_type {
     BambuBus_package_ETC, // 其他未分类报文
     BambuBus_package_ERROR, // CRC、长度或格式错误
     BambuBus_package_set_filament_type2, // 新增：0x05 0x218 长包设置耗材
+    BambuBus_package_IGNORED, // 合法但不发给本机的报文，不刷新通信状态
     __BambuBus_package_packge_type_size // 枚举数量哨兵，不是实际报文类型
 };
 
@@ -49,9 +50,12 @@ extern void BambuBus_init();
 
 extern int BambuBus_run();
 
+// 主循环在运动调度后调用；仅在总线空闲时限频保存耗材记录
+extern void BambuBus_save_run();
+
 extern bool BambuBus_recent_activity(uint32_t quiet_ms);
 
-// 0=尚未收到心跳，1=在线，2=超时离线；只统计 CRC 正确的打印机心跳。
+// 0=尚未收到心跳，1=在线，2=超时离线；只统计 CRC 正确的打印机心跳
 extern int BambuBus_printer_status();
 
 extern uint32_t BambuBus_rx_error_count();

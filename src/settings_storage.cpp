@@ -35,7 +35,7 @@ int BUS_RX = PIN_BUS_RX, BUS_TX = PIN_BUS_TX, BUS_DE = PIN_BUS_DE;
 
 /**
  * 恢复 BambuBus 引脚默认值
- * 把 RX、TX、DE 三个引脚恢复为当前平台的板级默认映射。
+ * 把 RX、TX、DE 三个引脚恢复为当前平台的板级默认映射
  */
 static void bus_defaults() {
     BUS_RX = PIN_BUS_RX; BUS_TX = PIN_BUS_TX; BUS_DE = PIN_BUS_DE;
@@ -48,19 +48,19 @@ int PCF_SCL = PIN_NONE;
 
 /**
  * 恢复 I2C 引脚默认值
- * 默认不占用任何引脚；用户需在网页中同时选择 SDA、SCL 后才启用总线。
+ * 默认不占用任何引脚；用户需在网页中同时选择 SDA、SCL 后才启用总线
  */
 static void pcf_defaults() {
     PCF_SDA = PIN_NONE;
     PCF_SCL = PIN_NONE;
 }
 
-// 当前设置记录使用 CRC32，计算时把 checksum 字段视为 0，避免校验值自引用。
+// 当前设置记录使用 CRC32，计算时把 checksum 字段视为 0，避免校验值自引用
 /**
  * 计算设置记录 CRC32
  * @param data 设置数据结构
  * @return 计算得到的 32 位 CRC
- * 计算前把 checksum 字段清零，避免校验值自引用。
+ * 计算前把 checksum 字段清零，避免校验值自引用
  */
 static uint32_t calculate_crc32(const SettingsData* data) {
     SettingsData copy = *data;
@@ -79,7 +79,7 @@ static uint32_t calculate_crc32(const SettingsData* data) {
  * 校验自定义序列号格式
  * @param serial 待校验的字符串
  * @return true 表示格式合法
- * 允许空串，或正好 15 位数字/大写字母的序列号。
+ * 允许空串，或正好 15 位数字/大写字母的序列号
  */
 bool settings_custom_serial_valid(const char *serial) {
     if (!serial) return false;
@@ -98,7 +98,7 @@ bool settings_custom_serial_valid(const char *serial) {
 /**
  * 从持久化存储读设置记录
  * @param data 输出结构
- * 调用平台存储接口读取整块 SettingsData。
+ * 调用平台存储接口读取整块 SettingsData
  */
 static void read_settings_from_flash(SettingsData* data) {
     hal_storage_read(HAL_REGION_SETTINGS, data, sizeof(SettingsData));
@@ -109,7 +109,7 @@ static void read_settings_from_flash(SettingsData* data) {
  * 把设置记录写入持久化存储
  * @param data 待写入结构
  * @return 是否写入成功
- * 调用平台存储接口写入整块 SettingsData。
+ * 调用平台存储接口写入整块 SettingsData
  */
 static bool write_settings_to_flash(const SettingsData* data) {
     return hal_storage_write(HAL_REGION_SETTINGS, data, sizeof(SettingsData));
@@ -118,7 +118,7 @@ static bool write_settings_to_flash(const SettingsData* data) {
 /**
  * 校验并应用设置到运行期变量
  * @param data 从存储或快照得到的设置
- * 逐项检查范围后更新全局配置；接线配置无效时恢复平台默认映射并记录日志。
+ * 逐项检查范围后更新全局配置；接线配置无效时恢复平台默认映射并记录日志
  */
 static void apply_settings_values(const SettingsData& data) {
     for (int i = 0; i < 16; i++) {
@@ -149,24 +149,24 @@ static void apply_settings_values(const SettingsData& data) {
     MOTOR_LIMIT = data.motor_limit >= 1 && data.motor_limit <= IO_CONFIG_MAX_CHANNELS
                       ? min(static_cast<int>(data.motor_limit), active_channel_count()) : 1;
 
-    // 先加载整组候选接线，再交叉校验，避免用旧总线引脚误判新配置。
+    // 先加载整组候选接线，再交叉校验，避免用旧总线引脚误判新配置
     IoConfig loaded = data.io_config;
     BUS_RX = data.bus_rx; BUS_TX = data.bus_tx; BUS_DE = data.bus_de;
-    // I2C 总线由 SDA/SCL 是否同时配置决定，旧版 pcf_enable 字段只用于兼容旧记录。
+    // I2C 总线由 SDA/SCL 是否同时配置决定，旧版 pcf_enable 字段只用于兼容旧记录
     pcf_defaults();
     PCF_SDA = data.pcf_sda; PCF_SCL = data.pcf_scl;
     // 旧版记录在关闭 PCF8575 时仍保存板级默认 4/5，迁移为“未配置”，
-    // 避免升级后被自动启用并和原有微动引脚冲突。
+    // 避免升级后被自动启用并和原有微动引脚冲突
     if (data.pcf_enable == 0 && PCF_SDA == PIN_I2C_SDA && PCF_SCL == PIN_I2C_SCL) {
         PCF_SDA = PIN_NONE;
         PCF_SCL = PIN_NONE;
     }
-    // 只配置单个引脚属于非法状态，按未配置处理。
+    // 只配置单个引脚属于非法状态，按未配置处理
     if ((PCF_SDA == PIN_NONE) != (PCF_SCL == PIN_NONE)) {
         PCF_SDA = PIN_NONE;
         PCF_SCL = PIN_NONE;
     }
-    // 两脚相同、越界或旧版脏数据都按“总线未配置”处理，避免网页锁死在无效组合。
+    // 两脚相同、越界或旧版脏数据都按“总线未配置”处理，避免网页锁死在无效组合
     if (!i2c_bus_configured()) {
         PCF_SDA = PIN_NONE;
         PCF_SCL = PIN_NONE;
@@ -192,14 +192,14 @@ static void apply_settings_values(const SettingsData& data) {
 
 /**
  * 初始化设置存储
- * 读取设置并校验魔数与 CRC32；无效或空片时恢复默认值并重新写入。
+ * 读取设置并校验魔数与 CRC32；无效或空片时恢复默认值并重新写入
  */
 void settings_storage_init() {
     SettingsData data{};
 
     read_settings_from_flash(&data);
 
-    // 还在开发中，不兼容旧记录：魔数或 CRC32 对不上就整体恢复默认值后重写。
+    // 还在开发中，不兼容旧记录：魔数或 CRC32 对不上就整体恢复默认值后重写
     if (data.magic == SETTINGS_MAGIC_NUMBER && calculate_crc32(&data) == data.checksum) {
         apply_settings_values(data);
         return;
@@ -213,7 +213,7 @@ void settings_storage_init() {
 
 /**
  * 重新加载设置
- * 复用 settings_storage_init() 的读取与校验流程。
+ * 复用 settings_storage_init() 的读取与校验流程
  */
 void settings_load_from_flash() {
     // 重新加载（与init相同逻辑）
@@ -223,7 +223,7 @@ void settings_load_from_flash() {
 /**
  * 生成当前设置快照
  * @return 包含所有运行期设置及 CRC32 的 SettingsData
- * 收集当前生效参数和接线配置，计算 checksum 后返回副本。
+ * 收集当前生效参数和接线配置，计算 checksum 后返回副本
  */
 SettingsData settings_snapshot() {
     SettingsData data = {};
@@ -256,7 +256,7 @@ SettingsData settings_snapshot() {
 /**
  * 从设置快照恢复运行期变量
  * @param data 要恢复的设置快照
- * 只应用内存参数，不写入持久化存储；用于保存失败时回滚。
+ * 只应用内存参数，不写入持久化存储；用于保存失败时回滚
  */
 void settings_restore_snapshot(const SettingsData &data) {
     apply_settings_values(data);
@@ -265,7 +265,7 @@ void settings_restore_snapshot(const SettingsData &data) {
 /**
  * 保存当前设置并校验
  * @return true 表示写入并回读一致
- * 生成快照、写入存储，再回读比较魔数和 CRC32。
+ * 生成快照、写入存储，再回读比较魔数和 CRC32
  */
 bool settings_save_to_flash() {
     const SettingsData data = settings_snapshot();
@@ -279,7 +279,7 @@ bool settings_save_to_flash() {
 
 /**
  * 恢复所有设置默认值
- * 重置参数、引脚映射、I2C 总线和 OTA 配置，不直接写存储。
+ * 重置参数、引脚映射、I2C 总线和 OTA 配置，不直接写存储
  */
 void settings_reset_to_defaults() {
     for (int i = 0; i < 16; i++) {
@@ -303,7 +303,7 @@ void settings_reset_to_defaults() {
 /**
  * 检查存储中的设置是否有效
  * @return true 表示魔数和 CRC32 均有效
- * 读取持久化记录并校验完整性。
+ * 读取持久化记录并校验完整性
  */
 bool settings_is_valid() {
     SettingsData data{};
@@ -316,7 +316,7 @@ bool settings_is_valid() {
  * 获取通道模式中文名称
  * @param mode 通道模式枚举
  * @return 离线/在线/自动/未知
- * 用于日志输出。
+ * 用于日志输出
  */
 static const char *channel_mode_name(int mode) {
     switch (mode) {
@@ -330,7 +330,7 @@ static const char *channel_mode_name(int mode) {
 // 把当前生效的设置打印到主板日志：启动时打印一次，之后每次保存设置再打印一次
 /**
  * 打印当前全部设置
- * 把总线、序列号、通道、引脚、OTA 等参数分行写入主板日志，便于启动排查。
+ * 把总线、序列号、通道、引脚、OTA 等参数分行写入主板日志，便于启动排查
  */
 void settings_log_all() {
     LOG_MAIN("[settings] RS485 收发模式=%d，BambuBus 原始报文日志=%s",

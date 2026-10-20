@@ -153,7 +153,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="kv"><span>AHT20 湿度</span><b id="s-aht-hum">-</b></div>
     <div class="kv"><span>BMP280 温度</span><b id="s-bmp-temp">-</b></div>
     <div class="kv"><span>大气压</span><b id="s-bmp-press">-</b></div>
-    <div class="hint">未检测到的传感器会自动停用并定期重试；网页显示“未检测”时不会使用旧读数。</div>
+    <div class="hint">未检测到的传感器会自动停用并定期重试；网页显示“未检测”时不会使用旧读数</div>
   </div>
 </div>
 
@@ -165,9 +165,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <div>✅ 配网成功，设备 IP：<b id="wd-ip">-</b></div>
       <div class="hint" id="wd-state" style="margin-top:6px">设备正在重启…</div>
       <a id="wd-link" href="#" target="_blank">手动打开新控制台</a>
-      <div class="hint">新控制台会开在<b>新标签页</b>，本页（192.168.4.1）保留不动。
+      <div class="hint">新控制台会开在<b>新标签页</b>，本页（192.168.4.1）保留不动
         如果一直没跳过去：把手机/电脑的 WiFi 切回原来的网络即可；
-        也可以访问 <b id="wd-mdns">http://bmcu.local/</b>，或在路由器后台查设备 IP。</div>
+        也可以访问 <b id="wd-mdns">http://bmcu.local/</b>，或在路由器后台查设备 IP</div>
     </div>
     <div class="row">
       <input id="w-ssid" class="grow" placeholder="WiFi 名称 (SSID)" autocomplete="off">
@@ -179,12 +179,12 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <input id="w-mdns" class="grow" maxlength="32" placeholder="mDNS 名称，例如 bmcu" autocomplete="off" oninput="this.value=this.value.toLowerCase()">
       <button onclick="saveMdns()">保存 mDNS</button>
     </div>
-    <div class="hint">联网后可用 <b>http://名称.local/</b> 访问；仅支持字母、数字和连字符，不能以连字符开头或结尾。</div>
+    <div class="hint">联网后可用 <b>http://名称.local/</b> 访问；仅支持字母、数字和连字符，不能以连字符开头或结尾</div>
     <div class="row" style="margin-top:10px">
       <button class="primary" onclick="saveWifi()">保存并连接</button>
       <button onclick="doForget()">忘记网络</button>
     </div>
-    <div class="hint">仅支持 2.4GHz 网络。连接成功后设备会自动重启并切到路由器网络。</div>
+    <div class="hint">仅支持 2.4GHz 网络连接成功后设备会自动重启并切到路由器网络</div>
   </div>
 </div>
 
@@ -211,7 +211,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <button id="save-bus" class="primary" onclick="saveBus()" disabled>保存总线配置并重启</button>
       <span id="bus-state" class="hint" role="status">正在读取总线配置…</span>
     </div>
-    <div class="hint">主控 RX 接模块的数据输出，TX 接模块的数据输入，请核对模块标注。模式与接线一起保存，重启生效；修改后请断电换线。模式 1 不占用 DE 引脚。</div>
+    <div class="hint">主控 RX 接模块的数据输出，TX 接模块的数据输入，请核对模块标注模式与接线一起保存，重启生效；修改后请断电换线模式 1 不占用 DE 引脚</div>
   </div>
   <div class="card">
     <h2>BambuBus 与 IO 引脚配置</h2>
@@ -222,19 +222,19 @@ button:disabled{opacity:.45;cursor:not-allowed}
         <label for="pcf-scl">SCL（时钟）</label><select id="pcf-scl" style="max-width:260px" onchange="updatePcfLabels()" disabled></select>
         <button id="save-pcf" class="primary" onclick="savePcf()" disabled>保存并重启</button>
       </div>
-      <div class="hint">PCF8575、AHT20 和 BMP280 共用这一条 I2C 总线，只需要 SDA、SCL 两根线。
-        SDA 和 SCL 必须同时选择或同时选“无”；只配置其中一个不能保存。配置后通道可使用 PCF8575 Px 扩展脚，
-        扫描不到的设备会自动停用并在状态页提示。保存后重启，请先断电换线。</div>
+      <div class="hint">PCF8575、AHT20 和 BMP280 共用这一条 I2C 总线，只需要 SDA、SCL 两根线
+        SDA 和 SCL 必须同时选择或同时选“无”；只配置其中一个不能保存配置后通道可使用 PCF8575 Px 扩展脚，
+        扫描不到的设备会自动停用并在状态页提示保存后重启，请先断电换线</div>
       <div class="hint" id="pcf-state" role="status">正在读取接线配置…</div>
     </div>
     <div class="row">
       <span style="color:var(--dim);width:90px">AMS 数量</span>
       <select id="p-ams" onchange="previewAms()" style="width:100px"><option>1</option><option>2</option><option>3</option><option>4</option></select>
     </div>
-    <div class="hint" id="ams-hint">每个 AMS 对应 4 个通道；新增通道请先在下方配置引脚，再保存。</div>
+    <div class="hint" id="ams-hint">每个 AMS 对应 4 个通道；新增通道请先在下方配置引脚，再保存</div>
     <div id="io-config-box" class="io-config">
       <h3>电机与微动引脚</h3>
-      <div class="hint">通道数随上方 AMS 数量联动。新增通道或修改接线前请停止电机动作；引脚不能重复。带警告的引脚可能影响芯片启动。</div>
+      <div class="hint">通道数随上方 AMS 数量联动新增通道或修改接线前请停止电机动作；引脚不能重复带警告的引脚可能影响芯片启动</div>
       <table class="tbl">
         <thead><tr><th>通道</th><th>进料</th><th>退料</th><th>微动</th></tr></thead>
         <tbody id="iobody"></tbody>
@@ -249,7 +249,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <input id="p-serial" class="grow" maxlength="15" pattern="[A-Z0-9]{15}" placeholder="留空使用自动序列号" autocomplete="off" oninput="this.value=this.value.toUpperCase()">
       <button onclick="saveSerial()">保存</button>
     </div>
-    <div class="hint">留空时按芯片 ID 自动生成；填写时必须正好 15 位大写字母或数字。</div>
+    <div class="hint">留空时按芯片 ID 自动生成；填写时必须正好 15 位大写字母或数字</div>
   </div>
   <div class="card">
     <h2>设备操作</h2>
@@ -272,7 +272,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <input id="u-otaurl" class="grow" placeholder="更新源目录，例如 https://tuanzisimple.github.io/bmcu-esp" autocomplete="off">
       <button onclick="saveOtaSrc()">保存地址</button>
     </div>
-    <div class="hint">目录里要有 manifest.json（记录版本/说明/固件文件名）。格式和服务器配置见 tools/OTA_SERVER.md。</div>
+    <div class="hint">目录里要有 manifest.json（记录版本/说明/固件文件名）格式和服务器配置见 tools/OTA_SERVER.md</div>
     <div class="row" style="margin-top:12px">
       <span style="color:var(--dim);width:90px">进页面提示</span>
       <button id="u-n1" onclick="setNotify(1)">提示更新：开</button>
@@ -283,7 +283,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <button id="btn-otapull" class="primary" onclick="pullUpdate()" disabled>在线更新</button>
     </div>
     <div class="hint" id="u-stat">尚未检查更新</div>
-    <div class="hint">升级前必须停止所有电机运动。固件会再次检查，不满足时拒绝升级。</div>
+    <div class="hint">升级前必须停止所有电机运动固件会再次检查，不满足时拒绝升级</div>
     <div class="row" style="margin-top:12px">
       <input id="u-file" class="grow" type="file" accept=".bin">
       <button id="btn-otaupload" onclick="uploadFw()">本地升级</button>
@@ -309,7 +309,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <span style="color:var(--dim)">BambuBus 原始报文日志</span>
       <button id="b1" onclick="setBusLog(1)">开</button>
       <button id="b0" onclick="setBusLog(0)">关</button>
-      <span class="hint" style="margin:0;flex:1;min-width:200px">关闭后不再记录 TX/RX 十六进制报文，可降低高波特率下的 CPU 占用。</span>
+      <span class="hint" style="margin:0;flex:1;min-width:200px">关闭后不再记录 TX/RX 十六进制报文，可降低高波特率下的 CPU 占用</span>
     </div>
     <div class="logfilters bus-only-control hide">
       <span style="color:var(--dim);font-size:12px">显示类型</span>
@@ -319,8 +319,8 @@ button:disabled{opacity:.45;cursor:not-allowed}
     </div>
     <pre id="log0" class="logbox"></pre>
     <pre id="log1" class="logbox hide"></pre>
-    <div class="hint">日志行首显示浏览器本地时间；设备没有实时时钟，时间由日志里的开机毫秒数结合浏览器时钟换算。</div>
-    <div class="hint bus-only-control hide">BambuBus 面板显示 RS485 上的原始十六进制报文：<b>RX</b> = 收到、<b>TX</b> = 发出，以及解析出的包类型。「抓取 30 秒」按当前勾选的显示类型抓取未来 30 秒的报文，抓完自动下载 .log 文件。</div>
+    <div class="hint">日志行首显示浏览器本地时间；设备没有实时时钟，时间由日志里的开机毫秒数结合浏览器时钟换算</div>
+    <div class="hint bus-only-control hide">BambuBus 面板显示 RS485 上的原始十六进制报文：<b>RX</b> = 收到、<b>TX</b> = 发出，以及解析出的包类型「抓取 30 秒」按当前勾选的显示类型抓取未来 30 秒的报文，抓完自动下载 .log 文件</div>
   </div>
 </div>
 
@@ -332,7 +332,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
  * 按元素 ID 获取 DOM 节点
  * @param {string} id 元素 ID
  * @return {HTMLElement|null} 对应的元素节点
- * 封装 document.getElementById，供页面脚本快速访问控件。
+ * 封装 document.getElementById，供页面脚本快速访问控件
  */
 const $=id=>document.getElementById(id)
 // 提示条：默认 4 秒自动消失，点一下可以提前关掉
@@ -340,13 +340,13 @@ const $=id=>document.getElementById(id)
  * 显示页面提示条
  * @param {string} msg 提示文本
  * @param {number} [ms] 自动关闭时间（毫秒），默认 4000
- * 更新提示内容并重启自动关闭计时器，重复调用会覆盖上一条提示。
+ * 更新提示内容并重启自动关闭计时器，重复调用会覆盖上一条提示
  */
 const toast=(msg,ms)=>{
   const t = $('toast');t.textContent=msg;t.classList.add('on');clearTimeout(t._t);t._t=setTimeout(toastOff,ms||4000);}
 /**
  * 隐藏页面提示条
- * 移除提示条的显示样式；点击提示条或计时结束时调用。
+ * 移除提示条的显示样式；点击提示条或计时结束时调用
  */
 const toastOff=()=> $('toast').classList.remove('on')
 /**
@@ -354,14 +354,14 @@ const toastOff=()=> $('toast').classList.remove('on')
  * @param {string} path 请求路径
  * @param {RequestInit} [opt] fetch 请求选项
  * @return {Promise<string>} 响应正文
- * 统一把 API 响应按文本读取，由调用方决定是否解析 JSON。
+ * 统一把 API 响应按文本读取，由调用方决定是否解析 JSON
  */
 const api=(path,opt)=>fetch(path,opt).then(r=>r.text())
 /**
  * 转义 HTML 特殊字符
  * @param {*} s 待转义内容
  * @return {string} 可安全插入 innerHTML 的字符串
- * 借助临时元素完成文本到 HTML 实体的转换，防止内容破坏页面结构。
+ * 借助临时元素完成文本到 HTML 实体的转换，防止内容破坏页面结构
  */
 const esc=(s)=>{
   const d = document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
@@ -372,7 +372,7 @@ let TAB = 'status';
 /**
  * 切换页面标签页
  * @param {string} name 标签页名称
- * 显示目标面板、更新导航高亮、保存当前标签，并在状态页或设置页按需重载参数。
+ * 显示目标面板、更新导航高亮、保存当前标签，并在状态页或设置页按需重载参数
  */
 const showTab=(name)=>{
   if(['status','wifi','settings','update','logs'].indexOf(name)<0) name='status'
@@ -389,7 +389,7 @@ const showTab=(name)=>{
  * 格式化设备运行时间
  * @param {number} s 运行秒数
  * @return {string} 包含小时、分钟和秒的文本
- * 把状态接口返回的秒数转换为便于阅读的中文时长。
+ * 把状态接口返回的秒数转换为便于阅读的中文时长
  */
 const fmtUptime=(s)=>{
   const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
@@ -406,7 +406,7 @@ const MONTHS = {
  * 格式化固件编译时间
  * @param {string} s C 编译器 __DATE__ 与 __TIME__ 组成的文本
  * @return {string} yyyy-MM-dd HH:mm:ss 格式时间
- * 兼容个位数日期前的空格，无法识别时原样返回。
+ * 兼容个位数日期前的空格，无法识别时原样返回
  */
 const fmtBuild=(s)=>{
   s=String(s||'').trim()
@@ -431,7 +431,7 @@ let gOtaLatest;
  * @param {string} id 页面元素 ID
  * @param {boolean} configured I2C 总线是否已配置
  * @param {boolean} online 设备是否检测到
- * 未配置总线时显示“未配置”，已配置但扫描不到时显示“未检测”。
+ * 未配置总线时显示“未配置”，已配置但扫描不到时显示“未检测”
  */
 const showI2cDevice=(id,configured,online)=>{
   const el=$(id)
@@ -443,7 +443,7 @@ const showI2cDevice=(id,configured,online)=>{
  * @param {string} id 页面元素 ID
  * @param {number|null} value 读数；null 表示无效
  * @param {string} unit 显示单位
- * 无效值显示“暂无读数”，避免把旧值误当成当前测量结果。
+ * 无效值显示“暂无读数”，避免把旧值误当成当前测量结果
  */
 const showSensorValue=(id,value,unit)=>{
   const el=$(id)
@@ -454,7 +454,7 @@ const showSensorValue=(id,value,unit)=>{
 /**
  * 拉取并刷新设备运行状态
  * @return {Promise<void>|undefined} 请求完成后的 Promise；已有请求时返回 undefined
- * 带 3 秒超时读取 /api/status，更新状态、电机和 OTA 区域，首次成功时自动检查更新。
+ * 带 3 秒超时读取 /api/status，更新状态、电机和 OTA 区域，首次成功时自动检查更新
  */
 const refreshStatus=()=>{
   if(statusPending) return
@@ -522,7 +522,7 @@ const motorPending={},CH_STATUS_NAMES=['离线','在线','自动'];
 // 通道模式是“自动”时，把该通道微动开关状态显示成 自动(有料) / 自动(无料)，随状态轮询实时刷新
 /**
  * 更新自动模式通道的状态文字
- * 根据最新状态中的耗材检测值，把自动模式选项显示为“自动(有料)”或“自动(无料)”。
+ * 根据最新状态中的耗材检测值，把自动模式选项显示为“自动(有料)”或“自动(无料)”
  */
 const updateChannelStateText=()=>{
   const n = (S && S.channels) || 0, fl = (S && S.fl) || null;
@@ -536,7 +536,7 @@ const updateChannelStateText=()=>{
 }
 /**
  * 根据状态刷新电机按钮和运行提示
- * 处理手动请求中的按钮禁用、排队/运行/停止按钮切换，并显示剩余时间或等待状态。
+ * 处理手动请求中的按钮禁用、排队/运行/停止按钮切换，并显示剩余时间或等待状态
  */
 const renderMotorControls=()=>{
   const fresh=statusAt&&performance.now()-statusAt<3000
@@ -564,7 +564,7 @@ const renderMotorControls=()=>{
  * @param {number} motor 通道编号
  * @param {number} dir 方向：1 进料、-1 退料、0 停止
  * @return {Promise<void>} 请求处理完成的 Promise
- * 防止同一通道重复提交，调用 /api/motor 并在结束后刷新运行状态。
+ * 防止同一通道重复提交，调用 /api/motor 并在结束后刷新运行状态
  */
 const sendMotor=async(motor,dir)=>{
   if(motorPending[motor]!=null&&(dir||motorPending[motor]===0)) return
@@ -582,14 +582,14 @@ const sendMotor=async(motor,dir)=>{
 // ---------- 配网 ----------
 /**
  * 启动 WiFi 扫描并轮询结果
- * 显示扫描状态，持续请求 /api/scan，最长等待 20 秒后渲染可用网络列表。
+ * 显示扫描状态，持续请求 /api/scan，最长等待 20 秒后渲染可用网络列表
  */
 const doScan=()=>{
   $('scanlist').textContent='扫描中...'
   const started = Date.now();
   /**
    * 轮询一次 WiFi 扫描结果
-   * 扫描未结束时每 800ms 重试；结束后清空列表并生成可点击的 SSID 条目。
+   * 扫描未结束时每 800ms 重试；结束后清空列表并生成可点击的 SSID 条目
    */
   const poll=()=>{fetch('/api/scan').then(r=>r.json()).then((list)=>{
     if(list.scanning){
@@ -612,7 +612,7 @@ const doScan=()=>{
 /**
  * 读取并规范化 mDNS 名称
  * @return {string|null} 合法的主机名；格式错误时返回 null
- * 去除空白、转小写并去掉可选的 .local 后缀，再检查长度和可用字符。
+ * 去除空白、转小写并去掉可选的 .local 后缀，再检查长度和可用字符
  */
 const readMdns=()=>{
   const el=$('w-mdns')
@@ -628,7 +628,7 @@ const readMdns=()=>{
 /**
  * 保存 mDNS 名称
  * @return {Promise<void>} 保存流程完成的 Promise
- * 校验名称后提交 /api/mdns；成功后更新输入框基线并提示生效状态。
+ * 校验名称后提交 /api/mdns；成功后更新输入框基线并提示生效状态
  */
 const saveMdns=async()=>{
   const mdns=readMdns()
@@ -651,7 +651,7 @@ const saveMdns=async()=>{
 let handoffWin = null;
 /**
  * 保存 WiFi 凭据并触发配网
- * 校验 SSID 和 mDNS 名称，预先打开跳转标签页，提交 /api/wifi；成功后进入新地址探测流程。
+ * 校验 SSID 和 mDNS 名称，预先打开跳转标签页，提交 /api/wifi；成功后进入新地址探测流程
  */
 const saveWifi=()=>{
   const ssid = $('w-ssid').value.trim();
@@ -678,15 +678,15 @@ const saveWifi=()=>{
 }
 
 /* 配网成功后设备会重启并换到路由器网段：
-   AP 断开 -> 手机/电脑自动切回原网络 -> 这里轮询新地址。
-   必须先在后台确认能连上再跳，直接跳失败浏览器只会给个错误页，本页也就废了。
-   跳转走的是点击时预留的新标签页，所以本页（192.168.4.1）原样保留。 */
+   AP 断开 -> 手机/电脑自动切回原网络 -> 这里轮询新地址
+   必须先在后台确认能连上再跳，直接跳失败浏览器只会给个错误页，本页也就废了
+   跳转走的是点击时预留的新标签页，所以本页（192.168.4.1）原样保留 */
 // 等待设备在路由器网段恢复响应的轮询定时器
 let handoffTimer = null;
 /**
  * 等待设备切换 WiFi 并跳转到新地址
  * @param {string} ip 设备连接路由器后获得的新 IP
- * 显示新控制台地址，轮询 /api/status 判断设备是否恢复，连上后在预留标签页打开。
+ * 显示新控制台地址，轮询 /api/status 判断设备是否恢复，连上后在预留标签页打开
  */
 const startHandoff=(ip)=>{
   const base = 'http://' + ip + '/';
@@ -701,7 +701,7 @@ const startHandoff=(ip)=>{
   },500)
   /**
    * 探测一次设备新地址
-   * 以 no-cors 请求请求状态接口并设 2.5 秒超时；失败时每 1.5 秒重试，超过 3 分钟停止。
+   * 以 no-cors 请求请求状态接口并设 2.5 秒超时；失败时每 1.5 秒重试，超过 3 分钟停止
    */
   const ping=()=>{
     const ac = new AbortController();
@@ -713,10 +713,10 @@ const startHandoff=(ip)=>{
       if(handoffTimer) clearInterval(handoffTimer)
       if(handoffWin && !handoffWin.closed){
         handoffWin.location.replace(base)
-        $('wd-state').textContent='已连上 '+base+'，新控制台已在另一个标签页打开，本页保留。'
+        $('wd-state').textContent='已连上 '+base+'，新控制台已在另一个标签页打开，本页保留'
       }else{
         // 弹窗被拦了，只能在用户点击时再开
-        $('wd-state').textContent='已连上 '+base+'，点上面的按钮打开新控制台（本页保留）。'
+        $('wd-state').textContent='已连上 '+base+'，点上面的按钮打开新控制台（本页保留）'
         window.open(base,'_blank')
       }
     }).catch(()=>{
@@ -733,7 +733,7 @@ const startHandoff=(ip)=>{
 /**
  * 清除已保存的 WiFi 配置
  * @return {Promise<void>} 请求处理完成的 Promise
- * 调用 /api/forget，并把设备返回的结果显示为提示。
+ * 调用 /api/forget，并把设备返回的结果显示为提示
  */
 const doForget=()=>api('/api/forget',{method:'POST'}).then(t=>toast(JSON.parse(t).msg,6000))
 
@@ -751,12 +751,12 @@ let BUS_APPLIED={}
 /**
  * 选择 RS485 接线模式
  * @param {number} mode 1 表示仅 RXD/TXD，2 表示带 DE 方向控制
- * 保存中禁止切换，更新页面模式状态和引脚标签。
+ * 保存中禁止切换，更新页面模式状态和引脚标签
  */
 const setRs485=(mode)=>{if(BUS_SAVING) return;BUS_MODE=mode;updateBusLabels()}
 /**
  * 刷新 BambuBus 引脚标签和校验状态
- * 标出引脚占用、警告、重复和缺失，并据此启用或禁用保存按钮。
+ * 标出引脚占用、警告、重复和缺失，并据此启用或禁用保存按钮
  */
 const updateBusLabels=()=>{
   const keys=BUS_MODE===2?['rx','tx','de']:['rx','tx'], seen=new Set(), warnings=[]
@@ -785,7 +785,7 @@ const updateBusLabels=()=>{
 /**
  * 渲染 BambuBus 接线配置
  * @param {Object} d /api/settings 返回的完整配置
- * 建立引脚占用表，填充 RX、TX、DE 下拉框并刷新冲突提示。
+ * 建立引脚占用表，填充 RX、TX、DE 下拉框并刷新冲突提示
  */
 const renderBus=(d)=>{
   const b=d.bus||{};BUS_READY=!!d.bus;BUS_SAVING=false;BUS_MODE=d.rs485===2?2:1;BUS_USES={};BUS_APPLIED={}
@@ -794,7 +794,7 @@ const renderBus=(d)=>{
    * @param {Object} map 引脚用途映射
    * @param {number|null} pin 引脚编号
    * @param {string} label 用途文字
-   * 忽略未配置引脚，把用途追加到对应引脚的列表中。
+   * 忽略未配置引脚，把用途追加到对应引脚的列表中
    */
   const add=(map,pin,label)=>{if(pin!=null&&pin!==255) (map[pin]??=[]).push(label)}
   for(let ch=0;ch<d.channels;ch++){
@@ -815,7 +815,7 @@ const renderBus=(d)=>{
 /**
  * 保存 BambuBus 接线配置
  * @return {Promise<void>} 请求处理完成的 Promise
- * 提交模式及 RX/TX/DE 引脚到 /api/bus，失败时恢复控件可操作状态。
+ * 提交模式及 RX/TX/DE 引脚到 /api/bus，失败时恢复控件可操作状态
  */
 const saveBus=async()=>{
   if($('save-bus').disabled) return
@@ -845,12 +845,12 @@ let PCF_SAVING=false
  * 判断下拉框是否选择了“无”
  * @param {HTMLSelectElement} sel 引脚下拉框
  * @return {boolean} true 表示未配置引脚
- * 空值和固件使用的 255 都表示“无”。
+ * 空值和固件使用的 255 都表示“无”
  */
 const pcfPinIsNone=(sel)=>sel.value===''||sel.value==='255'
 /**
  * 刷新 I2C 引脚标签和保存状态
- * 检查 SDA/SCL 是否成对配置、重复、BambuBus 冲突和通道占用。
+ * 检查 SDA/SCL 是否成对配置、重复、BambuBus 冲突和通道占用
  */
 const updatePcfLabels=()=>{
   const sda=$('pcf-sda'),scl=$('pcf-scl'),warnings=[]
@@ -859,8 +859,8 @@ const updatePcfLabels=()=>{
   const half=sdaNone!==sclNone
   const duplicate=configured&&!sdaNone&&!sclNone&&sda.value===scl.value
   const changed=configured!==PCF_DEV_ENABLED
-  // 通道占用不拦截保存：固件会清空与 SDA/SCL 冲突的通道引脚。
-  // 只有 BambuBus 占用必须先去改总线接线。
+  // 通道占用不拦截保存：固件会清空与 SDA/SCL 冲突的通道引脚
+  // 只有 BambuBus 占用必须先去改总线接线
   let busConflict=false, channelConflict=false
   for(const sel of [sda,scl]){
     const isNone=pcfPinIsNone(sel)
@@ -887,7 +887,7 @@ const updatePcfLabels=()=>{
 /**
  * 渲染 I2C 总线配置
  * @param {Object} d /api/settings 返回的完整配置
- * 载入 SDA/SCL 下拉框，建立通道及总线引脚占用表。
+ * 载入 SDA/SCL 下拉框，建立通道及总线引脚占用表
  */
 const renderPcf=(d)=>{
   const p=d.pcf||{}
@@ -915,7 +915,7 @@ const renderPcf=(d)=>{
 /**
  * 保存 I2C 总线配置
  * @return {Promise<void>} 请求处理完成的 Promise
- * 提交 SDA/SCL 到 /api/pcf；只选一个引脚时按钮保持禁用。
+ * 提交 SDA/SCL 到 /api/pcf；只选一个引脚时按钮保持禁用
  */
 const savePcf=async()=>{
   if($('save-pcf').disabled) return
@@ -952,7 +952,7 @@ let IO_DIRTY = false;
  * @param {number|string} value 当前选中的引脚
  * @param {boolean} allowNone 是否允许选择“无”
  * @return {HTMLSelectElement} 新建的下拉框
- * 填充可用引脚、警告标记和已选值，并在用户修改时标记配置已变更。
+ * 填充可用引脚、警告标记和已选值，并在用户修改时标记配置已变更
  */
 const ioMakeSelect=(id,value,allowNone)=>{
   const sel = document.createElement('select');sel.id=id
@@ -977,7 +977,7 @@ const ioMakeSelect=(id,value,allowNone)=>{
 /**
  * 统计当前页面中每个引脚被哪些通道使用
  * @return {Object<number,string[]>} 引脚编号到用途名称的映射
- * 扫描进料、退料和微动下拉框，为重复引脚提示提供依据。
+ * 扫描进料、退料和微动下拉框，为重复引脚提示提供依据
  */
 const ioUsageMap=()=>{
   const uses = {};
@@ -995,7 +995,7 @@ const ioUsageMap=()=>{
 }
 /**
  * 刷新通道引脚选项的占用文字
- * 把同一引脚的当前用途追加到选项文本，并同步下拉框警告提示和徽标。
+ * 把同一引脚的当前用途追加到选项文本，并同步下拉框警告提示和徽标
  */
 const refreshIoOptionLabels=()=>{
   const uses = ioUsageMap(), selects = document.querySelectorAll('#iobody select');
@@ -1021,7 +1021,7 @@ const refreshIoOptionLabels=()=>{
 }
 /**
  * 校验并显示通道引脚配置问题
- * 检查空值、重复引脚和电机未配置的通道，更新提示文字和错误样式。
+ * 检查空值、重复引脚和电机未配置的通道，更新提示文字和错误样式
  */
 const updateIoWarnings=()=>{
   let seen = {}, duplicate = false, missing = false;const unset = [];
@@ -1048,7 +1048,7 @@ const updateIoWarnings=()=>{
 /**
  * 渲染所有通道的引脚配置表
  * @param {Object} d 包含通道数量和引脚配置的 API 数据
- * 重建表格行和引脚下拉框，并立即执行引脚冲突检查。
+ * 重建表格行和引脚下拉框，并立即执行引脚冲突检查
  */
 const renderIoConfig=(d)=>{
   IO_CHANNELS=d.channels||0
@@ -1057,7 +1057,7 @@ const renderIoConfig=(d)=>{
   for(let i=0; i<IO_CHANNELS; i++){
     const tr = document.createElement('tr'), td = document.createElement('td');td.textContent=i+1;tr.appendChild(td)
     const values = d.io || {}, motors = values.motor || [], sw = values.microswitch || [];
-    // 电机引脚允许选「无」：留空表示该通道暂时不接电机。
+    // 电机引脚允许选「无」：留空表示该通道暂时不接电机
     const cells = [ioMakeSelect('io-mf' + i, motors[i] ? motors[i][0] : 255, true), ioMakeSelect('io-mb' + i, motors[i] ? motors[i][1] : 255, true), ioMakeSelect('io-sw' + i, sw[i] != null ? sw[i] : 255, true)];
     for(let k=0; k<cells.length; k++){const c = document.createElement('td');c.appendChild(cells[k]);tr.appendChild(c)}
     body.appendChild(tr)
@@ -1067,24 +1067,24 @@ const renderIoConfig=(d)=>{
 }
 /**
  * 预览修改 AMS 数量后的通道表
- * 保留尚未保存的引脚选择，按新数量扩展或收缩表格，并提示待保存通道数。
+ * 保留尚未保存的引脚选择，按新数量扩展或收缩表格，并提示待保存通道数
  */
 const previewAms=()=>{
   if(!IO_DRAFT) return
   IO_DIRTY=true
-  // 在数量来回切换时保留尚未保存的引脚选择。
+  // 在数量来回切换时保留尚未保存的引脚选择
   for(let i=0;i<IO_CHANNELS;i++){
     IO_DRAFT.io.motor[i]=[$('io-mf'+i).value,$('io-mb'+i).value]
     IO_DRAFT.io.microswitch[i]=$('io-sw'+i).value
   }
   IO_DRAFT.channels=Number($('p-ams').value)*4
   renderIoConfig(IO_DRAFT)
-  $('ams-hint').textContent='待保存：'+$('p-ams').value+' 个 AMS，共 '+IO_CHANNELS+' 通道；请在下方配置引脚后保存数量与引脚。减少数量会停止并移除停用通道的排队动作。'
+  $('ams-hint').textContent='待保存：'+$('p-ams').value+' 个 AMS，共 '+IO_CHANNELS+' 通道；请在下方配置引脚后保存数量与引脚减少数量会停止并移除停用通道的排队动作'
 }
 /**
  * 保存 AMS 数量和全部通道引脚
  * @return {Promise<void>} 保存流程完成的 Promise
- * 检查缺项和重复引脚，提交 /api/settings，成功后重新读取并渲染配置。
+ * 检查缺项和重复引脚，提交 /api/settings，成功后重新读取并渲染配置
  */
 const saveIoConfig=async()=>{
   let seen = {}, body = new URLSearchParams({ams:$('p-ams').value}), duplicate = false;
@@ -1105,7 +1105,7 @@ const saveIoConfig=async()=>{
 /**
  * 读取并渲染完整参数配置
  * @return {Promise<void>} 配置加载完成的 Promise
- * 请求 /api/settings，填充设置项、通道表、BambuBus、PCF8575 和电机控制界面。
+ * 请求 /api/settings，填充设置项、通道表、BambuBus、PCF8575 和电机控制界面
  */
 const loadPara=()=>{
   return fetch('/api/settings').then(r=>r.json()).then((d)=>{
@@ -1119,7 +1119,7 @@ const loadPara=()=>{
     for(let a=1; a<=d.maxams; a++){
       const op = document.createElement('option');op.value=a;op.textContent=a;ams.appendChild(op);}
     $('p-ams').value=d.ams
-    $('ams-hint').textContent=d.ams+' 个 AMS，共 '+d.channels+' 通道；新增通道请先在下方配置引脚，再保存。'
+    $('ams-hint').textContent=d.ams+' 个 AMS，共 '+d.channels+' 通道；新增通道请先在下方配置引脚，再保存'
     IO_DRAFT=JSON.parse(JSON.stringify(d));IO_DIRTY=false
     $('p-serial').value=d.serial||''
     $('p-serial').dataset.saved=$('p-serial').value
@@ -1169,7 +1169,7 @@ const loadPara=()=>{
  * @param {string} body 表单编码的设置内容
  * @param {boolean} silent 是否静默成功提示
  * @return {Promise<boolean>} 是否保存成功
- * 调用 /api/settings，失败时显示错误并返回 false，成功后刷新状态。
+ * 调用 /api/settings，失败时显示错误并返回 false，成功后刷新状态
  */
 const postSettings=async(body,silent)=>{
   try{
@@ -1186,7 +1186,7 @@ const postSettings=async(body,silent)=>{
  * @param {HTMLInputElement|HTMLSelectElement} el 被修改的控件
  * @param {string} key 设置项名称
  * @return {Promise<void>} 保存流程完成的 Promise
- * 先做浏览器校验，保存失败时恢复上次值，成功后更新基线并刷新通道状态。
+ * 先做浏览器校验，保存失败时恢复上次值，成功后更新基线并刷新通道状态
  */
 const saveField=async(el,key)=>{
   if(!el.reportValidity()) return
@@ -1200,7 +1200,7 @@ const saveField=async(el,key)=>{
 /**
  * 保存自定义序列号
  * @return {Promise<void>} 保存流程完成的 Promise
- * 空值表示恢复自动序列号；失败时还原输入框中的上次有效值。
+ * 空值表示恢复自动序列号；失败时还原输入框中的上次有效值
  */
 const saveSerial=async()=>{
   const el=$('p-serial')
@@ -1217,7 +1217,7 @@ const saveSerial=async()=>{
  * 开关 BambuBus 原始报文日志
  * @param {number} v 1 开启，0 关闭
  * @return {Promise<void>} 保存流程完成的 Promise
- * 写入 buslog 设置，成功后同步页面按钮并显示提示。
+ * 写入 buslog 设置，成功后同步页面按钮并显示提示
  */
 const setBusLog=async(v)=>{
   if(!await postSettings('buslog='+v,true)) return
@@ -1232,7 +1232,7 @@ gOtaLatest = null;
 /**
  * 显示新固件提示横幅
  * @param {Object} d OTA 检查结果
- * 显示最新版本和当前版本，并取消横幅的隐藏状态。
+ * 显示最新版本和当前版本，并取消横幅的隐藏状态
  */
 const showUpbar=(d)=>{
   $('upbar-txt').innerHTML='发现新固件 <b>'+esc(d.latest)+'</b>（当前 '+esc(d.current)+'）'
@@ -1240,12 +1240,12 @@ const showUpbar=(d)=>{
 }
 /**
  * 隐藏新固件提示横幅
- * 给顶部 OTA 横幅添加隐藏样式。
+ * 给顶部 OTA 横幅添加隐藏样式
  */
 const hideUpbar=()=>{$('upbar').classList.add('hide');}
 /**
  * 跳转到固件更新区域
- * 切换到更新标签页，并平滑滚动到 OTA 卡片。
+ * 切换到更新标签页，并平滑滚动到 OTA 卡片
  */
 const gotoUpdate=()=>{showTab('update');
   const c = $('card-ota');if(c&&c.scrollIntoView)c.scrollIntoView({behavior:'smooth',block:'start'});}
@@ -1253,7 +1253,7 @@ const gotoUpdate=()=>{showTab('update');
 /**
  * 根据 OTA 检查结果刷新更新界面
  * @param {Object} d OTA 检查结果
- * 保存可更新版本、控制在线更新按钮，并显示版本号、大小和更新说明。
+ * 保存可更新版本、控制在线更新按钮，并显示版本号、大小和更新说明
  */
 const setOtaUi=(d)=>{
   gOtaLatest = d.has_update ? d : null
@@ -1272,7 +1272,7 @@ const setOtaUi=(d)=>{
 /**
  * 检查服务器是否存在新固件
  * @param {boolean} force 是否显示检查过程和失败提示
- * 调用 /api/ota/check，静默模式用于页面自动检查，手动模式会显示结果。
+ * 调用 /api/ota/check，静默模式用于页面自动检查，手动模式会显示结果
  */
 const checkUpdate=(force)=>{
   if(force) $('u-stat').textContent='正在检查更新…'
@@ -1289,10 +1289,10 @@ const checkUpdate=(force)=>{
 
 /**
  * 下载并安装服务器上的新固件
- * 确认设备空闲后调用 /api/ota/pull，显示等待计时，成功后延迟打开刷新后的页面。
+ * 确认设备空闲后调用 /api/ota/pull，显示等待计时，成功后延迟打开刷新后的页面
  */
 const pullUpdate=()=>{
-  if(!confirm('请确认打印已停止，打印机总线已断开且所有电机已停止。确定下载并安装新固件？过程中请勿断电。')) return
+  if(!confirm('请确认打印已停止，打印机总线已断开且所有电机已停止确定下载并安装新固件？过程中请勿断电')) return
   $('btn-otapull').disabled=true
   $('u-stat').textContent='正在下载固件，请勿断电…（大文件可能要一两分钟）'
   const t0 = Date.now(), tip = setInterval(() => {
@@ -1322,13 +1322,13 @@ const pullUpdate=()=>{
 
 /**
  * 上传本地固件并写入设备
- * 校验 .bin 文件，通过 XMLHttpRequest 显示上传进度，并处理成功、失败和超时。
+ * 校验 .bin 文件，通过 XMLHttpRequest 显示上传进度，并处理成功、失败和超时
  */
 const uploadFw=()=>{
   const f = $('u-file').files[0];
   if(!f){toast('请先选择 .bin 固件文件');return;}
   if(!/\.bin$/i.test(f.name)){toast('请选择 .bin 固件文件');return;}
-  if(!confirm('请确认打印已停止，打印机总线已断开且所有电机已停止。确定写入 '+f.name+'（'+Math.round(f.size/1024)+' KB）？')) return
+  if(!confirm('请确认打印已停止，打印机总线已断开且所有电机已停止确定写入 '+f.name+'（'+Math.round(f.size/1024)+' KB）？')) return
 
   const fd = new FormData();
   fd.append('firmware',f,f.name)
@@ -1355,14 +1355,14 @@ const uploadFw=()=>{
 /**
  * 保存 OTA 更新源目录 URL
  * @return {Promise<boolean>} 保存是否成功
- * 去除首尾空白并编码后写入 otaurl 设置。
+ * 去除首尾空白并编码后写入 otaurl 设置
  */
 const saveOtaSrc=()=>postSettings('otaurl='+encodeURIComponent($('u-otaurl').value.trim()),false)
 /**
  * 设置是否自动提示固件更新
  * @param {number} v 1 开启，0 关闭
  * @return {Promise<void>} 保存流程完成的 Promise
- * 写入 otanotify 设置，并同步按钮和顶部更新横幅。
+ * 写入 otanotify 设置，并同步按钮和顶部更新横幅
  */
 const setNotify=async(v)=>{
   if(!await postSettings('otanotify='+v,true)) return
@@ -1376,14 +1376,14 @@ const setNotify=async(v)=>{
 // ---------- 系统 ----------
 /**
  * 请求重启设备
- * 二次确认后调用 /api/reboot，并显示设备返回的提示。
+ * 二次确认后调用 /api/reboot，并显示设备返回的提示
  */
 const doReboot=()=>{if(confirm('确定重启设备？')) api('/api/reboot').then((t)=>{toast(JSON.parse(t).msg,6000);});}
 /**
  * 请求恢复出厂设置
- * 明确提示 WiFi 凭据会被清空，确认后调用 /api/factory 并显示结果。
+ * 明确提示 WiFi 凭据会被清空，确认后调用 /api/factory 并显示结果
  */
-const doFactory=()=>{if(confirm('确定恢复出厂设置？WiFi 凭据也会被清空。')) api('/api/factory',{method:'POST'}).then((t)=>{toast(JSON.parse(t).msg,6000);});}
+const doFactory=()=>{if(confirm('确定恢复出厂设置？WiFi 凭据也会被清空')) api('/api/factory',{method:'POST'}).then((t)=>{toast(JSON.parse(t).msg,6000);});}
 
 // ---------- 日志 ----------
 // 设备开机毫秒数到浏览器本地时间的换算基准；null 表示尚未同步
@@ -1391,7 +1391,7 @@ let logClockOffset = null
 /**
  * 同步日志时间基准
  * @param {number} uptimeMs 设备当前开机毫秒数
- * 记录浏览器本地时间与设备运行时间的差值，供日志行首时间换算使用。
+ * 记录浏览器本地时间与设备运行时间的差值，供日志行首时间换算使用
  */
 const setLogClock=(uptimeMs)=>{
   const n=Number(uptimeMs)
@@ -1401,7 +1401,7 @@ const setLogClock=(uptimeMs)=>{
 /**
  * 从日志响应头同步设备运行时间
  * @param {Response} r fetch 返回的响应对象
- * 读取 X-Uptime-Ms；响应头缺失时保留上一次的时间基准。
+ * 读取 X-Uptime-Ms；响应头缺失时保留上一次的时间基准
  */
 const syncLogClock=(r)=>{
   const s=r.headers.get('X-Uptime-Ms')
@@ -1411,7 +1411,7 @@ const syncLogClock=(r)=>{
  * 把日志行首的开机毫秒数转换成浏览器本地时间
  * @param {string} line 原始日志行
  * @return {string} 使用 [yyyy-MM-dd HH:mm:ss.SSS] 前缀的日志行
- * 只替换形如“[1234] ”的时间前缀，其余内容和未识别行保持原样。
+ * 只替换形如“[1234] ”的时间前缀，其余内容和未识别行保持原样
  */
 const fmtLogLine=(line)=>{
   const m=/^\[(\d+)\] /.exec(line)
@@ -1426,14 +1426,14 @@ const fmtLogLine=(line)=>{
  * 批量转换日志文本中的时间前缀
  * @param {string} text 原始日志文本
  * @return {string} 使用浏览器本地时间前缀的日志文本
- * 按行调用 fmtLogLine()，用于日志显示和下载文件。
+ * 按行调用 fmtLogLine()，用于日志显示和下载文件
  */
 const fmtLogText=(text)=>String(text||'').split('\n').map(fmtLogLine).join('\n')
 /**
  * 触发浏览器下载文本文件
  * @param {string} name 下载文件名
  * @param {string} text 文件内容
- * 创建临时 Blob 和隐藏链接，点击后释放 URL。
+ * 创建临时 Blob 和隐藏链接，点击后释放 URL
  */
 const saveTextFile=(name,text)=>{
   const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}))
@@ -1457,6 +1457,7 @@ const BUS_LOG_TYPES = [
   {type: 10, label: 'ETC 其他', color: '#cbd5e1'},
   {type: 11, label: 'ERROR 错误', color: '#ff6b6b'},
   {type: 12, label: 'set_filament_type2 长包设置耗材', color: '#fda4af'},
+  {type: 13, label: 'IGNORED 忽略其它设备报文', color: '#94a3b8'},
   {type: -1, label: 'unknown 未知/未关联', color: '#94a3b8'}
 ];
 // 类型编号到日志颜色的快速索引
@@ -1481,7 +1482,7 @@ let paused = false;
  * 判断日志类型是否已定义
  * @param {number} type 日志类型编号
  * @return {boolean} 是否为已知类型
- * 遍历 BUS_LOG_TYPES，供筛选和类型解析复用。
+ * 遍历 BUS_LOG_TYPES，供筛选和类型解析复用
  */
 const busLogHasType=(type)=>{
   for(let i=0; i<BUS_LOG_TYPES.length; i++) if(BUS_LOG_TYPES[i].type===type) return true
@@ -1489,14 +1490,14 @@ const busLogHasType=(type)=>{
 }
 /**
  * 保存 BambuBus 日志筛选条件
- * 把 busLogFilters 序列化到 localStorage，忽略存储不可用等异常。
+ * 把 busLogFilters 序列化到 localStorage，忽略存储不可用等异常
  */
 const saveBusLogFilters=()=>{
   try{localStorage.setItem(busLogFilterStorage,JSON.stringify(busLogFilters));}catch(e){}
 }
 /**
  * 初始化 BambuBus 日志类型筛选器
- * 读取本地保存的筛选状态，生成彩色复选框，并在用户切换时立即重绘日志。
+ * 读取本地保存的筛选状态，生成彩色复选框，并在用户切换时立即重绘日志
  */
 const initBusLogFilters=()=>{
   let saved = {};
@@ -1524,7 +1525,7 @@ const initBusLogFilters=()=>{
 /**
  * 全选或取消全部日志类型
  * @param {boolean} checked 是否选中所有类型
- * 同步内存筛选值、复选框状态和本地存储，并重绘日志。
+ * 同步内存筛选值、复选框状态和本地存储，并重绘日志
  */
 const setAllBusLogFilters=(checked)=>{
   for(let i=0; i<BUS_LOG_TYPES.length; i++) busLogFilters[BUS_LOG_TYPES[i].type]=checked
@@ -1537,7 +1538,7 @@ const setAllBusLogFilters=(checked)=>{
  * 从一行日志中解析类型编号
  * @param {string} line 包含 type=... 元数据的日志行
  * @return {number} 已知类型编号；无法识别时返回 -1
- * 用于按类型筛选以及抓取时决定是否保留该行。
+ * 用于按类型筛选以及抓取时决定是否保留该行
  */
 const busLogTypeFromLine=(line)=>{
   const m = /\btype=(-?\d+)\b/.exec(line);
@@ -1547,7 +1548,7 @@ const busLogTypeFromLine=(line)=>{
 }
 /**
  * 按筛选条件重绘 BambuBus 日志
- * 从缓存记录生成彩色文本片段，移除内部 type 元数据，并保持当前日志滚动到底部。
+ * 从缓存记录生成彩色文本片段，移除内部 type 元数据，并保持当前日志滚动到底部
  */
 const renderBusLog=()=>{
   const L = LOGS[1], out = document.createDocumentFragment();
@@ -1556,7 +1557,7 @@ const renderBusLog=()=>{
     if(busLogFilters[rec.type]===false) continue
     const line = document.createElement('span');
     line.style.color=busLogColors[rec.type]||busLogColors[-1]
-    // type=... 是给筛选器使用的元数据；页面保留原来的可读日志格式。
+    // type=... 是给筛选器使用的元数据；页面保留原来的可读日志格式
     line.textContent=fmtLogLine(rec.text.replace(/\btype=-?\d+\s+/,''))
     out.appendChild(line)
   }
@@ -1567,7 +1568,7 @@ const renderBusLog=()=>{
  * 追加 BambuBus 原始日志
  * @param {string} text 新收到的日志文本
  * 按行切分并解析类型，缓存完整行；超过 256KB 时裁剪到约 128KB，
- * 只有当前页签为 BambuBus 时才重绘页面。
+ * 只有当前页签为 BambuBus 时才重绘页面
  */
 const appendBusLog=(text)=>{
   const L = LOGS[1];
@@ -1588,7 +1589,7 @@ const appendBusLog=(text)=>{
 /**
  * 切换日志显示通道
  * @param {number} ch 0 为主板日志，1 为 BambuBus 日志
- * 切换日志框和相关控制栏，更新按钮高亮，并滚动到最新内容。
+ * 切换日志框和相关控制栏，更新按钮高亮，并滚动到最新内容
  */
 const showLog=(ch)=>{
   activeLog=ch
@@ -1605,7 +1606,7 @@ const showLog=(ch)=>{
 }
 /**
  * 暂停或继续日志刷新
- * 翻转暂停状态，并更新按钮文字和显示样式。
+ * 翻转暂停状态，并更新按钮文字和显示样式
  */
 const togglePause=()=>{
   paused=!paused
@@ -1614,7 +1615,7 @@ const togglePause=()=>{
 }
 /**
  * 清空当前日志缓冲区
- * 请求服务端清除日志并同步日志序号，同时清理前端缓存和显示内容。
+ * 请求服务端清除日志并同步日志序号，同时清理前端缓存和显示内容
  */
 const clearLog=()=>{
   const ch = activeLog;
@@ -1629,7 +1630,7 @@ const clearLog=()=>{
 }
 /**
  * 下载当前日志文件
- * 拉取当前通道的完整环形缓冲，把行首毫秒数转换为浏览器本地时间后下载。
+ * 拉取当前通道的完整环形缓冲，把行首毫秒数转换为浏览器本地时间后下载
  */
 const downloadLog=()=>{
   const ch=activeLog, parts=[]
@@ -1637,7 +1638,7 @@ const downloadLog=()=>{
    * 分块拉取完整日志
    * @param {number} seq 服务端读取游标
    * @return {Promise<string>} 拼接后的完整日志文本
-   * 单次接口最多返回 16KB，拿满后继续按新游标拉取，避免下载内容被截断。
+   * 单次接口最多返回 16KB，拿满后继续按新游标拉取，避免下载内容被截断
    */
   const readAll=(seq)=>{
     return fetch('/api/log?ch='+ch+'&seq='+seq).then((r)=>{
@@ -1675,7 +1676,7 @@ let busCaptureBusy=false
 /**
  * 同步 BambuBus 日志抓取起点
  * @return {Promise<number>} 当前日志写入序号
- * 发送超前序号只读取游标，确保抓取只包含点击开始之后产生的报文。
+ * 发送超前序号只读取游标，确保抓取只包含点击开始之后产生的报文
  */
 const busCaptureSyncSeq=()=>
   fetch('/api/log?ch=1&seq='+BUS_CAPTURE_SYNC).then((r)=>{
@@ -1688,7 +1689,7 @@ const busCaptureSyncSeq=()=>
   }).catch(()=>LOGS[1].seq)
 /**
  * 刷新报文抓取按钮状态
- * 根据抓取进行状态禁用或启用按钮，并显示剩余抓取秒数。
+ * 根据抓取进行状态禁用或启用按钮，并显示剩余抓取秒数
  */
 const busCaptureRefresh=()=>{
   const btn=$('btn-buscap');if(!btn) return
@@ -1701,7 +1702,7 @@ const busCaptureRefresh=()=>{
  * 把新日志追加到抓取结果
  * @param {Object} cap 当前抓取上下文
  * @param {string} text 新收到的日志文本
- * 按行解析类型，只保留筛选器勾选的完整日志行。
+ * 按行解析类型，只保留筛选器勾选的完整日志行
  */
 const busCaptureAppend=(cap,text)=>{
   cap.pending+=text
@@ -1717,14 +1718,14 @@ const busCaptureAppend=(cap,text)=>{
 /**
  * 下载抓取到的 BambuBus 日志
  * @param {Object} cap 当前抓取上下文
- * 按本地时间生成文件名，把缓存行打包成文本并触发浏览器下载。
+ * 按本地时间生成文件名，把缓存行打包成文本并触发浏览器下载
  */
 const busCaptureSave=(cap)=>{
   /**
    * 把数字补齐为两位
    * @param {number} v 待补零数字
    * @return {string} 至少两位的文本
-   * 用于生成 yyyyMMdd-HHmmss 格式的日志文件名。
+   * 用于生成 yyyyMMdd-HHmmss 格式的日志文件名
    */
   const d=new Date(),pad=(v)=>String(v).padStart(2,'0')
   const name='bambubus-'+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'-'+
@@ -1735,7 +1736,7 @@ const busCaptureSave=(cap)=>{
 /**
  * 结束并保存报文抓取
  * @param {Object} cap 当前抓取上下文
- * 清理计时器、恢复按钮、下载日志，并按抓取行数显示完成提示。
+ * 清理计时器、恢复按钮、下载日志，并按抓取行数显示完成提示
  */
 const busCaptureFinish=(cap)=>{
   if(busCapture!==cap) return
@@ -1748,7 +1749,7 @@ const busCaptureFinish=(cap)=>{
 }
 /**
  * 拉取一段抓取期间产生的日志
- * 从记录序号增量读取，追加筛选后的内容；到截止时间后结束并保存，否则安排下一次轮询。
+ * 从记录序号增量读取，追加筛选后的内容；到截止时间后结束并保存，否则安排下一次轮询
  */
 const busCapturePoll=()=>{
   const cap=busCapture
@@ -1775,7 +1776,7 @@ const busCapturePoll=()=>{
 }
 /**
  * 开始 30 秒 BambuBus 报文抓取
- * 先同步日志游标，记录当前筛选条件，启动轮询和按钮倒计时。
+ * 先同步日志游标，记录当前筛选条件，启动轮询和按钮倒计时
  */
 const startBusCapture=()=>{
   if(busCapture||busCaptureBusy) return
@@ -1798,8 +1799,8 @@ const startBusCapture=()=>{
  * 追加指定通道的日志文本
  * @param {number} ch 日志通道，0 为主板，1 为 BambuBus
  * @param {string} text 新日志
- * BambuBus 走按类型缓存的渲染逻辑；主板日志按 256KB/128KB 上限裁剪。
- * 非当前页签只更新缓存，不写 DOM，切回时由 showLog() 统一渲染。
+ * BambuBus 走按类型缓存的渲染逻辑；主板日志按 256KB/128KB 上限裁剪
+ * 非当前页签只更新缓存，不写 DOM，切回时由 showLog() 统一渲染
  */
 const appendLog=(ch,text)=>{
   if(ch===1){appendBusLog(text);return}
@@ -1817,7 +1818,7 @@ const appendLog=(ch,text)=>{
  * 增量轮询指定日志通道
  * @param {number} ch 日志通道，0 为主板，1 为 BambuBus
  * 只在日志标签页且未暂停时请求新内容；busy 防止同一通道重复请求，
- * 非当前页签只更新缓存，由 showLog() 在切换时渲染。
+ * 非当前页签只更新缓存，由 showLog() 在切换时渲染
  */
 const pollLogChannel=(ch)=>{
   if(TAB!=='logs'||paused) return

@@ -60,7 +60,7 @@ namespace {
  * @param ch 日志通道
  * @param r 输出的环形缓冲引用
  * @return 通道是否有效
- * 把主日志或总线日志的缓冲区、容量和游标指针封装到 RingRef 中。
+ * 把主日志或总线日志的缓冲区、容量和游标指针封装到 RingRef 中
  */
 static bool ring_ref(const int ch, RingRef &r) {
     if (ch == LOG_CH_MAIN) {
@@ -76,7 +76,7 @@ static bool ring_ref(const int ch, RingRef &r) {
 
 /**
  * 初始化日志环形缓冲
- * 清空两路日志缓冲区并把累计写游标和清空下限归零。
+ * 清空两路日志缓冲区并把累计写游标和清空下限归零
  */
 void log_bus_init() {
     memset(ring_main.buf, 0, sizeof(ring_main.buf));
@@ -90,7 +90,7 @@ void log_bus_init() {
  * @param ch 日志通道
  * @param data 待写入数据
  * @param len 数据长度
- * 在临界区内循环写入并在末尾覆盖旧数据，写入过程不会阻塞。
+ * 在临界区内循环写入并在末尾覆盖旧数据，写入过程不会阻塞
  */
 void log_bus_write(const int ch, const char *data, const size_t len) {
     RingRef r{};
@@ -111,7 +111,7 @@ void log_bus_write(const int ch, const char *data, const size_t len) {
 /**
  * 清空指定通道日志
  * @param ch 日志通道
- * 清空缓冲区并把 floor 推进到当前写游标，客户端不会重复读到旧内容。
+ * 清空缓冲区并把 floor 推进到当前写游标，客户端不会重复读到旧内容
  */
 void log_bus_clear(const int ch) {
     RingRef r{};
@@ -127,7 +127,7 @@ void log_bus_clear(const int ch) {
  * 读取日志累计写入字节数
  * @param ch 日志通道
  * @return 累计写游标
- * 返回单调递增的写游标，可用于清空后同步客户端序号。
+ * 返回单调递增的写游标，可用于清空后同步客户端序号
  */
 uint32_t log_bus_total(const int ch) {
     RingRef r{};
@@ -146,7 +146,7 @@ uint32_t log_bus_total(const int ch) {
  * @param out 输出缓冲区
  * @param max_len 输出缓冲区大小
  * @return 实际写入 out 的字节数
- * 从游标位置读取未消费日志；若中间数据已被覆盖，会先插入丢弃提示。
+ * 从游标位置读取未消费日志；若中间数据已被覆盖，会先插入丢弃提示
  */
 size_t log_bus_read(const int ch, uint32_t *seq, char *out, size_t max_len) {
     if (!seq || !out || max_len == 0) return 0;
@@ -199,7 +199,7 @@ size_t log_bus_read(const int ch, uint32_t *seq, char *out, size_t max_len) {
  * 把日志同步输出到控制台
  * @param s 文本内容
  * @param len 文本长度
- * ESP32 使用 Serial.write()，RP2040 使用 stdout 输出日志。
+ * ESP32 使用 Serial.write()，RP2040 使用 stdout 输出日志
  */
 static void console_echo(const char *s, size_t len) {
 #if defined(ARDUINO_ARCH_ESP32)
@@ -214,7 +214,7 @@ static void console_echo(const char *s, size_t len) {
  * @param ch 日志通道
  * @param fmt printf 格式串
  * @param ... 可变参数
- * 添加毫秒时间戳后写入环形缓冲，主板日志同时回显到控制台。
+ * 添加毫秒时间戳后写入环形缓冲，主板日志同时回显到控制台
  */
 void log_bus_printf(const int ch, const char *fmt, ...) {
     char body[224];
@@ -240,7 +240,7 @@ void log_bus_printf(const int ch, const char *fmt, ...) {
  * @param p 输出位置
  * @param v 待转换数值
  * @return 写入结束后的新位置
- * 手写十进制转换，避免在中断上下文中调用可能不可重入的 snprintf。
+ * 手写十进制转换，避免在中断上下文中调用可能不可重入的 snprintf
  */
 static char *fmt_u32(char *p, uint32_t v) {
     char tmp[11];
@@ -259,7 +259,7 @@ static char *fmt_u32(char *p, uint32_t v) {
  * @param p 输出位置
  * @param v 待转换数值
  * @return 写入结束后的新位置
- * 先处理负号，再复用无符号转换逻辑。
+ * 先处理负号，再复用无符号转换逻辑
  */
 static char *fmt_i32(char *p, const int32_t v) {
     if (v < 0) {
@@ -276,7 +276,7 @@ static char *fmt_i32(char *p, const int32_t v) {
  * @param type BambuBus 报文类型编号，-1 表示未知
  * @param data 待转储数据
  * @param len 数据长度
- * 每行最多 24 字节，行首携带时间戳、类型和收发标记，便于网页按类型过滤。
+ * 每行最多 24 字节，行首携带时间戳、类型和收发标记，便于网页按类型过滤
  */
 void log_bus_hex_typed(const int ch, const char tag, const int type, const uint8_t *data, const uint16_t len) {
     // 十六进制字符表，避免每次转换都调用格式化函数
@@ -321,7 +321,7 @@ void log_bus_hex_typed(const int ch, const char tag, const int type, const uint8
  * @param tag R 表示接收，T 表示发送
  * @param data 待转储数据
  * @param len 数据长度
- * 以 type=-1 调用 log_bus_hex_typed()，用于没有完整报文类型的原始字节。
+ * 以 type=-1 调用 log_bus_hex_typed()，用于没有完整报文类型的原始字节
  */
 void log_bus_hex(const int ch, const char tag, const uint8_t *data, const uint16_t len) {
     log_bus_hex_typed(ch, tag, -1, data, len);

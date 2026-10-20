@@ -9,7 +9,7 @@
  * 判断引脚是否为系统保留脚
  * @param pin 引脚号
  * @return true 表示不可分配
- * 按平台过滤微动专用脚、Flash、USB、控制台串口和启动绑带等保留引脚。
+ * 按平台过滤微动专用脚、Flash、USB、控制台串口和启动绑带等保留引脚
  */
 static bool is_reserved_pin(int pin) {
 #if defined(PIN_SWITCH)
@@ -17,7 +17,7 @@ static bool is_reserved_pin(int pin) {
 #endif
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
-    // Flash 和控制台不可重分配；经典款的 USB 焊盘可用作普通 GPIO。
+    // Flash 和控制台不可重分配；经典款的 USB 焊盘可用作普通 GPIO
     if (pin == 11 || (pin >= 14 && pin <= 17)) return true;
 #if C3_BOARD_USB_TTL && !ARDUINO_USB_CDC_ON_BOOT
     if (pin == 20 || pin == 21) return true;
@@ -28,7 +28,7 @@ static bool is_reserved_pin(int pin) {
 #endif
 #endif
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
-    // S3 DevKit 的 26-37 接 Flash/PSRAM，19/20 保留给原生 USB。
+    // S3 DevKit 的 26-37 接 Flash/PSRAM，19/20 保留给原生 USB
     if ((pin >= 26 && pin <= 37) || pin == 19 || pin == 20 || pin == 43 || pin == 44) return true;
 #endif
     return false;
@@ -39,21 +39,21 @@ static bool is_reserved_pin(int pin) {
  * 判断引脚是否为可用真实 GPIO
  * @param pin 引脚号
  * @return true 表示真实且未保留
- * 结合平台引脚范围与保留脚列表，过滤不存在的编号。
+ * 结合平台引脚范围与保留脚列表，过滤不存在的编号
  */
 static bool is_real_gpio(int pin) {
     if (pin < 0 || pin >= 255 || is_reserved_pin(pin)) return false;
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
     // C3 的可选范围只保留实际引出的 GPIO；保留 2/8 是为了兼容现有默认映射，
-    // 由网页另外显示启动风险提示。
+    // 由网页另外显示启动风险提示
     return pin <= 21;
 #elif defined(ARDUINO_ARCH_ESP32)
     return digitalPinIsValid(pin);
 #elif defined(NUM_DIGITAL_PINS)
     return pin < NUM_DIGITAL_PINS;
 #else
-    // RP2040 Arduino core 没有统一导出 NUM_DIGITAL_PINS 时，板上 GPIO 为 0-29。
+    // RP2040 Arduino core 没有统一导出 NUM_DIGITAL_PINS 时，板上 GPIO 为 0-29
     return pin < 30;
 #endif
 }
@@ -62,7 +62,7 @@ static bool is_real_gpio(int pin) {
 /**
  * 生成平台默认引脚配置
  * @param config 待填充的 IO 配置
- * 按 platform.h 中的电机和微动默认映射初始化所有通道。
+ * 按 platform.h 中的电机和微动默认映射初始化所有通道
  */
 void io_config_set_defaults(IoConfig &config) {
     // 各通道 [进料, 退料] 的板级默认引脚
@@ -80,7 +80,7 @@ void io_config_set_defaults(IoConfig &config) {
 }
 
 // 该引脚在 I2C 总线状态变化后是否还能用：配置后 SDA/SCL 不能再用作通道引脚，
-// 未配置时扩展虚拟引脚不再存在。
+// 未配置时扩展虚拟引脚不再存在
 /**
  * 判断引脚在 I2C 总线状态切换后是否失效
  * @param pin 引脚号
@@ -88,7 +88,7 @@ void io_config_set_defaults(IoConfig &config) {
  * @param sda I2C SDA 引脚
  * @param scl I2C SCL 引脚
  * @return true 表示该引脚不再可用
- * 启用 I2C 时 SDA/SCL 不能再作通道脚；关闭时扩展虚拟引脚全部失效。
+ * 启用 I2C 时 SDA/SCL 不能再作通道脚；关闭时扩展虚拟引脚全部失效
  */
 static bool pin_invalid_after_switch(int pin, bool i2c_configured, int sda, int scl) {
     if (pin == PIN_NONE) return false;
@@ -96,9 +96,9 @@ static bool pin_invalid_after_switch(int pin, bool i2c_configured, int sda, int 
     return pin == sda || pin == scl;
 }
 
-// 切换 I2C 总线配置时只清掉不再合法的引脚，其余接线原样保留，避免覆盖用户已接线。
-// 电机是一对，任一脚被占用就整对清掉；清成 PIN_NONE(无) 表示该通道待配置。
-// 返回清掉的引脚数量，供日志使用。
+// 切换 I2C 总线配置时只清掉不再合法的引脚，其余接线原样保留，避免覆盖用户已接线
+// 电机是一对，任一脚被占用就整对清掉；清成 PIN_NONE(无) 表示该通道待配置
+// 返回清掉的引脚数量，供日志使用
 /**
  * 清理切换后失效的通道引脚
  * @param config 待清理的 IO 配置
@@ -106,7 +106,7 @@ static bool pin_invalid_after_switch(int pin, bool i2c_configured, int sda, int 
  * @param sda I2C SDA 引脚
  * @param scl I2C SCL 引脚
  * @return 被清空的引脚数量
- * 电机任一脚失效就整对清成 PIN_NONE，微动脚单独清理，其余接线保持不变。
+ * 电机任一脚失效就整对清成 PIN_NONE，微动脚单独清理，其余接线保持不变
  */
 int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda, int scl) {
     int cleared = 0;
@@ -130,7 +130,7 @@ int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda,
  * 判断引脚是否被 BambuBus 占用
  * @param pin 引脚号
  * @return true 表示已被占用
- * RX/TX 始终占用；只有 DE 模式才占用 DE 引脚。
+ * RX/TX 始终占用；只有 DE 模式才占用 DE 引脚
  */
 static bool bus_uses_pin(int pin) {
     return pin == BUS_RX || pin == BUS_TX || (RS485_MODE == RS485_MODE_DE && pin == BUS_DE);
@@ -142,11 +142,11 @@ static bool bus_uses_pin(int pin) {
  * @param pin 引脚号
  * @param allow_none 是否允许 PIN_NONE
  * @return true 表示可用
- * 综合检查虚拟引脚开关、I2C 占用、系统保留脚和总线占用。
+ * 综合检查虚拟引脚开关、I2C 占用、系统保留脚和总线占用
  */
 bool io_config_pin_available(int pin, bool allow_none) {
     if (allow_none && pin == PIN_NONE) return true;
-    // 虚拟引脚只在 I2C 总线已配置后可选；未配置时 I2C 引脚可作普通 IO。
+    // 虚拟引脚只在 I2C 总线已配置后可选；未配置时 I2C 引脚可作普通 IO
     if (IS_PCF8575_VIRTUAL_PIN(pin)) return i2c_bus_configured();
     if (i2c_bus_configured() && (pin == PCF_SDA || pin == PCF_SCL)) return false;
     return is_real_gpio(pin) && !bus_uses_pin(pin);
@@ -157,11 +157,11 @@ bool io_config_pin_available(int pin, bool allow_none) {
  * @param pin 引脚号
  * @param sda true 表示按 SDA 校验，false 表示按 SCL 校验
  * @return true 表示可用
- * RP2040 额外校验 I2C0 的固定 SDA/SCL 复用位置。
+ * RP2040 额外校验 I2C0 的固定 SDA/SCL 复用位置
  */
 static bool i2c_pin_available(int pin, bool sda) {
 #if defined(ARDUINO_ARCH_RP2040)
-    // Wire 使用 I2C0，RP2040 的 SDA/SCL 复用位置固定。
+    // Wire 使用 I2C0，RP2040 的 SDA/SCL 复用位置固定
     return is_real_gpio(pin) && pin % 4 == (sda ? 0 : 1);
 #else
     return is_real_gpio(pin);
@@ -176,7 +176,7 @@ static bool i2c_pin_available(int pin, bool sda) {
  * @param active_channels 启用通道数
  * @param error 可选的错误文本输出
  * @return true 表示配置合法
- * 检查通道数、与总线/通道引脚的冲突、SDA/SCL 是否不同以及平台复用限制。
+ * 检查通道数、与总线/通道引脚的冲突、SDA/SCL 是否不同以及平台复用限制
  */
 bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active_channels, String *error) {
     if (active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
@@ -209,15 +209,15 @@ bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active
  * 获取引脚风险提示文本
  * @param pin 引脚号
  * @return 中文提示；无风险时返回空串
- * 为 ESP32-C3/S3 的启动绑带脚提供网页提示。
+ * 为 ESP32-C3/S3 的启动绑带脚提供网页提示
  */
 static const char *pin_warning_text(int pin) {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
-    if (pin == 2) return "ESP32-C3 GPIO2 是启动绑带引脚，建议上电或复位时保持高电平，避免外部电路影响启动。正常运行时可作为普通 IO。";
-    if (pin == 9) return "ESP32-C3 GPIO9 连接 BOOT 按键，是启动绑带引脚；上电或复位时拉低会进入下载模式，外部电路需保持高电平才能正常启动。";
-    if (pin == 8) return "ESP32-C3 GPIO8：进入串口下载模式时必须为高电平；复位时被微动开关等外部电路拉低，会导致无法进入下载模式、无法刷入固件。刷机前请释放该引脚。正常运行时可作为普通 IO。";
+    if (pin == 2) return "ESP32-C3 GPIO2 是启动绑带引脚，建议上电或复位时保持高电平，避免外部电路影响启动正常运行时可作为普通 IO";
+    if (pin == 9) return "ESP32-C3 GPIO9 连接 BOOT 按键，是启动绑带引脚；上电或复位时拉低会进入下载模式，外部电路需保持高电平才能正常启动";
+    if (pin == 8) return "ESP32-C3 GPIO8：进入串口下载模式时必须为高电平；复位时被微动开关等外部电路拉低，会导致无法进入下载模式、无法刷入固件刷机前请释放该引脚正常运行时可作为普通 IO";
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
-    if (pin == 0) return "ESP32-S3 GPIO0：上电或复位时拉低会选择下载启动模式；正常运行固件时应避免外部电路在复位时将其拉低。";
+    if (pin == 0) return "ESP32-S3 GPIO0：上电或复位时拉低会选择下载启动模式；正常运行固件时应避免外部电路在复位时将其拉低";
 #else
     (void) pin;
 #endif
@@ -229,7 +229,7 @@ static const char *pin_warning_text(int pin) {
  * 判断引脚是否需要风险提示
  * @param pin 引脚号
  * @return true 表示存在风险提示
- * 根据 pin_warning_text() 是否为空判断。
+ * 根据 pin_warning_text() 是否为空判断
  */
 bool io_config_pin_has_warning(int pin) {
     return pin_warning_text(pin)[0] != '\0';
@@ -240,7 +240,7 @@ bool io_config_pin_has_warning(int pin) {
  * 生成引脚可读名称
  * @param pin 引脚号
  * @return “无”、IOx 或 PCF8575 Px
- * 供网页和日志统一显示引脚名称。
+ * 供网页和日志统一显示引脚名称
  */
 String io_config_pin_label(int pin) {
     if (pin == PIN_NONE) return "无";
@@ -255,7 +255,7 @@ String io_config_pin_label(int pin) {
  * @param active_channels 启用通道数
  * @param error 可选的错误文本输出
  * @return true 表示配置合法
- * 检查电机和微动引脚是否可用、是否重复占用同一引脚。
+ * 检查电机和微动引脚是否可用、是否重复占用同一引脚
  */
 bool io_config_validate(const IoConfig &config, int active_channels, String *error) {
     if (active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
@@ -269,7 +269,7 @@ bool io_config_validate(const IoConfig &config, int active_channels, String *err
         for (int role = 0; role < 3; role++) {
             const int pin = role < 2 ? config.motor[ch][role] : config.microswitch[ch];
             // "无"(PIN_NONE) 合法：切换 I2C 配置会先清空不再可用的引脚，
-            // 该通道等用户在网页里补配置。
+            // 该通道等用户在网页里补配置
             if (!io_config_pin_available(pin, true)) {
                 if (error)
                     *error = String("通道 ") + String(ch + 1) + " 的" +
@@ -295,7 +295,7 @@ bool io_config_validate(const IoConfig &config, int active_channels, String *err
  * 生成网页可选引脚 JSON 数组
  * @param json 待追加的 JSON 字符串
  * @param i2c_only true 时只列真实 GPIO
- * 把引脚编号、显示名称和风险提示拼接为网页下拉框需要的数组。
+ * 把引脚编号、显示名称和风险提示拼接为网页下拉框需要的数组
  */
 void io_config_append_pin_options(String &json, bool i2c_only) {
     json += "[";
@@ -325,7 +325,7 @@ void io_config_append_pin_options(String &json, bool i2c_only) {
  * @param active_channels 启用通道数
  * @param error 可选的错误文本输出
  * @return true 表示配置合法
- * 检查 RX/TX/DE 的合法性、重复占用、与 I2C/通道引脚的冲突以及 RP2040 UART 复用限制。
+ * 检查 RX/TX/DE 的合法性、重复占用、与 I2C/通道引脚的冲突以及 RP2040 UART 复用限制
  */
 bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
                             const IoConfig &config, int active_channels, String *error) {
@@ -340,10 +340,10 @@ bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
         const int pin = pins[i];
         bool available = is_real_gpio(pin);
 #if defined(ARDUINO_ARCH_RP2040)
-        // 兼容 Pico 旧板级映射中 PIN_SWITCH 与默认 UART0 TX 共用 GPIO0 的布局。
-        // 该引脚仍不开放给通道和 I2C；不在本次 C3 配置中改变旧板行为。
+        // 兼容 Pico 旧板级映射中 PIN_SWITCH 与默认 UART0 TX 共用 GPIO0 的布局
+        // 该引脚仍不开放给通道和 I2C；不在本次 C3 配置中改变旧板行为
         if (i == 1 && pin == PIN_BUS_TX && pin == PIN_SWITCH) available = true;
-        // 固定 UART0：RX=1/13/17/29，TX=0/12/16/28。
+        // 固定 UART0：RX=1/13/17/29，TX=0/12/16/28
         if (i == 0) available = available && (pin == 1 || pin == 13 || pin == 17 || pin == 29);
         if (i == 1) available = available && (pin == 0 || pin == 12 || pin == 16 || pin == 28);
 #endif
@@ -355,7 +355,7 @@ bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
             if (error) *error = "RX、TX、DE 不能重复";
             return false;
         }
-        // 只有 SDA/SCL 同时配置后 I2C 才真正占用引脚。
+        // 只有 SDA/SCL 同时配置后 I2C 才真正占用引脚
         if (i2c_bus_configured() && (pin == sda || pin == scl)) {
             if (error) *error = io_config_pin_label(pin) + " 已被 I2C SDA/SCL 占用";
             return false;

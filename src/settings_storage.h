@@ -54,10 +54,10 @@ struct SettingsData {
     int32_t pcf_enable;              // 旧版 PCF8575 开关字段，仅保留结构兼容，不再作为运行开关
 };
 
-// 当前开发格式使用 CRC32；格式不匹配时恢复默认值。
+// 当前开发格式使用 CRC32；格式不匹配时恢复默认值
 #define SETTINGS_MAGIC_NUMBER    0x53415429
 
-// 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS。
+// 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**
  * 获取当前启用通道数
  * @return AMS 数量乘以 4
@@ -91,7 +91,7 @@ void settings_storage_init();
 // 从Flash加载设置到变量
 void settings_load_from_flash();
 
-// 保存失败时使用内存快照回退，避免重新读取可能不完整的 Flash。
+// 保存失败时使用内存快照回退，避免重新读取可能不完整的 Flash
 SettingsData settings_snapshot();
 void settings_restore_snapshot(const SettingsData &data);
 
@@ -107,7 +107,7 @@ bool settings_is_valid();
 // 把当前生效的设置打印到主板日志（启动时、保存设置时各调一次）
 void settings_log_all();
 
-// 空字符串表示使用固件自动生成的序列号；非空时必须正好 15 位大写字母/数字。
+// 空字符串表示使用固件自动生成的序列号；非空时必须正好 15 位大写字母/数字
 bool settings_custom_serial_valid(const char *serial);
 
 // 获取指定电机的退料超时时间（新增辅助函数）

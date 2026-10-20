@@ -3,7 +3,7 @@
 
 // 查表已预先生成，无需运行时初始化
 
-// CRC8 预计算表：多项式 0x39，256 项；收发共用且运行时不修改。
+// CRC8 预计算表：多项式 0x39，256 项；收发共用且运行时不修改
 static uint8_t g_crc8_tbl[256] __attribute__((aligned(4))) = {
     0x00u, 0x39u, 0x72u, 0x4Bu, 0xE4u, 0xDDu, 0x96u, 0xAFu, 0xF1u, 0xC8u, 0x83u, 0xBAu, 0x15u, 0x2Cu, 0x67u, 0x5Eu,
     0xDBu, 0xE2u, 0xA9u, 0x90u, 0x3Fu, 0x06u, 0x4Du, 0x74u, 0x2Au, 0x13u, 0x58u, 0x61u, 0xCEu, 0xF7u, 0xBCu, 0x85u,
@@ -23,7 +23,7 @@ static uint8_t g_crc8_tbl[256] __attribute__((aligned(4))) = {
     0x3Du, 0x04u, 0x4Fu, 0x76u, 0xD9u, 0xE0u, 0xABu, 0x92u, 0xCCu, 0xF5u, 0xBEu, 0x87u, 0x28u, 0x11u, 0x5Au, 0x63u
 };
 
-// CRC16 预计算表：多项式 0x1021，256 项；两张表合计 768 字节。
+// CRC16 预计算表：多项式 0x1021，256 项；两张表合计 768 字节
 static uint16_t g_crc16_tbl[256] __attribute__((aligned(4))) = {
     0x0000u, 0x1021u, 0x2042u, 0x3063u, 0x4084u, 0x50A5u, 0x60C6u, 0x70E7u,
     0x8108u, 0x9129u, 0xA14Au, 0xB16Bu, 0xC18Cu, 0xD1ADu, 0xE1CEu, 0xF1EFu,
@@ -64,7 +64,7 @@ static uint16_t g_crc16_tbl[256] __attribute__((aligned(4))) = {
  * @param data 待校验的数据，len 为 0 时可为空指针
  * @param len 数据字节数
  * @return CRC8 校验值；空数据返回初值 0x66
- * 使用多项式 0x39、初值 0x66，不反射输入/输出，最终异或值为 0。
+ * 使用多项式 0x39、初值 0x66，不反射输入/输出，最终异或值为 0
  */
 uint8_t bus_crc8(const uint8_t* data, const uint32_t len)
 {
@@ -79,7 +79,7 @@ uint8_t bus_crc8(const uint8_t* data, const uint32_t len)
  * @param data 待校验的数据，len 为 0 时可为空指针
  * @param len 数据字节数
  * @return CRC16 校验值；空数据返回初值 0x913D，由调用方按小端写入报文
- * 使用多项式 0x1021、初值 0x913D，不反射输入/输出，最终异或值为 0。
+ * 使用多项式 0x1021、初值 0x913D，不反射输入/输出，最终异或值为 0
  */
 uint16_t bus_crc16(const uint8_t* data, const uint32_t len)
 {

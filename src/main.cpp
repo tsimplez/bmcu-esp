@@ -1,4 +1,5 @@
 #include "main.h"
+#include "BambuBus.h"
 #include "settings_storage.h"
 #include "log_bus.h"
 #include "web_config.h"
@@ -8,7 +9,7 @@
 
 /**
  * Arduino 启动初始化入口
- * 依次初始化控制台、看门狗、日志、设置存储、GPIO、I2C、BMCU 核心和 Web 管理服务。
+ * 依次初始化控制台、看门狗、日志、设置存储、GPIO、I2C、BMCU 核心和 Web 管理服务
  */
 void setup(){
     hal_console_begin();  // 串口控制台：不 begin 的话下面所有 LOG_MAIN 都写不出去
@@ -30,13 +31,14 @@ void setup(){
 
 /**
  * Arduino 主循环入口
- * 持续喂狗并轮询 BMCU 业务、微动开关和 Web 请求，最后让出 CPU。
+ * 持续喂狗并轮询 BMCU 业务；先完成运动调度，再尝试总线空闲保存，随后处理传感器和 Web
  */
 void loop(){
     while (true) {
         // 原有核心逻辑：喂狗 → 串口调试 → BMCU业务
         hal_watchdog_feed();
         BMCU_run();      // Handles BMCU protocol and BambuBus
+        BambuBus_save_run(); // 总线空闲时限频保存耗材记录
         env_sensor_run(); // 非阻塞刷新 AHT20/BMP280 读数
 
         // 检查微动开关状态并更新自动模式下的通道状态

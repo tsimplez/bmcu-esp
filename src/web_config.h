@@ -16,12 +16,12 @@ void web_config_run();   // loop() 中调用
 
 /**
  * 非 ESP32 平台的 Web 初始化空实现
- * RP2040 不提供 Web 管理，保持空实现以维持统一调用接口。
+ * RP2040 不提供 Web 管理，保持空实现以维持统一调用接口
  */
 static inline void web_config_init() {}
 /**
  * 非 ESP32 平台的 Web 轮询空实现
- * RP2040 不处理 Web 请求，保持空实现以维持主循环结构一致。
+ * RP2040 不处理 Web 请求，保持空实现以维持主循环结构一致
  */
 static inline void web_config_run() {}
 

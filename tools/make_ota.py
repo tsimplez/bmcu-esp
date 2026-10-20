@@ -1,17 +1,17 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-把 PlatformIO 编译出来的固件打包成 OTA 发布目录。
+把 PlatformIO 编译出来的固件打包成 OTA 发布目录
 
 用法（在项目根目录下）：
     python tools/make_ota.py esp32s3 esp32c3 airm2m_core_esp32c3
     python tools/make_ota.py esp32s3 --notes "修复 RS485 偶发丢包" --out dist
 
 做完以后把 dist 目录里的东西整个传到你的服务器（web 根目录或子目录都行），
-在设备网页「参数 → 固件更新 → 更新源目录」里填这个目录的 URL。
+在设备网页「参数 → 固件更新 → 更新源目录」里填这个目录的 URL
 
 清单 manifest.json 是跨版本累加的：这次只发布 esp32s3，之前发过的
-esp32c3 条目会原样保留，设备各自按自己的板子名找对应固件。
+esp32c3 条目会原样保留，设备各自按自己的板子名找对应固件
 """
 
 import argparse
@@ -33,11 +33,11 @@ KNOWN_TARGETS = ['esp32s3', 'esp32c3', 'airm2m_core_esp32c3', 'pico']
 
 
 def read_fw_version():
-    """读取当前固件版本号。
+    """读取当前固件版本号
 
     返回：
-        src/version.h 中 FW_VERSION 宏对应的字符串。
-    从版本头文件中提取版本号；缺失时终止打包并提示修改位置。
+        src/version.h 中 FW_VERSION 宏对应的字符串
+    从版本头文件中提取版本号；缺失时终止打包并提示修改位置
     """
     with open(VERSION_H, 'r', encoding='utf-8') as f:
         text = f.read()
@@ -48,13 +48,13 @@ def read_fw_version():
 
 
 def md5_of(path):
-    """计算固件文件的 MD5 摘要。
+    """计算固件文件的 MD5 摘要
 
     参数：
-        path: 待计算的固件文件路径。
+        path: 待计算的固件文件路径
     返回：
-        32 位小写十六进制 MD5 字符串。
-    分块读取文件，避免一次性把大固件全部载入内存。
+        32 位小写十六进制 MD5 字符串
+    分块读取文件，避免一次性把大固件全部载入内存
     """
     h = hashlib.md5()
     with open(path, 'rb') as f:
@@ -64,11 +64,11 @@ def md5_of(path):
 
 
 def validate_version(version):
-    """校验 OTA 版本号格式和日期有效性。
+    """校验 OTA 版本号格式和日期有效性
 
     参数：
-        version: 形如 YY.MM.DD 或 YY.MM.DD.修订号 的版本字符串。
-    版本不合法时打印错误并终止打包，防止生成设备无法比较的版本。
+        version: 形如 YY.MM.DD 或 YY.MM.DD.修订号 的版本字符串
+    版本不合法时打印错误并终止打包，防止生成设备无法比较的版本
     """
     if not re.fullmatch(r'\d{2}\.\d{2}\.\d{2}(?:\.\d{1,3})?', version):
         sys.exit('版本号须为 YY.MM.DD 或 YY.MM.DD.修订号，例如 26.12.22.123')
@@ -80,10 +80,10 @@ def validate_version(version):
 
 
 def main():
-    """生成 OTA 发布目录和跨板型累加的 manifest.json。
+    """生成 OTA 发布目录和跨板型累加的 manifest.json
 
     校验版本与编译产物，复制各环境 firmware.bin，并写入版本、大小和
-    MD5；已有清单中的其他板型条目会保留。
+    MD5；已有清单中的其他板型条目会保留
     """
     ap = argparse.ArgumentParser(description='生成 OTA 发布目录（固件 + manifest.json）')
     ap.add_argument('targets', nargs='+', help='PlatformIO 环境名，同时也是清单里的板子键名')
@@ -156,7 +156,7 @@ def main():
         print('  %-22s %-34s %7.1f KB' % (env, name, size / 1024.0))
     print('输出目录：%s' % out_dir)
     print('清单里的板子：%s' % ', '.join(k for k in manifest if k not in ('version', 'notes')))
-    print('\n把这个目录整个上传到服务器，然后在设备网页里填它的 URL。')
+    print('\n把这个目录整个上传到服务器，然后在设备网页里填它的 URL')
 
 
 if __name__ == '__main__':

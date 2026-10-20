@@ -20,8 +20,8 @@ void log_bus_write(int ch, const char *data, size_t len);
 void log_bus_printf(int ch, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 // 十六进制报文转储：每行最多 24 字节，tag 取 'R'(接收) / 'T'(发送)
-// type 是 BambuBus 报文类型编号；-1 表示没有可关联的完整报文类型。
-// 每一行都会携带 type，网页可以据此把 RX/TX 和类型说明一起过滤。
+// type 是 BambuBus 报文类型编号；-1 表示没有可关联的完整报文类型
+// 每一行都会携带 type，网页可以据此把 RX/TX 和类型说明一起过滤
 void log_bus_hex_typed(int ch, char tag, int type, const uint8_t *data, uint16_t len);
 void log_bus_hex(int ch, char tag, const uint8_t *data, uint16_t len);
 

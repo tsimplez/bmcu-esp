@@ -68,7 +68,7 @@ extern const uint8_t web_index_html_end[] asm("_binary_web_index_html_end");
 /**
  * 获取嵌入网页的长度
  * @return 不包含末尾 NUL 的 HTML 字节数
- * PlatformIO 嵌入文件时会在末尾补 0，发送给浏览器前需要去掉。
+ * PlatformIO 嵌入文件时会在末尾补 0，发送给浏览器前需要去掉
  */
 static size_t page_html_len() {
     size_t n = (size_t)(web_index_html_end - web_index_html_start);
@@ -83,7 +83,7 @@ static size_t page_html_len() {
  * @param dst 目标缓冲区
  * @param cap 目标容量
  * @param src 源字符串
- * 按容量截断并保证以 NUL 结尾，源指针为空时写入空串。
+ * 按容量截断并保证以 NUL 结尾，源指针为空时写入空串
  */
 static void copy_str(char *dst, size_t cap, const char *src) {
     if (cap == 0) return;
@@ -97,7 +97,7 @@ static void copy_str(char *dst, size_t cap, const char *src) {
  * 转义 JSON 字符串内容
  * @param s 原始字符串
  * @return 转义后的字符串
- * 处理双引号和反斜杠，并把控制字符替换为空格，避免破坏 JSON。
+ * 处理双引号和反斜杠，并把控制字符替换为空格，避免破坏 JSON
  */
 static String json_escape(const char *s) {
     String out;
@@ -114,7 +114,7 @@ static String json_escape(const char *s) {
  * 校验 mDNS 主机名格式
  * @param name 待校验的主机名
  * @return true 表示名称合法
- * 只允许 1-32 位字母、数字和连字符，且首尾不能是连字符。
+ * 只允许 1-32 位字母、数字和连字符，且首尾不能是连字符
  */
 static bool mdns_name_valid(const char *name) {
     if (!name) return false;
@@ -134,7 +134,7 @@ static bool mdns_name_valid(const char *name) {
  * @param raw 用户输入或存储中的原始名称
  * @param out 输出的规范名称
  * @return true 表示名称合法
- * 去除空白和可选的 .local 后缀并转为小写，再用 mdns_name_valid() 校验。
+ * 去除空白和可选的 .local 后缀并转为小写，再用 mdns_name_valid() 校验
  */
 static bool normalize_mdns_name(const String &raw, String &out) {
     String name = raw;
@@ -150,7 +150,7 @@ static bool normalize_mdns_name(const String &raw, String &out) {
 /**
  * 生成带芯片唯一 ID 的配网热点名
  * @return 指向静态 SSID 缓冲区的指针
- * 取芯片 64 位唯一 ID 的低 24 位格式化为 6 位大写十六进制，拼成 BMCU_XXXXXX。
+ * 取芯片 64 位唯一 ID 的低 24 位格式化为 6 位大写十六进制，拼成 BMCU_XXXXXX
  */
 static const char *build_ap_ssid() {
     const uint32_t suffix = static_cast<uint32_t>(hal_get_device_id() & 0xFFFFFFULL);
@@ -164,7 +164,7 @@ static const char *build_ap_ssid() {
 // ============================================================
 /**
  * 读取已保存的 WiFi 凭据
- * 从 NVS 的 wifi 命名空间读取 SSID、密码和 mDNS 名称到内存；无有效名称时使用默认值。
+ * 从 NVS 的 wifi 命名空间读取 SSID、密码和 mDNS 名称到内存；无有效名称时使用默认值
  */
 static void load_wifi_creds() {
     sta_ssid[0] = sta_pass[0] = 0;
@@ -185,7 +185,7 @@ static void load_wifi_creds() {
  * 保存 WiFi 凭据
  * @param ssid WiFi 名称
  * @param pass WiFi 密码
- * 写入 NVS 并同步更新内存中的 SSID/密码。
+ * 写入 NVS 并同步更新内存中的 SSID/密码
  */
 static void save_wifi_creds(const char *ssid, const char *pass) {
     if (wprefs.begin(WIFI_NS, false)) {
@@ -201,7 +201,7 @@ static void save_wifi_creds(const char *ssid, const char *pass) {
  * 保存 mDNS 名称
  * @param name 已规范化的 mDNS 主机名
  * @return true 表示写入成功
- * 把名称写入 NVS 的 wifi 命名空间，成功后同步更新内存中的名称。
+ * 把名称写入 NVS 的 wifi 命名空间，成功后同步更新内存中的名称
  */
 static bool save_mdns_name(const String &name) {
     bool saved = false;
@@ -215,7 +215,7 @@ static bool save_mdns_name(const String &name) {
 
 /**
  * 清除 WiFi 凭据
- * 清空 NVS 的 wifi 命名空间和内存中的 SSID/密码。
+ * 清空 NVS 的 wifi 命名空间和内存中的 SSID/密码
  */
 static void forget_wifi_creds() {
     if (wprefs.begin(WIFI_NS, false)) {
@@ -233,7 +233,7 @@ static void forget_wifi_creds() {
 /**
  * 切换 WiFi 工作模式
  * @param m WiFi 模式
- * 设置模式后关闭 WiFi 省电，保证网页和串口响应及时。
+ * 设置模式后关闭 WiFi 省电，保证网页和串口响应及时
  */
 static void wifi_set_mode(wifi_mode_t m) {
     WiFi.mode(m);
@@ -242,7 +242,7 @@ static void wifi_set_mode(wifi_mode_t m) {
 
 /**
  * 启动配网热点
- * 创建固定网段的 AP，并把 DNS 通配请求指向自身，实现强制门户。
+ * 创建固定网段的 AP，并把 DNS 通配请求指向自身，实现强制门户
  */
 static void start_config_ap() {
     wifi_set_mode(WIFI_AP_STA);
@@ -260,7 +260,7 @@ static void start_config_ap() {
 /**
  * 启动或重载 mDNS 服务
  * @return true 表示 mDNS 启动成功
- * 使用当前 mdns_name 重启 mDNS 并发布 HTTP 服务，供 http://<名称>.local/ 访问。
+ * 使用当前 mdns_name 重启 mDNS 并发布 HTTP 服务，供 http://<名称>.local/ 访问
  */
 static bool start_mdns() {
     MDNS.end();
@@ -275,7 +275,7 @@ static bool start_mdns() {
 
 /**
  * 处理 STA 连接成功
- * 退出连接状态、关闭 AP 模式并按当前配置启动 mDNS 服务。
+ * 退出连接状态、关闭 AP 模式并按当前配置启动 mDNS 服务
  */
 static void on_sta_connected() {
     wifi_state = ST_IDLE;
@@ -291,7 +291,7 @@ static void on_sta_connected() {
 /**
  * 检查是否允许维护操作
  * @return true 表示当前可以执行配置、重启或升级
- * 调用 BMCU_can_maintain()；不满足时直接向客户端发送 409 响应。
+ * 调用 BMCU_can_maintain()；不满足时直接向客户端发送 409 响应
  */
 static bool maintenance_required() {
     if (BMCU_can_maintain()) return true;
@@ -302,10 +302,10 @@ static bool maintenance_required() {
 
 /**
  * 处理首页请求
- * 禁用浏览器缓存并发送嵌入固件的 HTML 管理页面。
+ * 禁用浏览器缓存并发送嵌入固件的 HTML 管理页面
  */
 static void handle_root() {
-    // 页面必须和固件配套：禁掉缓存，避免升级后浏览器仍用旧页面（旧页面不认新字段）。
+    // 页面必须和固件配套：禁掉缓存，避免升级后浏览器仍用旧页面（旧页面不认新字段）
     server.sendHeader("Cache-Control", "no-store");
     server.send_P(200, "text/html; charset=utf-8", (PGM_P)PAGE_HTML, page_html_len());
 }
@@ -316,7 +316,7 @@ static void handle_root() {
  * @param value 读数值
  * @param digits 小数位数
  * @return JSON 数字文本；无效时返回 null
- * 网页据此区分“未检测/读取失败”和真实的 0 值。
+ * 网页据此区分“未检测/读取失败”和真实的 0 值
  */
 static String sensor_json_value(bool valid, float value, int digits) {
     return valid ? String(value, digits) : String("null");
@@ -324,7 +324,7 @@ static String sensor_json_value(bool valid, float value, int digits) {
 
 /**
  * 处理运行状态查询
- * 汇总 WiFi、IP、堆内存、总线、电机、耗材、I2C/温湿度、维护状态和版本信息为 JSON。
+ * 汇总 WiFi、IP、堆内存、总线、电机、耗材、I2C/温湿度、维护状态和版本信息为 JSON
  */
 static void handle_status() {
     IPAddress ip = ap_mode ? WiFi.softAPIP() : WiFi.localIP();
@@ -396,7 +396,7 @@ static void handle_status() {
 
 /**
  * 处理设置读取请求
- * 输出参数、通道模式、退料超时、IO/PCF/总线接线和可选引脚 JSON。
+ * 输出参数、通道模式、退料超时、IO/PCF/总线接线和可选引脚 JSON
  */
 static void handle_settings_get() {
     String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
@@ -434,14 +434,14 @@ static void handle_settings_get() {
     server.send(200, "application/json", j);
 }
 
-// toInt() 会把非法字符串当作 0；修改参数前先完整校验，避免部分保存。
+// toInt() 会把非法字符串当作 0；修改参数前先完整校验，避免部分保存
 /**
  * 校验请求参数是否为范围内整数
  * @param key 参数名
  * @param low 允许的最小值
  * @param high 允许的最大值
  * @return true 表示参数缺失或数值合法
- * 先否定 toInt() 的容错行为，避免非法字符串被当作 0 保存。
+ * 先否定 toInt() 的容错行为，避免非法字符串被当作 0 保存
  */
 static bool valid_number(const String &key, int low, int high) {
     if (!server.hasArg(key)) return true;
@@ -457,7 +457,7 @@ static bool valid_number(const String &key, int low, int high) {
  * @param value 输出的引脚编号
  * @param allow_none 是否允许 PIN_NONE
  * @return true 表示参数存在且引脚可用
- * 把请求中的十进制引脚号解析为整数并调用 io_config_pin_available()。
+ * 把请求中的十进制引脚号解析为整数并调用 io_config_pin_available()
  */
 static bool parse_io_pin(const String &key, int &value, bool allow_none) {
     if (!server.hasArg(key)) return false;
@@ -469,13 +469,13 @@ static bool parse_io_pin(const String &key, int &value, bool allow_none) {
     return io_config_pin_available(value, allow_none);
 }
 
-// I2C 总线配置：SDA/SCL 同时有效才启用，同时留空表示关闭；保存后重启生效。
+// I2C 总线配置：SDA/SCL 同时有效才启用，同时留空表示关闭；保存后重启生效
 /**
  * 解析 I2C 引脚参数
  * @param key 请求参数名
  * @param value 输出引脚号，PIN_NONE 表示“无”
  * @return true 表示参数存在且格式合法
- * 接受 0-255 的数字或 none/255（表示未配置）。
+ * 接受 0-255 的数字或 none/255（表示未配置）
  */
 static bool parse_i2c_pin(const String &key, int &value) {
     if (!server.hasArg(key)) return false;
@@ -494,7 +494,7 @@ static bool parse_i2c_pin(const String &key, int &value) {
 
 /**
  * 处理 I2C 总线配置保存
- * 校验 SDA/SCL 必须同时配置或同时留空，清理冲突通道引脚，写入设置并重启。
+ * 校验 SDA/SCL 必须同时配置或同时留空，清理冲突通道引脚，写入设置并重启
  */
 static void handle_pcf_save() {
     int sda = PIN_NONE;
@@ -514,7 +514,7 @@ static void handle_pcf_save() {
     PCF_SDA = sda;
     PCF_SCL = scl;
     // 只清掉在新状态下不可用的引脚：配置时是与 SDA/SCL 冲突的，关闭时是扩展脚，
-    // 其余接线保留，用户已有接线不会被整套冲掉。
+    // 其余接线保留，用户已有接线不会被整套冲掉
     const int cleared = io_config_clear_invalid_pins(IO_CONFIG, configured, PCF_SDA, PCF_SCL);
     String error;
     bool wiring_ok = !configured ||
@@ -552,7 +552,7 @@ static void handle_pcf_save() {
 
 /**
  * 处理 BambuBus 总线接线保存
- * 校验 RS485 模式与 RX/TX/DE 引脚，写入设置后重启；UART 重启前继续使用旧接线。
+ * 校验 RS485 模式与 RX/TX/DE 引脚，写入设置后重启；UART 重启前继续使用旧接线
  */
 static void handle_bus_save() {
     if (!server.hasArg("rx") || !server.hasArg("tx") || !server.hasArg("mode") ||
@@ -574,7 +574,7 @@ static void handle_bus_save() {
     const SettingsData previous = settings_snapshot();
     BUS_RX = rx; BUS_TX = tx; BUS_DE = de; RS485_MODE = mode;
     const bool saved = settings_save_to_flash();
-    // UART 仍使用旧接线；重启前保持运行状态与硬件一致。
+    // UART 仍使用旧接线；重启前保持运行状态与硬件一致
     settings_restore_snapshot(previous);
     if (!saved) {
         server.send(500, "application/json", "{\"ok\":false,\"msg\":\"保存或回读校验失败，未切换接线，请重试\"}");
@@ -588,7 +588,7 @@ static void handle_bus_save() {
 
 /**
  * 处理常规设置保存
- * 统一校验 AMS 数量、时长、并发上限、序列号、通道参数、IO 接线和 OTA 配置；保存失败时回滚内存快照。
+ * 统一校验 AMS 数量、时长、并发上限、序列号、通道参数、IO 接线和 OTA 配置；保存失败时回滚内存快照
  */
 static void handle_settings_save() {
     if (server.hasArg("rs485")) {
@@ -614,8 +614,8 @@ static void handle_settings_save() {
 
     bool io_requested = false;
     bool io_fields_valid = true;
-    // 先识别完整请求，不能在逐通道解析过程中才发现 IO 字段。
-    // 同时拒绝旧页面的 io-* 拼写和未知字段，避免忽略修改却返回保存成功。
+    // 先识别完整请求，不能在逐通道解析过程中才发现 IO 字段
+    // 同时拒绝旧页面的 io-* 拼写和未知字段，避免忽略修改却返回保存成功
     for (int arg = 0; arg < server.args(); arg++) {
         const String key = server.argName(arg);
         if (!key.startsWith("io_") && !key.startsWith("io-")) continue;
@@ -634,7 +634,7 @@ static void handle_settings_save() {
         const String k_switch = "io_sw" + String(i);
         int pin = 0;
         // 电机引脚也允许选「无」：切换 PCF8575 后被清空的通道可以先留空，
-        // 该通道只是暂时不能进退料，接好线再来补。
+        // 该通道只是暂时不能进退料，接好线再来补
         if (server.hasArg(k_forward) && parse_io_pin(k_forward, pin, true)) candidate_io.motor[i][0] = pin;
         else if (server.hasArg(k_forward)) valid = false;
         if (server.hasArg(k_reverse) && parse_io_pin(k_reverse, pin, true)) candidate_io.motor[i][1] = pin;
@@ -658,7 +658,7 @@ static void handle_settings_save() {
                     "{\"ok\":false,\"msg\":\"参数无效；自定义序列号必须为空或正好15位大写字母/数字\"}");
         return;
     }
-    // 减少 AMS 时保留剩余通道的运动，停用通道由应用配置时停止并移出队列。
+    // 减少 AMS 时保留剩余通道的运动，停用通道由应用配置时停止并移出队列
     const bool io_changed = memcmp(&candidate_io, &IO_CONFIG, sizeof(IO_CONFIG)) != 0;
     if ((io_changed || candidate_ams > AMS_COUNT) && !BMCU_can_maintain()) {
         server.send(409, "application/json", "{\"ok\":false,\"msg\":\"请先停止所有电机运动和当前通道动作\"}");
@@ -708,7 +708,7 @@ static void handle_settings_save() {
     }
     if (server.hasArg("otanotify")) OTA_NOTIFY = server.arg("otanotify").toInt() ? 1 : 0;
     if (!settings_save_to_flash()) {
-        // 硬件尚未应用候选接线；回退完整内存快照，保持数量、接线和运行状态一致。
+        // 硬件尚未应用候选接线；回退完整内存快照，保持数量、接线和运行状态一致
         settings_restore_snapshot(previous);
         BMCU_apply_channel_modes();
         server.send(500, "application/json", "{\"ok\":false,\"msg\":\"保存失败，请重试\"}");
@@ -727,10 +727,10 @@ static void handle_settings_save() {
     server.send(200, "application/json", "{\"ok\":true,\"msg\":\"参数已保存\"}");
 }
 
-// dir=0 停止任意来源的动作；启动只登记截止时间，立即返回。
+// dir=0 停止任意来源的动作；启动只登记截止时间，立即返回
 /**
  * 处理手动电机控制请求
- * 方向为 0 时停止任意来源的动作；否则校验通道和时长后提交点动，忙时进入手动队列。
+ * 方向为 0 时停止任意来源的动作；否则校验通道和时长后提交点动，忙时进入手动队列
  */
 static void handle_manual_motor() {
     if (!server.hasArg("motor") || !server.hasArg("dir") ||
@@ -766,7 +766,7 @@ static void handle_manual_motor() {
 
 /**
  * 处理 WiFi 配网请求
- * 保留 AP 的同时尝试连接目标路由；成功后保存凭据并重启，失败则恢复原网络。
+ * 保留 AP 的同时尝试连接目标路由；成功后保存凭据并重启，失败则恢复原网络
  */
 static void handle_wifi_save() {
     if (!maintenance_required()) return;
@@ -831,7 +831,7 @@ static void handle_wifi_save() {
 
 /**
  * 处理 mDNS 名称保存请求
- * 校验并写入 WiFi NVS；STA 在线时立即重载 mDNS，AP 模式下联网后生效。
+ * 校验并写入 WiFi NVS；STA 在线时立即重载 mDNS，AP 模式下联网后生效
  */
 static void handle_mdns_save() {
     String normalized;
@@ -858,7 +858,7 @@ static void handle_mdns_save() {
 
 /**
  * 处理忘记 WiFi 请求
- * 清除凭据并重启，使设备进入配网模式。
+ * 清除凭据并重启，使设备进入配网模式
  */
 static void handle_wifi_forget() {
     if (!maintenance_required()) return;
@@ -871,7 +871,7 @@ static void handle_wifi_forget() {
 
 /**
  * 处理 WiFi 扫描请求
- * 异步启动扫描；扫描未完成时返回 scanning，完成后返回 SSID、信号强度和加密状态列表。
+ * 异步启动扫描；扫描未完成时返回 scanning，完成后返回 SSID、信号强度和加密状态列表
  */
 static void handle_scan() {
     int n = WiFi.scanComplete();
@@ -894,8 +894,8 @@ static void handle_scan() {
 
 /**
  * 处理日志读取请求
- * 支持按游标增量读取、清空和下载；主板日志和 BambuBus 日志通过 ch 参数选择。
- * 响应同时携带 X-Log-Seq 与 X-Uptime-Ms，网页据此增量读取并把开机毫秒换算成本地时间。
+ * 支持按游标增量读取、清空和下载；主板日志和 BambuBus 日志通过 ch 参数选择
+ * 响应同时携带 X-Log-Seq 与 X-Uptime-Ms，网页据此增量读取并把开机毫秒换算成本地时间
  */
 static void handle_log() {
     int ch = server.hasArg("ch") ? server.arg("ch").toInt() : LOG_CH_MAIN;
@@ -929,7 +929,7 @@ static void handle_log() {
 
 /**
  * 处理设备重启请求
- * 在维护状态下回复成功并重启设备。
+ * 在维护状态下回复成功并重启设备
  */
 static void handle_reboot() {
     if (!maintenance_required()) return;
@@ -941,7 +941,7 @@ static void handle_reboot() {
 
 /**
  * 处理恢复出厂设置请求
- * 恢复默认参数、清除 WiFi 凭据并重启。
+ * 恢复默认参数、清除 WiFi 凭据并重启
  */
 static void handle_factory_reset() {
     if (!maintenance_required()) return;
@@ -971,7 +971,7 @@ static size_t g_ota_size = 0;
 /**
  * 获取 OTA 服务基础地址
  * @return 去掉首尾空白和末尾斜杠的地址
- * 用于拼接 manifest.json 和相对固件路径。
+ * 用于拼接 manifest.json 和相对固件路径
  */
 static String ota_base() {
     String b = OTA_URL;
@@ -985,7 +985,7 @@ static String ota_base() {
  * 跳过 JSON 空白字符
  * @param s JSON 字符串
  * @param i 当前解析位置
- * 推进索引越过空格、制表符、回车和换行。
+ * 推进索引越过空格、制表符、回车和换行
  */
 static void json_ws(const String &s, int &i) {
     while (i < static_cast<int>(s.length()) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n')) i++;
@@ -997,7 +997,7 @@ static void json_ws(const String &s, int &i) {
  * @param i 当前解析位置
  * @param out 输出的字符串
  * @return true 表示解析成功
- * 处理常见转义字符，直到遇到结束引号。
+ * 处理常见转义字符，直到遇到结束引号
  */
 static bool json_read_string(const String &s, int &i, String &out) {
     if (i >= static_cast<int>(s.length()) || s[i] != '"') return false;
@@ -1024,7 +1024,7 @@ static bool json_read_string(const String &s, int &i, String &out) {
  * @param key 键名
  * @param out 输出值
  * @return true 表示找到并成功读取
- * 支持带引号字符串和裸标量，裸标量会去掉尾部空白。
+ * 支持带引号字符串和裸标量，裸标量会去掉尾部空白
  */
 static bool json_get_raw(const String &s, const char *key, String &out) {
     String pat = "\"" + String(key) + "\"";
@@ -1051,7 +1051,7 @@ static bool json_get_raw(const String &s, const char *key, String &out) {
  * @param key 键名
  * @param out 输出值
  * @return true 表示找到并成功读取
- * 先清空输出，再复用 json_get_raw()。
+ * 先清空输出，再复用 json_get_raw()
  */
 static bool json_get(const String &s, const char *key, String &out) {
     out = "";
@@ -1065,7 +1065,7 @@ static bool json_get(const String &s, const char *key, String &out) {
  * @param key 键名
  * @param out 输出的对象文本（含大括号）
  * @return true 表示找到完整对象
- * 按大括号深度和字符串状态扫描，避免把嵌套对象截断。
+ * 按大括号深度和字符串状态扫描，避免把嵌套对象截断
  */
 static bool json_get_object(const String &s, const char *key, String &out) {
     String pat = "\"" + String(key) + "\"";
@@ -1102,7 +1102,7 @@ static bool json_get_object(const String &s, const char *key, String &out) {
  * @param a 待比较版本
  * @param b 基准版本
  * @return true 表示 a 比 b 新
- * 按点分段比较数字，可正确处理 1.0.10 > 1.0.9。
+ * 按点分段比较数字，可正确处理 1.0.10 > 1.0.9
  */
 static bool version_newer(const String &a, const String &b) {
     int ia = 0, ib = 0;
@@ -1121,7 +1121,7 @@ static bool version_newer(const String &a, const String &b) {
  * 校验 OTA 版本号格式
  * @param v 版本字符串
  * @return true 表示格式有效
- * 要求 YY.MM.DD 或 YY.MM.DD.修订号格式。
+ * 要求 YY.MM.DD 或 YY.MM.DD.修订号格式
  */
 static bool version_valid(const String &v) {
     int groups = 1, digits = 0;
@@ -1142,7 +1142,7 @@ static bool version_valid(const String &v) {
  * 创建 OTA HTTP 客户端
  * @param url 固件或清单地址
  * @return 新建的 WiFiClient 指针
- * HTTPS 使用不校验证书的 WiFiClientSecure 以节省内存，HTTP 使用普通客户端。
+ * HTTPS 使用不校验证书的 WiFiClientSecure 以节省内存，HTTP 使用普通客户端
  */
 static WiFiClient *ota_make_client(const String &url) {
     if (url.startsWith("https")) {
@@ -1155,26 +1155,26 @@ static WiFiClient *ota_make_client(const String &url) {
 
 namespace {
     // client 是 new 出来的，但 HTTPClient 析构时还会再碰一次 _client->stop()，
-    // 而 end() 只在 socket 还连着的时候才把 _client 置空（连接已断开时它不置空）。
+    // 而 end() 只在 socket 还连着的时候才把 _client 置空（连接已断开时它不置空）
     // 所以 client 必须活得比 HTTPClient 久：用这个壳子持有，声明在 HTTPClient 前面，
-    // 块内对象按声明逆序析构，正好保证「先 ~HTTPClient，再 delete client」。
+    // 块内对象按声明逆序析构，正好保证「先 ~HTTPClient，再 delete client」
     class OtaClientHolder {
     public:
         /**
          * 构造 OTA 客户端持有器
          * @param url 请求地址
-         * 按地址创建 HTTP 或 HTTPS 客户端，并保证其生命周期长于 HTTPClient。
+         * 按地址创建 HTTP 或 HTTPS 客户端，并保证其生命周期长于 HTTPClient
          */
         explicit OtaClientHolder(const String &url) : _client(ota_make_client(url)) {}
         /**
          * 析构 OTA 客户端持有器
-         * 在 HTTPClient 析构之后释放底层网络客户端。
+         * 在 HTTPClient 析构之后释放底层网络客户端
          */
         ~OtaClientHolder() { delete _client; }
         /**
          * 获取底层网络客户端引用
          * @return 底层 WiFiClient 引用
-         * 供 HTTPClient.begin() 使用。
+         * 供 HTTPClient.begin() 使用
          */
         WiFiClient &ref() const { return *_client; }
 
@@ -1190,7 +1190,7 @@ namespace {
  * @param err 错误信息
  * @param timeout_ms 超时时间
  * @return true 表示请求成功
- * 跟随重定向，检查 HTTP 状态，并在下载前确认设备处于可维护状态。
+ * 跟随重定向，检查 HTTP 状态，并在下载前确认设备处于可维护状态
  */
 static bool ota_http_get(const String &url, String &body, String &err, uint16_t timeout_ms) {
     const OtaClientHolder client(url);
@@ -1223,7 +1223,7 @@ static bool ota_http_get(const String &url, String &body, String &err, uint16_t 
  * 获取并解析 OTA 清单
  * @param err 错误信息
  * @return true 表示成功取得当前板型固件信息
- * 读取 manifest.json，提取目标平台的 url、md5、version、notes 和 size，并校验版本与 MD5 格式。
+ * 读取 manifest.json，提取目标平台的 url、md5、version、notes 和 size，并校验版本与 MD5 格式
  */
 static bool ota_fetch_manifest(String &err) {
     const String base = ota_base();
@@ -1285,7 +1285,7 @@ static bool ota_fetch_manifest(String &err) {
  * 生成 OTA 错误 JSON
  * @param msg 错误文本
  * @return {"ok":false,"msg":"..."} 格式字符串
- * 统一网页接口的错误响应格式。
+ * 统一网页接口的错误响应格式
  */
 static String ota_json_err(const String &msg) {
     return "{\"ok\":false,\"msg\":\"" + json_escape(msg.c_str()) + "\"}";
@@ -1294,7 +1294,7 @@ static String ota_json_err(const String &msg) {
 /**
  * 检查 OTA 前设备是否空闲
  * @return true 表示允许继续
- * 复用 maintenance_required() 的检查和 409 响应。
+ * 复用 maintenance_required() 的检查和 409 响应
  */
 static bool ota_require_stopped() {
     return maintenance_required();
@@ -1303,12 +1303,12 @@ static bool ota_require_stopped() {
 // ---- 检查更新 ----
 /**
  * 处理检查更新请求
- * 可配置关闭自动提示；带 force 参数时强制检查，返回当前版本、最新版本、更新说明和下载信息。
+ * 可配置关闭自动提示；带 force 参数时强制检查，返回当前版本、最新版本、更新说明和下载信息
  */
 static void handle_ota_check() {
     if (!ota_require_stopped()) return;
     // 关掉"自动提示"后，进页面时的静默检查直接跳过，不白跑一趟网络请求；
-    // 用户手动点"检查更新"会带 force=1 绕过这个开关。
+    // 用户手动点"检查更新"会带 force=1 绕过这个开关
     if (OTA_NOTIFY == 0 && !server.hasArg("force")) {
         server.send(200, "application/json", "{\"ok\":true,\"skipped\":true}");
         return;
@@ -1343,7 +1343,7 @@ static void handle_ota_check() {
  * 从 URL 下载并写入固件
  * @param err 错误信息
  * @return true 表示下载、校验和写入全部成功
- * 按 Content-Length 下载，写入 Update 分区并持续校验 MD5、设备空闲状态和看门狗。
+ * 按 Content-Length 下载，写入 Update 分区并持续校验 MD5、设备空闲状态和看门狗
  */
 static bool ota_flash_from_url(String &err) {
     const OtaClientHolder client(g_ota_url);
@@ -1446,7 +1446,7 @@ static bool ota_flash_from_url(String &err) {
 
 /**
  * 处理在线升级请求
- * 检查清单和版本，仅当服务器版本更新时下载写入，成功后重启。
+ * 检查清单和版本，仅当服务器版本更新时下载写入，成功后重启
  */
 static void handle_ota_pull() {
     if (!ota_require_stopped()) return;
@@ -1488,7 +1488,7 @@ static String ota_up_err;
 
 /**
  * 处理浏览器固件上传
- * 按开始、写入、结束、中断四个阶段驱动 Update 接口，并在上传过程中喂狗和检查设备状态。
+ * 按开始、写入、结束、中断四个阶段驱动 Update 接口，并在上传过程中喂狗和检查设备状态
  */
 static void handle_ota_upload() {
     HTTPUpload &up = server.upload();
@@ -1536,7 +1536,7 @@ static void handle_ota_upload() {
 
 /**
  * 处理本地升级完成回调
- * 根据上传阶段记录的结果返回成功或失败，成功后重启设备。
+ * 根据上传阶段记录的结果返回成功或失败，成功后重启设备
  */
 static void handle_ota_upload_done() {
     if (ota_up_failed) {
@@ -1553,7 +1553,7 @@ static void handle_ota_upload_done() {
 // 配网模式下的强制门户：任何未知请求都跳回首页
 /**
  * 处理未匹配的 HTTP 请求
- * 配网模式下跳转到强制门户首页，STA 模式下返回 404。
+ * 配网模式下跳转到强制门户首页，STA 模式下返回 404
  */
 static void handle_not_found() {
     if (ap_mode) {
@@ -1566,7 +1566,7 @@ static void handle_not_found() {
 
 /**
  * 注册 Web 路由
- * 把首页、状态、设置、接线、电机、WiFi、日志、重启、恢复出厂和 OTA 接口绑定到处理函数。
+ * 把首页、状态、设置、接线、电机、WiFi、日志、重启、恢复出厂和 OTA 接口绑定到处理函数
  */
 static void setup_routes() {
     server.on("/", HTTP_GET, handle_root);
@@ -1594,7 +1594,7 @@ static void setup_routes() {
 // ============================================================
 /**
  * 初始化 Web 管理服务
- * 读取 WiFi 凭据，优先连接已保存网络，失败或未配置时启动配网热点，然后注册路由并启动 HTTP 服务。
+ * 读取 WiFi 凭据，优先连接已保存网络，失败或未配置时启动配网热点，然后注册路由并启动 HTTP 服务
  */
 void web_config_init() {
     load_wifi_creds();
@@ -1617,7 +1617,7 @@ void web_config_init() {
 
 /**
  * 轮询 Web 与 WiFi 状态
- * 处理 STA 连接成功/超时切换，调用 WebServer 处理请求，并在 AP 模式处理 DNS 强制门户请求。
+ * 处理 STA 连接成功/超时切换，调用 WebServer 处理请求，并在 AP 模式处理 DNS 强制门户请求
  */
 void web_config_run() {
     if (wifi_state == ST_CONNECTING) {

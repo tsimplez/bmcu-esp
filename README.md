@@ -6,6 +6,9 @@
 - Top ams 和 天枢TTC 相似
 - 孔明 和 怪兽 相似
 
+### Ams Lite Mini 485
+[教程 https://docs.qq.com/doc/DVm9tRkhkSXF1ZGZi](https://docs.qq.com/doc/DVm9tRkhkSXF1ZGZi)
+
 ### Top ams
 - ***不推荐使用的是(mqtt方案)，其他项目都是使用485方案(和打印机直接通信)***
 - 功能: 微动
@@ -46,6 +49,8 @@
 然后 Tianshu 似乎是基于 BMCU-C-PJARCZAK 的 V9 PJarczak 2026/2/24 07:04 修改而来
 所以 本项目一样也是
 不过 后续会同步一些相同的地方，文件上方有标记
+
+https://github.com/RobTillaart/PCF8575
 
 ### 其他
 欢迎补充内容
