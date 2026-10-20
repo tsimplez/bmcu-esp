@@ -110,15 +110,6 @@ static uint32_t time_sendout_onuse_ticks[4] = {};
 // 各 AMS 是否已完成在线检测注册
 static bool have_registered[4] = {false, false, false, false};
 
-/**
- * 获取 32 位毫秒时间截断
- * @return 64 位时间戳的低 32 位
- * 用于状态机计时，允许自然回绕。
- */
-static uint32_t get_ticks32() {
-    return static_cast<uint32_t>(get_time64());
-}
-
 // ==================== 原有_filament结构体完全保留 ====================
 struct _filament {
     // Bambu 耗材 8 字节 ID
@@ -470,6 +461,7 @@ static uint8_t get_loaded_filament(const uint8_t ams_num) {
  * @param time_used_ms 距上次处理的时间
  * @return true 表示状态发生变化
  * 根据短包状态组合切换送出、使用、停止、回卷等内部状态，并维护当前通道和耗材长度。
+ * 直接读取 millis()，以 32 位无符号时间差处理短时计时和自然回绕。
  */
 static bool process_motion_state_machine(
     const uint8_t ams_num,
@@ -482,7 +474,7 @@ static bool process_motion_state_machine(
     _filament_ext *ext = &filament_ext[ams_num][filament_channel];
     _filament *fil = &data_save.filament[ams_num][filament_channel];
 
-    ext->last_time_ticks = get_ticks32();
+    ext->last_time_ticks = millis();
 
     const uint8_t loaded = get_loaded_filament(ams_num);
     const bool allow_any = loaded == 0xFF || loaded == filament_channel;
@@ -537,7 +529,7 @@ static bool process_motion_state_machine(
             state_changed = true;
         } else if (is_on_use && allow_any) {
             if (ext->motion == filament_motion_internal::send_out) {
-                const uint32_t now = get_ticks32();
+                const uint32_t now = millis();
                 if (time_sendout_onuse_ticks[filament_channel] == 0)
                     time_sendout_onuse_ticks[filament_channel] = now;
 
@@ -1340,6 +1332,7 @@ static uint8_t filament_flag_detected = 0;
  * @param buf 收到的请求报文
  * @param length 请求长度
  * 解析 AMS/通道/状态标志，驱动状态机并生成包含在线、NFC、长度和压力的 Dxx 响应。
+ * 使用 millis() 的 32 位无符号时间差估算报文间隔，允许自然回绕。
  */
 static void send_for_Dxx(const unsigned char *buf, const int length) {
     if (!buf || length < 10) return;
@@ -1366,7 +1359,7 @@ static void send_for_Dxx(const unsigned char *buf, const int length) {
 
     // 每个 AMS 上一次处理 Dxx 的毫秒时间，用于估算运动状态机的时间增量
     static uint32_t last_ticks[4] = {};
-    const uint32_t now_ticks = get_ticks32();
+    const uint32_t now_ticks = millis();
     const uint32_t dt = last_ticks[AMS_num] == 0 ? 0 : now_ticks - last_ticks[AMS_num];
     last_ticks[AMS_num] = now_ticks;
     const uint32_t time_used = dt > 1000 ? 0 : dt;
@@ -1507,11 +1500,11 @@ static unsigned char F00_res[4][29] = {
 
 /**
  * 等待 5ms 总线空闲间隔
- * 忙等约 5ms，确保连续响应帧之间留有间隔。
+ * 使用 millis() 的 32 位无符号时间差忙等约 5ms，确保连续响应帧之间留有间隔并允许自然回绕。
  */
 static void bus_wait_idle_5ms() {
-    uint32_t t0 = get_ticks32();
-    while (get_ticks32() - t0 < 5) {
+    const uint32_t t0 = millis();
+    while (static_cast<uint32_t>(millis() - t0) < 5u) {
         __asm__ volatile ("nop");
     }
 }

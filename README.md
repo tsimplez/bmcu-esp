@@ -114,7 +114,6 @@ src/
 ├── web_config.cpp/h    # 网页管理（仅 ESP32，其它平台为空实现）
 ├── PCF8575_PinMap.cpp/h# PCF8575 GPIO 扩展
 ├── crc_bus.c/h         # BambuBus 收发 CRC8 / CRC16 查表校验（不依赖 lib/CRC）
-├── time64.cpp/h        # 64 位时间工具
 └── version.h           # 固件版本与 OTA 板型键名（FW_VERSION / FW_TARGET）
 
 web/index.html          # 管理页面，构建时作为二进制块编入固件
