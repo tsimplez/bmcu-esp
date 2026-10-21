@@ -82,7 +82,7 @@ static uint32_t calculate_crc32(const SettingsData* data) {
  * 校验自定义序列号格式
  * @param serial 待校验的字符串
  * @return true 表示格式合法
- * 允许空串，或恰好 12 位数字/大写字母的序列号后缀
+ * 允许空串，或恰好 12 位大写十六进制字符（0-9、A-F）的序列号后缀
  */
 bool settings_custom_serial_valid(const char *serial) {
     if (!serial) return false;
@@ -92,7 +92,7 @@ bool settings_custom_serial_valid(const char *serial) {
     if (length != CUSTOM_SERIAL_LENGTH) return false;
     for (size_t i = 0; i < length; i++) {
         const char c = serial[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z'))) return false;
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))) return false;
     }
     return true;
 }

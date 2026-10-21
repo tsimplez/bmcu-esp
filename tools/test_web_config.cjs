@@ -62,6 +62,8 @@ const path = require('node:path');
     assert.equal(await page.evaluate(() => document.querySelector('#p-serial').checkValidity()), true);
     await page.fill('#p-serial', '123456789AB');
     assert.equal(await page.evaluate(() => document.querySelector('#p-serial').checkValidity()), false);
+    await page.fill('#p-serial', '123456789ABG');
+    assert.equal(await page.evaluate(() => document.querySelector('#p-serial').checkValidity()), false);
     await page.fill('#p-serial', '123456789ABC');
     await page.evaluate(() => saveSerial());
     await page.waitForFunction(() => !document.querySelector('#p-serial').disabled);

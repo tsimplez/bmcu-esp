@@ -246,10 +246,10 @@ button:disabled{opacity:.45;cursor:not-allowed}
     </div>
     <div class="row" style="margin-top:10px">
       <span style="color:var(--dim);width:90px">序列号后缀</span>
-      <input id="p-serial" class="grow" maxlength="12" pattern="[A-Z0-9]{12}" placeholder="12 位大写字母或数字，留空自动生成" autocomplete="off" oninput="this.value=this.value.toUpperCase()">
+      <input id="p-serial" class="grow" maxlength="12" pattern="[A-F0-9]{12}" placeholder="12 位十六进制字符（0-9/A-F），留空自动生成" autocomplete="off" oninput="this.value=this.value.toUpperCase()">
       <button onclick="saveSerial()">保存</button>
     </div>
-    <div class="hint">完整序列号固定为 0EA + AMS 编号 + 12 位后缀；自定义只修改后缀，留空时后缀取设备 ID</div>
+    <div class="hint">完整序列号固定为 0EA + AMS 编号 + 12 位十六进制后缀；自定义只修改后缀，留空时后缀取设备 ID</div>
     <div class="row">
       <span style="color:var(--dim);width:90px">AMS 版本</span>
       <input id="p-ams-version" class="grow" maxlength="15" pattern="[0-9]+(\.[0-9]+){3}" placeholder="90.0.0.0" inputmode="decimal" autocomplete="off">

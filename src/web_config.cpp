@@ -663,7 +663,7 @@ static void handle_settings_save() {
     if (!valid) {
         String error_message = io_error.length() ? io_error : String("参数无效，请检查设置项");
         if (!version_valid) error_message = "AMS 版本必须为 A.B.C.D，四段均在 0..255";
-        else if (!serial_valid) error_message = "序列号后缀必须为空或 12 位大写字母/数字";
+        else if (!serial_valid) error_message = "序列号后缀必须为空或 12 位大写十六进制字符（0-9、A-F）";
         server.send(400, "application/json",
                     String("{\"ok\":false,\"msg\":\"") + json_escape(error_message.c_str()) + "\"}");
         return;

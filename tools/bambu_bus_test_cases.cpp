@@ -36,7 +36,7 @@ static void test_parser() {
         auto f = short_request(rule.first, rule.second);
         assert(get_package_type(f.data(), f.size()) != BambuBus_package_ERROR);
     }
-    for (const auto rule : {std::pair<int,int>{0x21a,1}, {0x211,2}, {0x218,34}, {0x103,1}, {0x402,34}}) {
+    for (const auto rule : {std::pair<int,int>{0x21a,1}, {0x211,2}, {0x218,34}, {0x103,1}, {0x402,1}}) {
         for (int n = 0; n < rule.second; ++n) {
             auto f = long_request(rule.first, n);
             assert(get_package_type(f.data(), f.size()) == BambuBus_package_ERROR);
@@ -214,9 +214,10 @@ static std::vector<uint8_t> registration_query(const std::vector<uint8_t> &adver
  * @return 66 字节身份载荷
  * 经真实收发检查载荷位置、地址、长度与 CRC，首字节故意与 AMS 不同以防误用字段
  */
-static std::vector<uint8_t> query_serial(uint8_t ams) {
-    auto frame = long_request(0x402, 34);
-    frame[13] = 0xff; frame[13 + 33] = ams;
+static std::vector<uint8_t> query_serial(uint8_t ams, size_t payload_length = 34) {
+    auto frame = long_request(0x402, payload_length);
+    frame[13] = 0xff;
+    if (payload_length > 33) frame[13 + 33] = ams;
     seal(frame);
     const auto before = uart_tx.size();
     feed(frame); assert(BambuBus_run() == 1 && uart_tx.size() == before + 1);
@@ -302,11 +303,22 @@ static void test_serial_identity() {
         char expected[17] = {};
         snprintf(expected, sizeof(expected), "0EA%u%s", ams, suffix);
         assert(custom[0] == 15 && memcmp(custom.data() + 1, expected, 16) == 0);
+        uint8_t expected_identity[8] = {};
+        for (int i = 0; i < 8; ++i) {
+            const auto nibble = [](char c) -> uint8_t {
+                return c <= '9' ? static_cast<uint8_t>(c - '0')
+                                : static_cast<uint8_t>(c - 'A' + 10);
+            };
+            expected_identity[i] = static_cast<uint8_t>(
+                (nibble(expected[i * 2]) << 4) | nibble(expected[i * 2 + 1]));
+        }
+        assert(memcmp(custom.data() + 33, expected_identity, sizeof(expected_identity)) == 0);
         assert(memcmp(custom.data() + 33, F00_res[ams] + 8, 16) == 0);
         assert(!have_registered[ams]);
         assert(custom[34] == 0xa0 + ams);
     }
     memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL)); // 恢复自动值时尾部旧字符不应干扰缓存判断
+    assert(query_serial(0, 33) == automatic[0]); // 无 [33] 选择字段的旧式查询回退 AMS 0
     for (uint8_t ams = 0; ams < 4; ++ams) assert(query_serial(ams) == automatic[ams]);
     auto query = registration_query(std::vector<uint8_t>(F00_res[2], F00_res[2] + 29));
     feed(query); assert(BambuBus_run() == 1 && have_registered[2]);

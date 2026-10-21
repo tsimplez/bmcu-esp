@@ -1042,6 +1042,18 @@ static uint8_t get_filament_use_flag(const uint8_t ams_num) {
 
 
 /**
+ * 获取序列号查询使用的 AMS 编号
+ * @param payload 长包载荷
+ * @param payload_length 载荷长度
+ * @return 载荷 [33] 的 AMS 编号；无选择字段时回退 AMS 0
+ * 0x402 的 AMS 选择字段位于 [33]，兼容载荷不超过 33 字节的旧式请求
+ */
+static uint8_t serial_query_ams(const uint8_t *payload, const uint16_t payload_length) {
+    if (!payload || payload_length <= 33u) return 0u;
+    return payload[33];
+}
+
+/**
  * 验证请求中的 AMS 与通道范围
  * @param type 合法请求对应的报文类型
  * @param ams AMS 编号
@@ -1136,8 +1148,9 @@ static package_type get_package_type(unsigned char *buf, const int length) {
             type = addressed_package(BambuBus_long_package_version, payload[0]);
             break;
         case 0x402:
-            if (payload_length < 34u) return BambuBus_package_ERROR;
-            type = addressed_package(BambuBus_long_package_version, payload[33]);
+            if (payload_length < 1u) return BambuBus_package_ERROR;
+            type = addressed_package(BambuBus_long_package_version,
+                                     serial_query_ams(payload, payload_length));
             break;
         default:
             break;
@@ -1556,9 +1569,23 @@ static unsigned char long_packge_version_version_and_name_AMS08[] = {
 };
 
 /**
+ * 将序列号中的十六进制字符转换为半字节
+ * @param c 单个十六进制字符
+ * @return 0..15 的数值，非法字符按 0 处理
+ * 设置校验和自动序列号生成保证输入为合法十六进制字符
+ */
+static uint8_t serial_hex_nibble(const char c) {
+    if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+    if (c >= 'A' && c <= 'F') return static_cast<uint8_t>(c - 'A' + 10);
+    if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+    return 0u;
+}
+
+/**
  * 更新各 AMS 的统一注册身份与序列号
  * 固定生成 0EA + AMS 编号 + 12 位后缀，注册包直接复制序列号载荷的 [33..48]
  * 自定义值只替换末 12 位；留空时后缀取设备 ID 低 48 位，首字节保持协议固定 0x0F
+ * 可见序列号会同步编码到注册身份块 [33..40]，使打印机显示值与序列号查询结果一致
  */
 static void refresh_serial_identities() {
     static bool ready = false;
@@ -1586,6 +1613,12 @@ static void refresh_serial_identities() {
         serial[34] = 0xA0 + ams;
         for (int i = 0; i < 8; ++i)
             serial[35 + i] = static_cast<unsigned char>(id >> (56 - i * 8));
+        // 注册身份 [33..40] 同步为可见序列号的前 8 字节，否则打印机仍显示旧设备哈希
+        for (int i = 0; i < 8; ++i) {
+            serial[33 + i] = static_cast<uint8_t>(
+                (serial_hex_nibble(static_cast<char>(serial[1 + i * 2])) << 4) |
+                serial_hex_nibble(static_cast<char>(serial[2 + i * 2])));
+        }
         serial[65] = ams;
         F00_res[ams][6] = ams;
         memcpy(F00_res[ams] + 8, serial + 33, 16);
@@ -1633,10 +1666,8 @@ static void send_for_long_packge_version(unsigned char *buf, int length) {
 
     if (printer_data_long.type == 0x402) // 序列号查询
     {
-        if (printer_data_long.data_length < 34u) return;
-
-        // 序列号查询的 AMS 编号位于载荷 [33]，不能使用载荷首字节
-        AMS_num = printer_data_long.datas[33];
+        // 序列号查询通常把 AMS 编号放在载荷 [33]；旧式短请求回退 AMS 0
+        AMS_num = serial_query_ams(printer_data_long.datas, printer_data_long.data_length);
         if (AMS_num >= AMS_COUNT || AMS_num >= 4) return;
         refresh_serial_identities();
         payload = serial_identity[AMS_num];
