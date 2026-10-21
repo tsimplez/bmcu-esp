@@ -24,6 +24,9 @@ int RS485_MODE = DEFAULT_RS485_MODE;
 int BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
 // BambuBus 自定义序列号；空串表示按芯片 ID 自动生成
 char CUSTOM_SERIAL[CUSTOM_SERIAL_LENGTH + 1] = {};
+// 返回给打印机的 AMS 版本，网页按 A.B.C.D 显示，总线载荷按 D.C.B.A 写入
+int AMS_VERSION[4] = {DEFAULT_AMS_VERSION_MAJOR, DEFAULT_AMS_VERSION_MINOR,
+                      DEFAULT_AMS_VERSION_PATCH, DEFAULT_AMS_VERSION_BUILD};
 // OTA 固件发布目录，设备会读取该目录下的 manifest.json
 char OTA_URL[OTA_URL_MAX] = DEFAULT_OTA_URL;
 // 打开网页时是否自动检查 OTA 更新（0=关，1=开）
@@ -79,18 +82,52 @@ static uint32_t calculate_crc32(const SettingsData* data) {
  * 校验自定义序列号格式
  * @param serial 待校验的字符串
  * @return true 表示格式合法
- * 允许空串，或正好 15 位数字/大写字母的序列号
+ * 允许空串，或恰好 12 位数字/大写字母的序列号后缀
  */
 bool settings_custom_serial_valid(const char *serial) {
     if (!serial) return false;
     size_t length = 0;
     while (length <= CUSTOM_SERIAL_LENGTH && serial[length]) length++;
     if (length == 0) return true;
-    if (length != CUSTOM_SERIAL_LENGTH || serial[CUSTOM_SERIAL_LENGTH] != 0) return false;
-    for (size_t i = 0; i < CUSTOM_SERIAL_LENGTH; i++) {
+    if (length != CUSTOM_SERIAL_LENGTH) return false;
+    for (size_t i = 0; i < length; i++) {
         const char c = serial[i];
         if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z'))) return false;
     }
+    return true;
+}
+
+/**
+ * 解析 A.B.C.D 格式的 AMS 版本
+ * @param text 待解析文本，例如 "90.0.0.0"
+ * @param out 输出四个版本分量
+ * @return true 表示格式正确且每段均在 0..255
+ * 必须正好四段十进制数字；仅在完整解析成功后写入 out
+ */
+bool settings_parse_ams_version(const char *text, int out[4]) {
+    if (!text || !out) return false;
+    int parsed[4] = {};
+    int segment = 0;
+    int value = 0;
+    bool has_digit = false;
+    for (const char *p = text;; ++p) {
+        const char c = *p;
+        if (c >= '0' && c <= '9') {
+            has_digit = true;
+            value = value * 10 + (c - '0');
+            if (value > 255) return false;
+            continue;
+        }
+        if (c != '.' && c != '\0') return false;
+        if (!has_digit || segment >= 4) return false;
+        parsed[segment++] = value;
+        if (c == '\0') break;
+        if (segment >= 4) return false;
+        value = 0;
+        has_digit = false;
+    }
+    if (segment != 4) return false;
+    memcpy(out, parsed, sizeof(parsed));
     return true;
 }
 
@@ -139,9 +176,21 @@ static void apply_settings_values(const SettingsData& data) {
     BUS_LOG_ENABLE = data.bus_log_enable == 0 || data.bus_log_enable == 1
                          ? data.bus_log_enable : DEFAULT_BUS_LOG;
 
-    memcpy(CUSTOM_SERIAL, data.custom_serial, sizeof(CUSTOM_SERIAL));
+    memcpy(CUSTOM_SERIAL, data.custom_serial, sizeof(data.custom_serial));
     CUSTOM_SERIAL[CUSTOM_SERIAL_LENGTH] = 0;
     if (!settings_custom_serial_valid(CUSTOM_SERIAL)) CUSTOM_SERIAL[0] = 0;
+
+    bool version_valid = true;
+    for (int i = 0; i < 4; ++i)
+        if (data.ams_version[i] < 0 || data.ams_version[i] > 255) version_valid = false;
+    if (version_valid) {
+        memcpy(AMS_VERSION, data.ams_version, sizeof(AMS_VERSION));
+    } else {
+        AMS_VERSION[0] = DEFAULT_AMS_VERSION_MAJOR;
+        AMS_VERSION[1] = DEFAULT_AMS_VERSION_MINOR;
+        AMS_VERSION[2] = DEFAULT_AMS_VERSION_PATCH;
+        AMS_VERSION[3] = DEFAULT_AMS_VERSION_BUILD;
+    }
 
     OTA_NOTIFY = data.ota_notify == 0 || data.ota_notify == 1 ? data.ota_notify : DEFAULT_OTA_NOTIFY;
     memcpy(OTA_URL, data.ota_url, OTA_URL_MAX);
@@ -199,7 +248,6 @@ void settings_storage_init() {
 
     read_settings_from_flash(&data);
 
-    // 还在开发中，不兼容旧记录：魔数或 CRC32 对不上就整体恢复默认值后重写
     if (data.magic == SETTINGS_MAGIC_NUMBER && calculate_crc32(&data) == data.checksum) {
         apply_settings_values(data);
         return;
@@ -239,7 +287,7 @@ SettingsData settings_snapshot() {
     data.bus_log_enable = BUS_LOG_ENABLE;
     data.ota_notify = OTA_NOTIFY;
     memset(data.custom_serial, 0, sizeof(data.custom_serial));
-    memcpy(data.custom_serial, CUSTOM_SERIAL, CUSTOM_SERIAL_LENGTH);
+    memcpy(data.custom_serial, CUSTOM_SERIAL, sizeof(data.custom_serial));
     memset(data.ota_url, 0, sizeof(data.ota_url));
     memcpy(data.ota_url, OTA_URL, OTA_URL_MAX - 1);
     data.magic = SETTINGS_MAGIC_NUMBER;
@@ -249,6 +297,7 @@ SettingsData settings_snapshot() {
     data.pcf_scl = PCF_SCL;
     data.bus_rx = BUS_RX; data.bus_tx = BUS_TX; data.bus_de = BUS_DE;
     data.pcf_enable = i2c_bus_configured() ? 1 : 0;
+    memcpy(data.ams_version, AMS_VERSION, sizeof(AMS_VERSION));
     data.checksum = calculate_crc32(&data);
     return data;
 }
@@ -293,6 +342,10 @@ void settings_reset_to_defaults() {
     RS485_MODE = DEFAULT_RS485_MODE;
     BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
     memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL));
+    AMS_VERSION[0] = DEFAULT_AMS_VERSION_MAJOR;
+    AMS_VERSION[1] = DEFAULT_AMS_VERSION_MINOR;
+    AMS_VERSION[2] = DEFAULT_AMS_VERSION_PATCH;
+    AMS_VERSION[3] = DEFAULT_AMS_VERSION_BUILD;
     memset(OTA_URL, 0, sizeof(OTA_URL));
     OTA_NOTIFY = DEFAULT_OTA_NOTIFY;
     io_config_set_defaults(IO_CONFIG);
@@ -308,7 +361,6 @@ void settings_reset_to_defaults() {
 bool settings_is_valid() {
     SettingsData data{};
     read_settings_from_flash(&data);
-
     return data.magic == SETTINGS_MAGIC_NUMBER && calculate_crc32(&data) == data.checksum;
 }
 
@@ -337,8 +389,9 @@ void settings_log_all() {
              RS485_MODE, BUS_LOG_ENABLE ? "已启用" : "已关闭");
     LOG_MAIN("[settings] BambuBus RX=IO%d，TX=IO%d，DE=IO%d（%s）", BUS_RX, BUS_TX, BUS_DE,
              RS485_MODE == RS485_MODE_DE ? "占用" : "不占用");
-    LOG_MAIN("[settings] BambuBus 序列号=%s",
-             CUSTOM_SERIAL[0] ? CUSTOM_SERIAL : "自动生成");
+    LOG_MAIN("[settings] BambuBus 序列号后缀=%s，AMS 版本=%d.%d.%d.%d",
+             CUSTOM_SERIAL[0] ? CUSTOM_SERIAL : "设备 ID 自动生成",
+             AMS_VERSION[0], AMS_VERSION[1], AMS_VERSION[2], AMS_VERSION[3]);
     LOG_MAIN("[settings] AMS 数量=%d，手动进退料点动时长=%dms", AMS_COUNT, MANUAL_PULSE_MS);
     LOG_MAIN("[settings] 同时运行电机上限=%d", MOTOR_LIMIT);
     if (i2c_bus_configured())

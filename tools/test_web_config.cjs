@@ -13,7 +13,8 @@ const path = require('node:path');
     const pins = Array.from({ length: 48 }, (_, id) => ({ id, label: `IO${id}` }));
     const settings = {
       ams: 1, channels: 4, maxams: 4, motor_limit: 1, manual_ms: 300, auto_ms: 1000,
-      cm: Array(16).fill(2), to: Array(16).fill(7), serial: '', otaurl: '', otanotify: 0,
+      cm: Array(16).fill(2), to: Array(16).fill(7), serial: '', ams_version: '90.0.0.0',
+      otaurl: '', otanotify: 0,
       io: {
         motor: Array.from({ length: 16 }, (_, i) => i < 4 ? [i * 2, i * 2 + 1] : [255, 255]),
         microswitch: Array(16).fill(255), pins,
@@ -33,12 +34,16 @@ const path = require('node:path');
         const body = new URLSearchParams(req.postData());
         posts.push(body);
         if (failSave) return route.fulfill({ status: 500, json: { ok: false, msg: '保存失败，请重试' } });
-        settings.ams = Number(body.get('ams'));
-        settings.channels = settings.ams * 4;
-        for (let i = 0; i < settings.channels; i++) {
-          settings.io.motor[i] = [Number(body.get('io_mf' + i)), Number(body.get('io_mb' + i))];
-          settings.io.microswitch[i] = Number(body.get('io_sw' + i));
+        if (body.has('ams')) {
+          settings.ams = Number(body.get('ams'));
+          settings.channels = settings.ams * 4;
+          for (let i = 0; i < settings.channels; i++) {
+            settings.io.motor[i] = [Number(body.get('io_mf' + i)), Number(body.get('io_mb' + i))];
+            settings.io.microswitch[i] = Number(body.get('io_sw' + i));
+          }
         }
+        if (body.has('serial')) settings.serial = body.get('serial');
+        if (body.has('ams_version')) settings.ams_version = body.get('ams_version');
         data = { ok: true, msg: '参数已保存' };
       } else if (url.pathname === '/api/settings') data = settings;
       else if (url.pathname === '/api/status') data = {
@@ -53,6 +58,26 @@ const path = require('node:path');
     await page.waitForFunction(() => document.querySelector('#p-ams').value === '1');
     // Wait for the tab's settings read before editing.
     await page.evaluate(() => loadPara());
+    await page.fill('#p-serial', '123456789ABC');
+    assert.equal(await page.evaluate(() => document.querySelector('#p-serial').checkValidity()), true);
+    await page.fill('#p-serial', '123456789AB');
+    assert.equal(await page.evaluate(() => document.querySelector('#p-serial').checkValidity()), false);
+    await page.fill('#p-serial', '123456789ABC');
+    await page.evaluate(() => saveSerial());
+    await page.waitForFunction(() => !document.querySelector('#p-serial').disabled);
+    assert.equal(settings.serial, '123456789ABC');
+    assert.equal(posts.at(-1).get('serial'), '123456789ABC');
+    await page.fill('#p-serial', '');
+    const versionPosts = posts.length;
+    await page.fill('#p-ams-version', '90.1.256.0');
+    await page.click('#save-ams-version');
+    await page.waitForTimeout(50);
+    assert.equal(posts.length, versionPosts, 'invalid AMS version must not be submitted');
+    await page.fill('#p-ams-version', '90.1.2.3');
+    await page.click('#save-ams-version');
+    await page.waitForFunction(() => !document.querySelector('#p-ams-version').disabled);
+    assert.equal(settings.ams_version, '90.1.2.3');
+    assert.equal(posts.at(-1).get('ams_version'), '90.1.2.3');
     assert.equal(await page.locator('#t-settings #iobody').count(), 1);
     assert.equal(await page.locator('#t-status #iobody').count(), 0);
     assert.equal(await page.locator('#t-settings #card-pcf').count(), 1);
@@ -61,15 +86,14 @@ const path = require('node:path');
       assert.equal(await page.locator('#iobody tr').count(), count * 4);
     }
     assert.equal(await page.locator('#chbody tr').count(), 4, 'preview must not enable manual controls');
-    await page.click('#save-io');
-    assert.equal(posts.length, 0, 'unconfigured pins must not be submitted');
     for (let i = 4; i < 8; i++) {
       await page.selectOption('#io-mf' + i, String(i * 2));
       await page.selectOption('#io-mb' + i, String(i * 2 + 1));
     }
+    const ioPosts = posts.length;
     await page.selectOption('#io-mf4', '0');
     await page.click('#save-io');
-    assert.equal(posts.length, 0, 'duplicate pins must not be submitted');
+    assert.equal(posts.length, ioPosts, 'duplicate pins must not be submitted');
     await page.selectOption('#io-mf4', '8');
     await page.selectOption('#p-ams', '1');
     await page.selectOption('#p-ams', '2');

@@ -85,7 +85,9 @@ static uint16_t bambubus_ams_address = 0x0000;
 static bool have_registered[4] = {false, false, false, false};
 // 注册和序列号查询共用每个 AMS 的身份，固定为协议的 66 字节载荷
 static uint8_t serial_identity[4][66] = {};
+
 static void refresh_serial_identities();
+
 static bool registration_identity_matches(const uint8_t *buf, int length);
 
 // ==================== 原有_filament结构体完全保留 ====================
@@ -334,8 +336,8 @@ static void set_motion_internal(const uint8_t ams_num, const uint8_t ch,
     const auto previous = ext.motion;
     if (previous != new_motion) {
         LOG_MAIN("[printer] 通道 %d %s（%s -> %s）", ams_num * 4 + ch + 1,
-             motion_internal_name(new_motion), motion_internal_name(previous),
-             motion_internal_name(new_motion));
+                 motion_internal_name(new_motion), motion_internal_name(previous),
+                 motion_internal_name(new_motion));
     }
     if (new_motion != filament_motion_internal::send_out) ext.is_sendout_onuse_timing = false;
     if (new_motion == filament_motion_internal::idle) {
@@ -455,7 +457,8 @@ static bool process_motion_state_machine(
     const uint8_t statu_flags,
     const uint8_t motion_flag) {
     if (ams_num >= AMS_COUNT || ams_num >= 4 ||
-        (filament_channel >= 4 && filament_channel != 0xFF)) return false;
+        (filament_channel >= 4 && filament_channel != 0xFF))
+        return false;
 
     const uint8_t loaded = get_loaded_filament(ams_num);
     if (filament_channel == 0xFF) {
@@ -472,7 +475,8 @@ static bool process_motion_state_machine(
                 const auto motion = filament_ext[ams_num][loaded].motion;
                 if (motion == filament_motion_internal::on_use ||
                     motion == filament_motion_internal::before_on_use ||
-                    motion == filament_motion_internal::stop_on_use) return true;
+                    motion == filament_motion_internal::stop_on_use)
+                    return true;
             }
             for (uint8_t ch = 0; ch < 4; ++ch)
                 set_motion_internal(ams_num, ch, filament_motion_internal::idle);
@@ -1004,7 +1008,8 @@ static uint8_t get_filament_use_flag(const uint8_t ams_num) {
     const auto motion = filament_ext[ams_num][ch].motion;
     if (motion == filament_motion_internal::idle) return 0x00;
     return motion == filament_motion_internal::send_out || motion == filament_motion_internal::pull_back
-               ? 0x02 : 0x04;
+               ? 0x02
+               : 0x04;
 }
 
 // ==================== 包类型解析 ====================
@@ -1364,7 +1369,7 @@ static void bus_wait_idle_5ms() {
  * 广播发布各 AMS 的统一身份；确认请求先比较 17 字节身份，再回复并更新对应注册状态
  * 身份不匹配时不发送确认也不取消既有注册；CRC16 尾部不参与身份比较
  */
-void send_for_Fxx(unsigned char *buf, int length) {
+static void send_for_Fxx(const unsigned char *buf, const int length) {
     if (!TX_IDLE || !buf || length < 8) return;
     if (buf[5] == 0x01u && length < 26) return;
     refresh_serial_identities();
@@ -1552,8 +1557,8 @@ static unsigned char long_packge_version_version_and_name_AMS08[] = {
 
 /**
  * 更新各 AMS 的统一注册身份与序列号
- * 从芯片 ID 生成稳定身份，注册包直接复制序列号载荷的 [33..48]，AMS 编号使身份各不相同
- * 自定义序列号保持原有 15 字符语义；配置变化时重建载荷并清除注册标记，普通查询不重置注册
+ * 固定生成 0EA + AMS 编号 + 12 位后缀，注册包直接复制序列号载荷的 [33..48]
+ * 自定义值只替换末 12 位；留空时后缀取设备 ID 低 48 位，首字节保持协议固定 0x0F
  */
 static void refresh_serial_identities() {
     static bool ready = false;
@@ -1568,15 +1573,15 @@ static void refresh_serial_identities() {
     for (uint8_t ams = 0; ams < 4; ++ams) {
         auto *serial = serial_identity[ams];
         memcpy(serial, serial_identity_template, sizeof(serial_identity_template));
+        serial[1] = '0';
+        serial[2] = 'E';
+        serial[3] = 'A';
+        serial[4] = '0' + ams;
         if (current_custom[0]) {
-            memcpy(serial + 1, current_custom, CUSTOM_SERIAL_LENGTH);
+            memcpy(serial + 5, current_custom, CUSTOM_SERIAL_LENGTH);
         } else {
-            serial[1] = '0';
-            serial[2] = 'E';
-            serial[3] = 'A';
-            serial[4] = '0' + ams;
-            for (int i = 0; i < 11; ++i)
-                serial[5 + i] = hex[(id >> ((10 - i) * 4)) & 0x0Fu];
+            for (int i = 0; i < CUSTOM_SERIAL_LENGTH; ++i)
+                serial[5 + i] = hex[(id >> ((11 - i) * 4)) & 0x0Fu];
         }
         serial[34] = 0xA0 + ams;
         for (int i = 0; i < 8; ++i)
@@ -1599,7 +1604,8 @@ static void refresh_serial_identities() {
  */
 static bool registration_identity_matches(const uint8_t *buf, const int length) {
     if (!buf || length < 26 || buf[4] != 0x05 || buf[5] != 0x01 ||
-        buf[6] >= AMS_COUNT || buf[6] >= 4) return false;
+        buf[6] >= AMS_COUNT || buf[6] >= 4)
+        return false;
     refresh_serial_identities();
     return memcmp(F00_res[buf[6]] + 7, buf + 7, 17) == 0;
 }
@@ -1610,7 +1616,7 @@ static bool registration_identity_matches(const uint8_t *buf, const int length) 
  * @param length 报文长度
  * type=0x402 回复该 AMS 的统一身份载荷，0x103 回复版本；序列号和注册包来自同一份数据
  */
-void send_for_long_packge_version(unsigned char *buf, int length) {
+static void send_for_long_packge_version(unsigned char *buf, int length) {
     long_packge_data data{};
     BambuBus_long_package_analysis(buf, length, &printer_data_long);
 
@@ -1639,7 +1645,9 @@ void send_for_long_packge_version(unsigned char *buf, int length) {
     {
         payload = long_packge_version_version_and_name_AMS08;
         payload_len = sizeof(long_packge_version_version_and_name_AMS08);
-        // 关键修复：使用payload_len - 1避免越界
+        // 网页显示 A.B.C.D，线上按 D.C.B.A 写入；末字节保留 AMS 编号
+        for (int i = 0; i < 4; ++i)
+            payload[i] = static_cast<unsigned char>(AMS_VERSION[3 - i]);
         payload[payload_len - 1] = AMS_num;
     }
 

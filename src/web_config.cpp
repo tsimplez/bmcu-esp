@@ -405,7 +405,9 @@ static void handle_settings_get() {
                ",\"motor_limit\":" + String(MOTOR_LIMIT) +
                ",\"channels\":" + String(BMCU_motor_count()) +
                ",\"maxams\":" + String(BMCU_max_ams_count()) +
-               ",\"serial\":\"" + json_escape(CUSTOM_SERIAL) + "\",\"to\":[";
+               ",\"serial\":\"" + json_escape(CUSTOM_SERIAL) +
+               "\",\"ams_version\":\"" + String(AMS_VERSION[0]) + "." + String(AMS_VERSION[1]) +
+               "." + String(AMS_VERSION[2]) + "." + String(AMS_VERSION[3]) + "\",\"to\":[";
     for (int i = 0; i < BMCU_motor_count(); i++) { if (i) j += ','; j += String(PULLBACK_TIMEOUT[i]); }
     j += "],\"cm\":[";
     for (int i = 0; i < BMCU_motor_count(); i++) { if (i) j += ','; j += String(CHANNEL_MODE[i]); }
@@ -588,7 +590,7 @@ static void handle_bus_save() {
 
 /**
  * 处理常规设置保存
- * 统一校验 AMS 数量、时长、并发上限、序列号、通道参数、IO 接线和 OTA 配置；保存失败时回滚内存快照
+ * 统一校验 AMS 数量、时长、并发上限、序列号、AMS 版本、通道参数、IO 接线和 OTA 配置；保存失败时回滚内存快照
  */
 static void handle_settings_save() {
     if (server.hasArg("rs485")) {
@@ -607,8 +609,15 @@ static void handle_settings_save() {
                  valid_number("manual_ms", 1, MAX_PULSE_MS - 1) &&
                  valid_number("auto_ms", 0, MAX_PULSE_MS - 1) &&
                  valid_number("motor_limit", 1, candidate_channels);
+    bool serial_valid = true;
+    bool version_valid = true;
+    int candidate_version[4] = {};
+    memcpy(candidate_version, AMS_VERSION, sizeof(candidate_version));
     if (server.hasArg("serial"))
-        valid = valid && settings_custom_serial_valid(server.arg("serial").c_str());
+        serial_valid = settings_custom_serial_valid(server.arg("serial").c_str());
+    if (server.hasArg("ams_version"))
+        version_valid = settings_parse_ams_version(server.arg("ams_version").c_str(), candidate_version);
+    valid = valid && serial_valid && version_valid;
     for (int i = 0; i < candidate_channels; i++)
         valid = valid && valid_number("to" + String(i), 3, 30) && valid_number("cm" + String(i), 0, 2);
 
@@ -652,10 +661,11 @@ static void handle_settings_save() {
     String io_error;
     if ((io_requested || count_changed) && valid && !io_config_validate(candidate_io, candidate_channels, &io_error)) valid = false;
     if (!valid) {
+        String error_message = io_error.length() ? io_error : String("参数无效，请检查设置项");
+        if (!version_valid) error_message = "AMS 版本必须为 A.B.C.D，四段均在 0..255";
+        else if (!serial_valid) error_message = "序列号后缀必须为空或 12 位大写字母/数字";
         server.send(400, "application/json",
-                    io_error.length() ?
-                    String("{\"ok\":false,\"msg\":\"") + json_escape(io_error.c_str()) + "\"}" :
-                    "{\"ok\":false,\"msg\":\"参数无效；自定义序列号必须为空或正好15位大写字母/数字\"}");
+                    String("{\"ok\":false,\"msg\":\"") + json_escape(error_message.c_str()) + "\"}");
         return;
     }
     // 减少 AMS 时保留剩余通道的运动，停用通道由应用配置时停止并移出队列
@@ -679,6 +689,8 @@ static void handle_settings_save() {
         String serial = server.arg("serial");
         serial.toCharArray(CUSTOM_SERIAL, sizeof(CUSTOM_SERIAL));
     }
+    if (server.hasArg("ams_version"))
+        memcpy(AMS_VERSION, candidate_version, sizeof(AMS_VERSION));
     AMS_COUNT = candidate_ams;
     MOTOR_LIMIT = min(MOTOR_LIMIT, candidate_channels);
     if (server.hasArg("manual_ms")) MANUAL_PULSE_MS = server.arg("manual_ms").toInt();

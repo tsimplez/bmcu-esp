@@ -224,7 +224,8 @@ static std::vector<uint8_t> query_serial(uint8_t ams) {
     assert(reply.size() == 81 && reply[4] == 81 && reply[5] == 0);
     assert(reply[7] == 0 && reply[8] == 3 && reply[9] == 0 && reply[10] == 7);
     assert(reply[6] == bus_crc8(reply.data(), 6) && package_check_crc16(reply.data(), reply.size()));
-    assert(reply[13] == 15 && reply[13 + 65] == ams);
+    assert(reply[13] == 15u);
+    assert(reply[13 + 65] == ams);
     return {reply.begin() + 13, reply.end() - 2};
 }
 
@@ -276,7 +277,7 @@ static void test_registration() {
 }
 
 /**
- * 验证序列号优先查询、自定义序列号及恢复自动身份
+ * 验证序列号优先查询、自定义序列号后缀及恢复自动身份
  * 查询顺序不影响身份，普通查询保留注册，配置变化才触发重新注册，AMS 身份始终独立
  */
 static void test_serial_identity() {
@@ -284,26 +285,69 @@ static void test_serial_identity() {
     std::vector<uint8_t> automatic[4];
     for (uint8_t ams = 0; ams < 4; ++ams) {
         automatic[ams] = query_serial(ams);
-        assert(automatic[ams][4] == '0' + ams);
+        char expected[17] = {};
+        snprintf(expected, sizeof(expected), "0EA%u56789ABCDEF0", ams);
+        assert(automatic[ams][0] == 15 && memcmp(automatic[ams].data() + 1, expected, 16) == 0);
         assert(memcmp(automatic[ams].data() + 33, F00_res[ams] + 8, 16) == 0);
         have_registered[ams] = true;
     }
     for (uint8_t ams = 0; ams < 4; ++ams) {
         assert(query_serial(ams) == automatic[ams] && have_registered[ams]);
     }
-    memcpy(CUSTOM_SERIAL, "TESTSERIAL12345", sizeof(CUSTOM_SERIAL));
+    static const char suffix[] = "123456789ABC";
+    memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL));
+    memcpy(CUSTOM_SERIAL, suffix, sizeof(suffix));
     for (uint8_t ams = 0; ams < 4; ++ams) {
         const auto custom = query_serial(ams);
-        assert(memcmp(custom.data() + 1, CUSTOM_SERIAL, CUSTOM_SERIAL_LENGTH) == 0);
+        char expected[17] = {};
+        snprintf(expected, sizeof(expected), "0EA%u%s", ams, suffix);
+        assert(custom[0] == 15 && memcmp(custom.data() + 1, expected, 16) == 0);
         assert(memcmp(custom.data() + 33, F00_res[ams] + 8, 16) == 0);
         assert(!have_registered[ams]);
         assert(custom[34] == 0xa0 + ams);
     }
-    CUSTOM_SERIAL[0] = 0; // 恢复自动值时尾部旧字符不应干扰缓存判断
+    memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL)); // 恢复自动值时尾部旧字符不应干扰缓存判断
     for (uint8_t ams = 0; ams < 4; ++ams) assert(query_serial(ams) == automatic[ams]);
     auto query = registration_query(std::vector<uint8_t>(F00_res[2], F00_res[2] + 29));
     feed(query); assert(BambuBus_run() == 1 && have_registered[2]);
     assert(query_serial(2) == automatic[2] && have_registered[2]);
+}
+
+/**
+ * 读取指定 AMS 的版本应答载荷
+ * @param ams AMS 编号
+ * @return 21 字节版本与型号载荷
+ * 经真实请求路径检查版本字节顺序和末字节 AMS 编号
+ */
+static std::vector<uint8_t> query_version(uint8_t ams) {
+    auto frame = long_request(0x103, 1);
+    frame[13] = ams;
+    seal(frame);
+    const auto before = uart_tx.size();
+    feed(frame); assert(BambuBus_run() == 1 && uart_tx.size() == before + 1);
+    const auto &reply = uart_tx.back();
+    assert(reply.size() == 36 && reply[4] == 36 && reply[5] == 0);
+    assert(reply[6] == bus_crc8(reply.data(), 6) && package_check_crc16(reply.data(), reply.size()));
+    assert(reply[13 + 20] == ams);
+    return {reply.begin() + 13, reply.end() - 2};
+}
+
+/** 验证默认与自定义 AMS 版本按 D.C.B.A 上线，并保持型号和 AMS 编号不变 */
+static void test_ams_version() {
+    AMS_COUNT = 4;
+    const int defaults[4] = {90, 0, 0, 0};
+    memcpy(AMS_VERSION, defaults, sizeof(defaults));
+    const auto factory = query_version(0);
+    assert(factory.size() == 21);
+    assert(factory[0] == 0 && factory[1] == 0 && factory[2] == 0 && factory[3] == 90);
+    assert(memcmp(factory.data() + 4, "AMS08", 5) == 0 && factory[20] == 0);
+
+    const int custom[4] = {90, 1, 2, 3};
+    memcpy(AMS_VERSION, custom, sizeof(custom));
+    const auto changed = query_version(2);
+    assert(changed[0] == 3 && changed[1] == 2 && changed[2] == 1 && changed[3] == 90);
+    assert(memcmp(changed.data() + 4, "AMS08", 5) == 0 && changed[20] == 2);
+    memcpy(AMS_VERSION, defaults, sizeof(defaults));
 }
 
 /** 验证发送端边界、真实 Cxx/Dxx/长包回复，以及回复时接收不覆盖队首 */
@@ -635,6 +679,7 @@ int main(int argc, char **argv) {
     else if (name == "zero_time") test_zero_time();
     else if (name == "registration") test_registration();
     else if (name == "serial_identity") test_serial_identity();
+    else if (name == "ams_version") test_ams_version();
     else if (name == "responses") test_responses();
     else if (name == "motion_sequences") test_motion_sequences();
     else if (name == "motion_isolation") test_motion_isolation();

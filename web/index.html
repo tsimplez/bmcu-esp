@@ -245,11 +245,17 @@ button:disabled{opacity:.45;cursor:not-allowed}
       </div>
     </div>
     <div class="row" style="margin-top:10px">
-      <span style="color:var(--dim);width:90px">自定义序列号</span>
-      <input id="p-serial" class="grow" maxlength="15" pattern="[A-Z0-9]{15}" placeholder="留空使用自动序列号" autocomplete="off" oninput="this.value=this.value.toUpperCase()">
+      <span style="color:var(--dim);width:90px">序列号后缀</span>
+      <input id="p-serial" class="grow" maxlength="12" pattern="[A-Z0-9]{12}" placeholder="12 位大写字母或数字，留空自动生成" autocomplete="off" oninput="this.value=this.value.toUpperCase()">
       <button onclick="saveSerial()">保存</button>
     </div>
-    <div class="hint">留空时按芯片 ID 自动生成；填写时必须正好 15 位大写字母或数字</div>
+    <div class="hint">完整序列号固定为 0EA + AMS 编号 + 12 位后缀；自定义只修改后缀，留空时后缀取设备 ID</div>
+    <div class="row">
+      <span style="color:var(--dim);width:90px">AMS 版本</span>
+      <input id="p-ams-version" class="grow" maxlength="15" pattern="[0-9]+(\.[0-9]+){3}" placeholder="90.0.0.0" inputmode="decimal" autocomplete="off">
+      <button id="save-ams-version" onclick="saveAmsVersion()">保存</button>
+    </div>
+    <div class="hint">打印机读取的 AMS 固件版本，格式为 A.B.C.D，每段范围 0..255；默认 90.0.0.0</div>
   </div>
   <div class="card">
     <h2>设备操作</h2>
@@ -1123,6 +1129,8 @@ const loadPara=()=>{
     IO_DRAFT=JSON.parse(JSON.stringify(d));IO_DIRTY=false
     $('p-serial').value=d.serial||''
     $('p-serial').dataset.saved=$('p-serial').value
+    $('p-ams-version').value=d.ams_version||'90.0.0.0'
+    $('p-ams-version').dataset.saved=$('p-ams-version').value
     $('u-otaurl').value=d.otaurl||''
     $('u-n1').classList.toggle('on',d.otanotify==1)
     $('u-n0').classList.toggle('on',d.otanotify==0)
@@ -1198,9 +1206,9 @@ const saveField=async(el,key)=>{
   updateChannelStateText()
 }
 /**
- * 保存自定义序列号
+ * 保存自定义序列号后缀
  * @return {Promise<void>} 保存流程完成的 Promise
- * 空值表示恢复自动序列号；失败时还原输入框中的上次有效值
+ * 空值表示按设备 ID 自动生成后缀；失败时还原输入框中的上次有效值
  */
 const saveSerial=async()=>{
   const el=$('p-serial')
@@ -1209,8 +1217,27 @@ const saveSerial=async()=>{
   const value=el.value
   if(await postSettings('serial='+encodeURIComponent(value),true)){
     el.dataset.saved=value
-    toast(value?'自定义序列号已保存':'已恢复使用自动序列号')
+    toast(value?'序列号后缀已保存':'已恢复使用设备 ID 后缀')
   }else el.value=el.dataset.saved||''
+  el.disabled=false
+}
+/**
+ * 保存打印机读取的 AMS 版本
+ * @return {Promise<void>} 保存流程完成的 Promise
+ * 校验 A.B.C.D 四段均在 0..255；失败时还原输入框中的上次有效值
+ */
+const saveAmsVersion=async()=>{
+  const el=$('p-ams-version')
+  const parts=el.value.trim().split('.')
+  const valid=parts.length===4 && parts.every(part=>/^[0-9]{1,3}$/.test(part) && Number(part)<=255)
+  if(!valid){toast('AMS 版本必须为 A.B.C.D，四段均在 0..255');return}
+  el.disabled=true
+  const value=parts.map(Number).join('.')
+  if(await postSettings('ams_version='+encodeURIComponent(value),true)){
+    el.value=value
+    el.dataset.saved=value
+    toast('AMS 版本已保存')
+  }else el.value=el.dataset.saved||'90.0.0.0'
   el.disabled=false
 }
 /**

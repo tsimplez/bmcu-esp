@@ -6,8 +6,8 @@
 // 设置存储管理器 - 存储后端见 platform.cpp（RP2040: 片内Flash / ESP32: NVS）
 // ============================
 
-// BambuBus 自定义序列号的固定长度（不含结尾 NUL）
-#define CUSTOM_SERIAL_LENGTH 15
+// BambuBus 序列号中可自定义的后缀长度；完整序列号为 0EA + AMS 编号 + 12 位后缀
+#define CUSTOM_SERIAL_LENGTH 12
 
 // 通道状态模式定义
 typedef enum {
@@ -25,7 +25,8 @@ extern int AUTO_LOAD_MS;           // 微动辅助进料时长（毫秒，0=关�
 extern int MOTOR_LIMIT;            // 同时运行的电机数（1..active_channel_count()）
 extern int RS485_MODE;             // RS485 收发模式（见下方 RS485_MODE_*）
 extern int BUS_LOG_ENABLE;         // BambuBus 原始报文日志开关（0=关 1=开）
-extern char CUSTOM_SERIAL[CUSTOM_SERIAL_LENGTH + 1]; // BambuBus 自定义序列号（空=按芯片 ID 自动生成）
+extern char CUSTOM_SERIAL[CUSTOM_SERIAL_LENGTH + 1]; // BambuBus 自定义序列号后缀（空=按芯片 ID 自动生成）
+extern int AMS_VERSION[4];         // 返回给打印机的 AMS 版本，依次为 A.B.C.D，每段 0..255
 extern char OTA_URL[128];          // OTA 更新源目录（设备会去取 <目录>/manifest.json）
 extern int OTA_NOTIFY;             // 进页面时自动检查更新并提示（0=关 1=开）
 extern IoConfig IO_CONFIG;          // 电机进退料与微动开关引脚
@@ -44,7 +45,7 @@ struct SettingsData {
     char ota_url[128];               // OTA 更新源目录
     int32_t ota_notify;              // 自动检查更新并提示
     int32_t motor_limit;             // 当前格式的同时运行电机上限
-    char custom_serial[CUSTOM_SERIAL_LENGTH + 1]; // 自定义序列号（空或 15 位大写字母/数字）
+    char custom_serial[CUSTOM_SERIAL_LENGTH]; // 自定义序列号后缀（恰好 12 位）
     IoConfig io_config;              // 当前平台的电机/微动引脚配置
     int32_t pcf_sda;                 // I2C SDA 引脚（PCF8575/温湿度模块共用），PIN_NONE 表示未配置
     int32_t pcf_scl;                 // I2C SCL 引脚（PCF8575/温湿度模块共用），PIN_NONE 表示未配置
@@ -52,6 +53,7 @@ struct SettingsData {
     int32_t bus_tx;                  // BambuBus 串口 TX 引脚
     int32_t bus_de;                  // RS485 DE 方向控制引脚；RXTX 模式下不使用
     int32_t pcf_enable;              // 旧版 PCF8575 开关字段，仅保留结构兼容，不再作为运行开关
+    int32_t ams_version[4];          // 返回给打印机的 AMS 版本（A.B.C.D，每段 0..255）
 };
 
 // 当前开发格式使用 CRC32；格式不匹配时恢复默认值
@@ -70,6 +72,10 @@ inline int active_channel_count() { return AMS_COUNT * 4; }
 constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设置的回退值
 #define DEFAULT_MANUAL_PULSE_MS     300  // 手动点动默认时长（毫秒）
 #define DEFAULT_AUTO_LOAD_MS        1000 // 微动辅助进料默认时长（毫秒）
+#define DEFAULT_AMS_VERSION_MAJOR   90   // 默认 AMS 版本 A 段
+#define DEFAULT_AMS_VERSION_MINOR   0    // 默认 AMS 版本 B 段
+#define DEFAULT_AMS_VERSION_PATCH   0    // 默认 AMS 版本 C 段
+#define DEFAULT_AMS_VERSION_BUILD   0    // 默认 AMS 版本 D 段
 
 // 点动/辅助进料时长上限（毫秒）：只需小于 30 秒
 #define MAX_PULSE_MS                30000
@@ -107,8 +113,17 @@ bool settings_is_valid();
 // 把当前生效的设置打印到主板日志（启动时、保存设置时各调一次）
 void settings_log_all();
 
-// 空字符串表示使用固件自动生成的序列号；非空时必须正好 15 位大写字母/数字
+// 空字符串表示使用固件自动生成的 12 位后缀；非空时必须为 12 位大写字母/数字
 bool settings_custom_serial_valid(const char *serial);
+
+/**
+ * 解析 A.B.C.D 格式的 AMS 版本
+ * @param text 待解析文本，例如 "90.0.0.0"
+ * @param out 输出四个版本分量
+ * @return true 表示格式正确且每段均在 0..255
+ * 仅在完整解析成功后写入 out，供网页保存前统一校验
+ */
+bool settings_parse_ams_version(const char *text, int out[4]);
 
 // 获取指定电机的退料超时时间（新增辅助函数）
 int get_motor_pullback_timeout(int motor_index);

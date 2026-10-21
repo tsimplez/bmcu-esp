@@ -46,7 +46,7 @@ def main():
         for case in ('parser', 'queue', 'queue_threads', 'receiver', 'timeout', 'save',
                      'zero_time', 'registration', 'responses', 'motion_sequences',
                      'motion_isolation', 'motion_timing', 'serial_identity',
-                     'tx_backpressure', 'tx_lifetime'):
+                     'ams_version', 'tx_backpressure', 'tx_lifetime'):
             if args.wasi:
                 if case == 'queue_threads':
                     print('SKIP queue_threads: WASI 为单线程运行环境', flush=True)
