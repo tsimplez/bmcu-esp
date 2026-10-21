@@ -47,7 +47,6 @@ static int cmd = 0;
 //#define BambuBus_address_AMSLite ((uint16_t)0x1200)
 #define BambuBus_address_AMSLite ((uint16_t)0x1300)
 
-#define SERSIAL_NUMBER long_packge_version_serial_number_AMS_lite
 #define VERSION_NAME long_packge_version_version_and_name_AMS_lite
 
 namespace {
@@ -70,6 +69,8 @@ struct _filament_ext {
     uint32_t meters_virtual_count = 0;
     // 上一次长度计算使用的毫秒时间
     uint32_t last_time_ticks = 0;
+    // 独立有效标记使零毫秒也能作为报文间隔的起点
+    bool last_time_valid = false;
     // 是否正在统计送出到使用的计时窗口
     bool is_sendout_onuse_timing = false;
     // 送出到使用计时窗口的起始时间
@@ -80,11 +81,12 @@ struct _filament_ext {
 static _filament_ext filament_ext[4][4];
 // 当前协商使用的 AMS 总线地址
 static uint16_t bambubus_ams_address = 0x0000;
-// 各通道开始“送出到使用”计时的毫秒戳；是否有效由独立标记表示
-static uint32_t time_sendout_onuse_ticks[4] = {};
-static bool time_sendout_onuse_active[4] = {};
 // 各 AMS 是否已完成在线检测注册
 static bool have_registered[4] = {false, false, false, false};
+// 注册和序列号查询共用每个 AMS 的身份，固定为协议的 66 字节载荷
+static uint8_t serial_identity[4][66] = {};
+static void refresh_serial_identities();
+static bool registration_identity_matches(const uint8_t *buf, int length);
 
 // ==================== 原有_filament结构体完全保留 ====================
 struct _filament {
@@ -321,17 +323,26 @@ static const char *motion_internal_name(const filament_motion_internal m) {
  * @param ams_num AMS 编号
  * @param ch 通道编号
  * @param new_motion 新的内部状态
- * 同步内部状态与对外 motion_set；进入 idle 时通知 BMCU 解除打印机阻断
+ * @param printer_request 是否由打印机请求更新，默认为 true
+ * 同步状态与转换历史；离开进料时清除等待计时，进入 idle 时清除历史和报文间隔
+ * 只有打印机请求的 idle 才通知 BMCU 解除阻断，内部停车必须保留阻断
  */
-static void set_motion_internal(const uint8_t ams_num, const uint8_t ch, const filament_motion_internal new_motion) {
+static void set_motion_internal(const uint8_t ams_num, const uint8_t ch,
+                                const filament_motion_internal new_motion, const bool printer_request = true) {
     if (ams_num >= 4 || ch >= 4) return;
-    const auto previous = filament_ext[ams_num][ch].motion;
-    if (previous != new_motion)
+    auto &ext = filament_ext[ams_num][ch];
+    const auto previous = ext.motion;
+    if (previous != new_motion) {
         LOG_MAIN("[printer] 通道 %d %s（%s -> %s）", ams_num * 4 + ch + 1,
              motion_internal_name(new_motion), motion_internal_name(previous),
              motion_internal_name(new_motion));
-    if (new_motion == filament_motion_internal::idle) BMCU_printer_idle(ams_num * 4 + ch);
-    filament_ext[ams_num][ch].motion = new_motion;
+    }
+    if (new_motion != filament_motion_internal::send_out) ext.is_sendout_onuse_timing = false;
+    if (new_motion == filament_motion_internal::idle) {
+        ext.last_time_valid = false;
+        if (printer_request) BMCU_printer_idle(ams_num * 4 + ch);
+    }
+    ext.motion = new_motion;
     data_save.filament[ams_num][ch].motion_set = map_internal_to_api(new_motion);
 }
 
@@ -350,24 +361,24 @@ filament_motion_state_set get_filament_motion(const int num) {
  * 设置通道对外运动状态
  * @param num 全局通道编号 0-15
  * @param motion 新的对外状态
- * 同步更新内部状态机，保证 BMCU 与协议层状态一致
+ * 同步状态、历史和计时，但不解除打印机阻断；保留上层传入的对外命令
  */
 void set_filament_motion(const int num, const filament_motion_state_set motion) {
     if (num < 0 || num >= 16) return;
-    data_save.filament[num / 4][num % 4].motion_set = motion;
     const uint8_t ams = num / 4;
     const uint8_t ch = num % 4;
     switch (motion) {
         case need_send_out:
-            filament_ext[ams][ch].motion = filament_motion_internal::send_out;
+            set_motion_internal(ams, ch, filament_motion_internal::send_out, false);
             break;
         case need_pull_back:
-            filament_ext[ams][ch].motion = filament_motion_internal::pull_back;
+            set_motion_internal(ams, ch, filament_motion_internal::pull_back, false);
             break;
         default:
-            filament_ext[ams][ch].motion = filament_motion_internal::idle;
+            set_motion_internal(ams, ch, filament_motion_internal::idle, false);
             break;
     }
+    data_save.filament[ams][ch].motion_set = motion;
 }
 
 /**
@@ -429,133 +440,124 @@ static uint8_t get_loaded_filament(const uint8_t ams_num) {
 }
 
 /**
- * 处理 BambuBus 运动状态机
+ * 处理 Cxx/Dxx 共用的运动状态机
  * @param ams_num AMS 编号
- * @param filament_channel AMS 内通道编号
+ * @param filament_channel AMS 内通道编号，0xFF 表示无指定通道
  * @param statu_flags 状态标志
  * @param motion_flag 运动标志
- * @param time_used_ms 距上次处理的时间
- * @return true 表示状态发生变化
- * 根据短包状态组合切换送出、使用、停止、回卷等内部状态，并维护当前通道和耗材长度
- * 直接读取 millis()，以无符号时间差处理自然回绕；独立标记允许计时从零毫秒开始
+ * @return true 表示请求范围有效，可继续生成回复
+ * 计时和历史按 AMS、通道隔离；无通道请求只操作本 AMS，未知组合保持原状态
+ * 保留送出到使用的 5 秒等待，报文间隔使用无符号时间差，零毫秒与回绕均有效
  */
 static bool process_motion_state_machine(
     const uint8_t ams_num,
     const uint8_t filament_channel,
     const uint8_t statu_flags,
-    const uint8_t motion_flag,
-    const uint32_t time_used_ms) {
-    if (ams_num >= AMS_COUNT || ams_num >= 4 || filament_channel >= 4) return false;
-
-    _filament_ext *ext = &filament_ext[ams_num][filament_channel];
-    _filament *fil = &data_save.filament[ams_num][filament_channel];
-
-    ext->last_time_ticks = millis();
+    const uint8_t motion_flag) {
+    if (ams_num >= AMS_COUNT || ams_num >= 4 ||
+        (filament_channel >= 4 && filament_channel != 0xFF)) return false;
 
     const uint8_t loaded = get_loaded_filament(ams_num);
-    const bool allow_any = loaded == 0xFF || loaded == filament_channel;
-    const bool allow_stop = loaded == filament_channel;
-
-    bool state_changed = false;
-
-    // 始终使用AMS08地址的逻辑
-    {
-        const bool is_send_out = statu_flags == 0x03 && motion_flag == 0x00;
-        const bool is_before_on_use = statu_flags == 0x09 && motion_flag == 0xA5;
-        const bool is_stop_on_use = statu_flags == 0x07 && motion_flag == 0x00;
-        const bool is_on_use = statu_flags == 0x07 && motion_flag == 0x7F;
-        const bool is_before_pullb = statu_flags == 0x09 && motion_flag == 0x3F;
-
-        const bool accept =
-                is_send_out ||
-                (is_before_on_use && allow_any) ||
-                (is_on_use && allow_any) ||
-                (is_stop_on_use && allow_stop) ||
-                (is_before_pullb && allow_stop);
-
-        if (accept) {
-            if (data_save.BambuBus_now_filament_num != ams_num * 4 + filament_channel) {
-                if (data_save.BambuBus_now_filament_num < 16) {
-                    const uint8_t prev_ams = data_save.BambuBus_now_filament_num / 4;
-                    const uint8_t prev_ch = data_save.BambuBus_now_filament_num % 4;
-                    set_motion_internal(prev_ams, prev_ch, filament_motion_internal::idle);
-                    time_sendout_onuse_ticks[prev_ch] = 0;
-                    time_sendout_onuse_active[prev_ch] = false;
-                }
-                data_save.BambuBus_now_filament_num = ams_num * 4 + filament_channel;
+    if (filament_channel == 0xFF) {
+        if (statu_flags == 0x03 && motion_flag == 0x00) {
+            if (loaded < 4 && filament_ext[ams_num][loaded].motion == filament_motion_internal::before_pull_back)
+                set_motion_internal(ams_num, loaded, filament_motion_internal::pull_back);
+        } else if (statu_flags == 0x01) {
+            if (loaded < 4) {
+                set_motion_internal(ams_num, loaded, filament_motion_internal::idle);
+                data_save.BambuBus_now_filament_num = 0xFF;
             }
+        } else {
+            if (loaded < 4) {
+                const auto motion = filament_ext[ams_num][loaded].motion;
+                if (motion == filament_motion_internal::on_use ||
+                    motion == filament_motion_internal::before_on_use ||
+                    motion == filament_motion_internal::stop_on_use) return true;
+            }
+            for (uint8_t ch = 0; ch < 4; ++ch)
+                set_motion_internal(ams_num, ch, filament_motion_internal::idle);
+            // 打印机全局选中的通道只能由其所属 AMS 清除
+            if (loaded < 4) data_save.BambuBus_now_filament_num = 0xFF;
         }
-
-        if (is_send_out) {
-            time_sendout_onuse_ticks[filament_channel] = 0;
-            time_sendout_onuse_active[filament_channel] = false;
-
-            if (ext->motion != filament_motion_internal::send_out && loaded != 0xFF) {
-                // 卸载其他通道
-                for (int i = 0; i < 4; i++) {
-                    if (i != filament_channel) {
-                        set_motion_internal(ams_num, i, filament_motion_internal::idle);
-                    }
-                }
-            }
-
-            set_motion_internal(ams_num, filament_channel, filament_motion_internal::send_out);
-            state_changed = true;
-        } else if (is_before_on_use && allow_any) {
-            time_sendout_onuse_ticks[filament_channel] = 0;
-            time_sendout_onuse_active[filament_channel] = false;
-            set_motion_internal(ams_num, filament_channel, filament_motion_internal::before_on_use);
-            state_changed = true;
-        } else if (is_on_use && allow_any) {
-            if (ext->motion == filament_motion_internal::send_out) {
-                const uint32_t now = millis();
-                if (!time_sendout_onuse_active[filament_channel]) {
-                    time_sendout_onuse_ticks[filament_channel] = now;
-                    time_sendout_onuse_active[filament_channel] = true;
-                }
-
-                const uint32_t dt = now - time_sendout_onuse_ticks[filament_channel];
-                if (dt < 5000)
-                    return true;
-                time_sendout_onuse_ticks[filament_channel] = 0;
-                time_sendout_onuse_active[filament_channel] = false;
-            }
-
-            set_motion_internal(ams_num, filament_channel, filament_motion_internal::on_use);
-            if (ext->meters_virtual_count < 10000) {
-                fil->meters += static_cast<float>(time_used_ms) / 300000.0f;
-                ext->meters_virtual_count += time_used_ms;
-            }
-            state_changed = true;
-        } else if (is_stop_on_use && allow_stop) {
-            time_sendout_onuse_ticks[filament_channel] = 0;
-            time_sendout_onuse_active[filament_channel] = false;
-            if (ext->motion == filament_motion_internal::on_use ||
-                ext->motion == filament_motion_internal::before_on_use) {
-                set_motion_internal(ams_num, filament_channel, filament_motion_internal::stop_on_use);
-                state_changed = true;
-            }
-        } else if (is_before_pullb && allow_stop) {
-            time_sendout_onuse_ticks[filament_channel] = 0;
-            time_sendout_onuse_active[filament_channel] = false;
-            if (ext->motion == filament_motion_internal::on_use ||
-                ext->motion == filament_motion_internal::before_on_use ||
-                ext->motion == filament_motion_internal::stop_on_use) {
-                set_motion_internal(ams_num, filament_channel, filament_motion_internal::before_pull_back);
-                state_changed = true;
-            }
-        } else if (statu_flags == 0x09) {
-            time_sendout_onuse_ticks[filament_channel] = 0;
-            time_sendout_onuse_active[filament_channel] = false;
-        }
+        return true;
     }
 
-    return state_changed;
+    auto &ext = filament_ext[ams_num][filament_channel];
+    auto &fil = data_save.filament[ams_num][filament_channel];
+    const uint32_t now = millis();
+    const uint32_t dt = ext.last_time_valid ? now - ext.last_time_ticks : 0u;
+    const uint32_t time_used_ms = dt > 1000u ? 0u : dt;
+    ext.last_time_ticks = now;
+    ext.last_time_valid = true;
+
+    const bool allow_any = loaded == 0xFF || loaded == filament_channel;
+    const bool allow_stop = loaded == filament_channel;
+    const bool is_send_out = statu_flags == 0x03 && motion_flag == 0x00;
+    const bool is_before_on_use = statu_flags == 0x09 && motion_flag == 0xA5;
+    const bool is_stop_on_use = statu_flags == 0x07 && motion_flag == 0x00;
+    const bool is_on_use = statu_flags == 0x07 && motion_flag == 0x7F;
+    const bool is_before_pullb = statu_flags == 0x09 && motion_flag == 0x3F;
+
+    const bool accept = is_send_out ||
+                        (is_before_on_use && allow_any) ||
+                        (is_on_use && allow_any) ||
+                        (is_stop_on_use && allow_stop) ||
+                        (is_before_pullb && allow_stop);
+    if (accept && data_save.BambuBus_now_filament_num != ams_num * 4 + filament_channel) {
+        const int previous = data_save.BambuBus_now_filament_num;
+        if (previous >= 0 && previous < active_channel_count())
+            set_motion_internal(previous / 4, previous % 4, filament_motion_internal::idle);
+        // 打印头只使用一个全局通道，真正切换时才释放上一个通道
+        data_save.BambuBus_now_filament_num = ams_num * 4 + filament_channel;
+    }
+
+    if (is_send_out) {
+        ext.is_sendout_onuse_timing = false;
+        if (ext.motion != filament_motion_internal::send_out && loaded != 0xFF) {
+            for (uint8_t ch = 0; ch < 4; ++ch)
+                if (ch != filament_channel) set_motion_internal(ams_num, ch, filament_motion_internal::idle);
+        }
+        set_motion_internal(ams_num, filament_channel, filament_motion_internal::send_out);
+    } else if (is_before_on_use && allow_any) {
+        set_motion_internal(ams_num, filament_channel, filament_motion_internal::before_on_use);
+    } else if (is_on_use && allow_any) {
+        if (ext.motion == filament_motion_internal::send_out) {
+            if (!ext.is_sendout_onuse_timing) {
+                ext.sendout_onuse_start_ticks = now;
+                ext.is_sendout_onuse_timing = true;
+            }
+            if (uint32_t(now - ext.sendout_onuse_start_ticks) < 5000u) return true;
+        }
+        set_motion_internal(ams_num, filament_channel, filament_motion_internal::on_use);
+        if (ext.meters_virtual_count < 10000u) {
+            const uint32_t remaining = 10000u - ext.meters_virtual_count;
+            const uint32_t elapsed = time_used_ms < remaining ? time_used_ms : remaining;
+            fil.meters += static_cast<float>(elapsed) / 300000.0f;
+            ext.meters_virtual_count += elapsed;
+        }
+    } else if (is_stop_on_use && allow_stop) {
+        ext.is_sendout_onuse_timing = false;
+        if (ext.motion == filament_motion_internal::on_use || ext.motion == filament_motion_internal::before_on_use)
+            set_motion_internal(ams_num, filament_channel, filament_motion_internal::stop_on_use);
+    } else if (is_before_pullb && allow_stop) {
+        ext.is_sendout_onuse_timing = false;
+        if (ext.motion == filament_motion_internal::on_use ||
+            ext.motion == filament_motion_internal::before_on_use ||
+            ext.motion == filament_motion_internal::stop_on_use)
+            set_motion_internal(ams_num, filament_channel, filament_motion_internal::before_pull_back);
+    } else if (statu_flags == 0x09) {
+        ext.is_sendout_onuse_timing = false;
+    }
+    return true;
 }
 
 // ==================== UART 收发与完成帧队列 ====================
-// 串口发送是否空闲；send_uart() 发送期间置为 false
+// 唯一发送槽，短包复制到此处，长包直接在此组帧；仅由主循环使用
+static uint8_t packge_send_buf[BUS_FRAME_CAPACITY];
+// 发送槽是否空闲；同步发送和 TX 日志读取期间均保持 false
 static bool TX_IDLE = true;
+// 当前请求预占发送槽，直到全部回复及日志完成；防止重入时消费下一帧
+static bool bus_request_active = false;
 // 发送完成时间参与后台保存的静默判断
 static uint32_t last_bus_tx_ms = 0;
 static bool bus_tx_seen = false;
@@ -568,21 +570,24 @@ static int bus_tx_context_type = -1;
  * 通过 BambuBus 串口发送数据
  * @param data 待发送数据
  * @param length 数据长度
- * 按 RS485 模式同步发送并恢复接收，记录发送结束时间供空闲保存判断，并可选记录日志
+ * 先占用固定发送槽并复制报文、保存日志类型，再同步发送；TX 日志完成后才释放缓冲
+ * 主循环预占请求后调用，忙状态或超出缓冲容量时拒绝写入，避免覆盖在途帧
  */
 void send_uart(const unsigned char *data, const uint16_t length) {
+    if (!TX_IDLE || !data || !length || length > sizeof(packge_send_buf)) return;
+    TX_IDLE = false;
+    if (data != packge_send_buf) memmove(packge_send_buf, data, length);
+    const int context_type = bus_tx_context_type;
     // RS485_MODE_RXTX（只用 RXD/TXD）时模块自行控制收发方向，不驱动 DE
     const bool drive_de = (RS485_MODE == RS485_MODE_DE);
 
-    TX_IDLE = false;
     if (drive_de) digitalWrite(BUS_DE, 1);
-    hal_bus_write(data, length);
+    hal_bus_write(packge_send_buf, length);
     if (drive_de) digitalWrite(BUS_DE, 0);
     last_bus_tx_ms = millis();
     bus_tx_seen = true;
+    if (BUS_LOG_ENABLE) log_bus_hex_typed(LOG_CH_BUS, 'T', context_type, packge_send_buf, length);
     TX_IDLE = true;
-
-    if (BUS_LOG_ENABLE) log_bus_hex_typed(LOG_CH_BUS, 'T', bus_tx_context_type, data, length);
 }
 
 // 单生产者（UART 回调）、单消费者（主循环）的固定队列
@@ -765,7 +770,7 @@ static void BambuBUS_UART_Init(const uint32_t baud) {
 
 /**
  * 初始化 BambuBus 协议层
- * 加载耗材记录、复位运动状态与计时有效标记，并以 1.2288Mbps 启动接收回调；仅在启动时调用
+ * 加载耗材记录、复位运动与注册状态、生成各 AMS 共用身份，再以 1.2288Mbps 启动接收回调；仅在启动时调用
  */
 void BambuBus_init() {
     const bool _init_ready = BambuBus_read();
@@ -780,8 +785,6 @@ void BambuBus_init() {
         for (int j = 0; j < 4; j++) {
             filament_ext[i][j] = _filament_ext();
         }
-        time_sendout_onuse_ticks[i] = 0;
-        time_sendout_onuse_active[i] = false;
         have_registered[i] = false;
     }
     bambubus_ams_address = 0x0000;
@@ -851,6 +854,7 @@ void BambuBus_init() {
         }
     }
 
+    refresh_serial_identities();
     BambuBUS_UART_Init(1228800);
 }
 
@@ -877,10 +881,10 @@ static bool package_check_crc16(const uint8_t *data, int data_length) {
  * 填充 CRC 并发送报文
  * @param data 待发送报文
  * @param data_length 报文总长度
- * 先校验容量和声明长度，再按短包或长包位置填充 CRC8/CRC16，防止发送端越界或生成长度不一致的帧
+ * 先检查发送槽、容量和声明长度，再填充 CRC8/CRC16，忙时不改写任何在途数据
  */
 static void package_send_with_crc(uint8_t *data, int data_length) {
-    if (!data || data_length < 7 || data_length > BUS_FRAME_CAPACITY) return;
+    if (!TX_IDLE || !data || data_length < 7 || data_length > BUS_FRAME_CAPACITY) return;
     const bool is_short = (data[1] & 0x80u) != 0u;
     if (!is_short && data_length < 15) return;
     const uint16_t declared = is_short
@@ -899,9 +903,6 @@ static void package_send_with_crc(uint8_t *data, int data_length) {
     data_length += 2;
     send_uart(data, data_length);
 }
-
-// 长包发送组帧缓冲区：头部、载荷和 CRC 在此拼接后发送
-static uint8_t packge_send_buf[1000];
 
 struct long_packge_data {
     // 长包序号，回复时沿用请求中的序号
@@ -925,10 +926,10 @@ struct long_packge_data {
 /**
  * 组装并发送长包
  * @param data 长包字段与载荷描述
- * 先检查载荷容量与指针，再写入头部并拼接载荷；统一校验总长度并计算 CRC
+ * 先检查发送槽、载荷容量与指针，再在共用发送缓冲拼接头部和载荷；统一计算 CRC
  */
 static void BambuBus_long_package_send(long_packge_data *data) {
-    if (!data || data->data_length > BUS_FRAME_CAPACITY - 15u ||
+    if (!TX_IDLE || !data || data->data_length > BUS_FRAME_CAPACITY - 15u ||
         (data->data_length && !data->datas))
         return;
     packge_send_buf[0] = 0x3D;
@@ -966,23 +967,21 @@ static long_packge_data printer_data_long;
  * @param ams_num AMS 编号
  * @param ch AMS 内通道编号
  * @return 压力值；无效通道返回 0xFFFF
- * 根据内部运动状态映射为打印机期望的压力反馈
+ * 进料准备阶段固定反馈使用中压力，避免打印机把准备状态当作仍在送出
  */
-static uint16_t get_pressure_value(const uint8_t ams_num, uint8_t ch) {
-    if (ams_num >= AMS_COUNT || ch >= 4) return 0xFFFF;
+static uint16_t get_pressure_value(const uint8_t ams_num, const uint8_t ch) {
+    if (ams_num >= AMS_COUNT || ams_num >= 4 || ch >= 4) return 0xFFFF;
 
     const filament_motion_internal m = filament_ext[ams_num][ch].motion;
-    const filament_motion_internal prev_motion = m;
 
     switch (m) {
         case filament_motion_internal::send_out:
             return 0x4700;
         case filament_motion_internal::before_on_use:
-            return (prev_motion == filament_motion_internal::send_out) ? 0x4700 : 0x2B00;
-        case filament_motion_internal::on_use:
             return 0x2B00;
+        case filament_motion_internal::on_use:
         case filament_motion_internal::stop_on_use:
-            return (prev_motion == filament_motion_internal::send_out) ? 0x4700 : 0x2B00;
+            return 0x2B00;
         case filament_motion_internal::before_pull_back:
             return 0x2B00;
         case filament_motion_internal::pull_back:
@@ -993,24 +992,19 @@ static uint16_t get_pressure_value(const uint8_t ams_num, uint8_t ch) {
 }
 
 /**
- * 计算 AMS 耗材使用标志
+ * 计算 AMS 当前选中通道的耗材使用标志
  * @param ams_num AMS 编号
- * @return 0x00、0x02 或 0x04
- * 有通道运动时返回送出/回卷标志，否则返回空闲
+ * @return 0x00 表示空闲，0x02 表示送出或回卷，0x04 表示使用中的其他阶段
+ * 只根据属于本 AMS 的当前通道生成反馈，不扫描或借用其他 AMS 的状态
  */
-static uint8_t get_filament_use_flag(uint8_t ams_num) {
-    if (ams_num >= AMS_COUNT) return 0x00;
-
-    for (int i = 0; i < 4; i++) {
-        filament_motion_internal m = filament_ext[ams_num][i].motion;
-        if (m != filament_motion_internal::idle) {
-            if (m == filament_motion_internal::send_out ||
-                m == filament_motion_internal::pull_back)
-                return 0x02;
-            return 0x04;
-        }
-    }
-    return 0x00;
+static uint8_t get_filament_use_flag(const uint8_t ams_num) {
+    if (ams_num >= AMS_COUNT || ams_num >= 4) return 0x00;
+    const uint8_t ch = get_loaded_filament(ams_num);
+    if (ch >= 4) return 0x00;
+    const auto motion = filament_ext[ams_num][ch].motion;
+    if (motion == filament_motion_internal::idle) return 0x00;
+    return motion == filament_motion_internal::send_out || motion == filament_motion_internal::pull_back
+               ? 0x02 : 0x04;
 }
 
 // ==================== 包类型解析 ====================
@@ -1065,7 +1059,7 @@ static package_type addressed_package(package_type type, uint8_t ams, uint8_t ch
  * @param buf 完整报文
  * @param length 包含头部与两字节 CRC16 的总长度
  * @return 合法类型、校验/字段错误 ERROR 或不属于本机的 IGNORED
- * 在更新通信状态前校验帧头、CRC8/16、命令最小载荷、目标地址和 AMS/通道；不读取 CRC 尾部作为载荷
+ * 在更新通信状态前校验帧头、CRC8/16、载荷、目标地址、AMS/通道和注册身份；不读取 CRC 尾部作为载荷
  */
 static package_type get_package_type(unsigned char *buf, const int length) {
     if (!buf || length < 7 || length > BUS_FRAME_CAPACITY || buf[0] != 0x3Du)
@@ -1093,7 +1087,9 @@ static package_type get_package_type(unsigned char *buf, const int length) {
                 if (buf[5] == 0x00u) return BambuBus_package_online_detect;
                 if (buf[5] == 0x01u) {
                     if (length < 26) return BambuBus_package_ERROR;
-                    return addressed_package(BambuBus_package_online_detect, buf[6]);
+                    const auto type = addressed_package(BambuBus_package_online_detect, buf[6]);
+                    if (type != BambuBus_package_online_detect) return type;
+                    return registration_identity_matches(buf, length) ? type : BambuBus_package_IGNORED;
                 }
                 return BambuBus_package_ETC; // 其它注册子命令留给后续兼容适配
             case 0x06:
@@ -1183,7 +1179,7 @@ uint8_t get_filament_left_char(const uint8_t AMS_num) {
 
 /**
  * 短包运动请求（Cxx）的固定响应模板
- * send_for_Cxx() 先复制请求中的通道和状态，再按 5 字节头 + C_test 载荷组装回应
+ * send_for_Cxx() 先更新共用状态机，再按 5 字节头 + C_test 载荷组装回应
  */
 unsigned char Cxx_res[] = {
     0x3D, 0xE0, 0x2C, 0x1A, 0x03,
@@ -1191,58 +1187,41 @@ unsigned char Cxx_res[] = {
     0x90, 0xE4
 };
 
-// ==================== 辅助函数：字节序转换 ====================
 /**
- * 填充短包运动响应载荷
- * @param set_buf 响应载荷缓冲区
- * @param buf 收到的请求报文
- * @param length 请求长度
- * @return true 表示参数有效并已填充
- * 写入使用标志、通道号、剩余长度、压力值和在线位图
+ * 填充 Cxx/Dxx 共用的运动反馈载荷
+ * @param set_buf 至少 25 字节的运动载荷缓冲区，从响应中的 AMS 字段开始
+ * @param ams_num 已校验的 AMS 编号
+ * @return 反馈中的当前通道，空闲时为 0xFF
+ * 从状态机读取当前通道、使用标志、长度、压力和位图，避免两个入口反馈不一致
  */
-static bool set_cxx_buf(unsigned char *set_buf, unsigned char *buf, int length) {
-    const unsigned char AMS_num = buf[5];
-    const unsigned char read_num = buf[7];
-    now_op_num = read_num;
-    float meters = -1;
-
-    if (AMS_num >= AMS_COUNT || AMS_num >= 4 || read_num >= 4) return false;
-
-    meters = data_save.filament[AMS_num][read_num].meters;
-
-    // 根据状态设置正确的flagx
-    uint8_t flagx = get_filament_use_flag(AMS_num);
-    if (flagx == 0x00) flagx = 0x02; // 默认送出状态
-
-    // 设置filament_use_flag (Cxx_res[7])
-    set_buf[2] = flagx;
-    // 设置filament_channel (Cxx_res[8])
-    set_buf[3] = read_num;
-
-    // 设置meters (Cxx_res[9-12])
+static uint8_t set_motion_response(unsigned char *set_buf, const uint8_t ams_num) {
+    const uint8_t use_flag = get_filament_use_flag(ams_num);
+    const uint8_t ch = use_flag ? get_loaded_filament(ams_num) : 0xFF;
+    const float meters = ch < 4 ? data_save.filament[ams_num][ch].meters : -1.0f;
+    const uint16_t pressure = get_pressure_value(ams_num, ch);
+    set_buf[0] = ams_num;
+    set_buf[2] = use_flag;
+    set_buf[3] = ch;
     memcpy(set_buf + 4, &meters, sizeof(meters));
-
-    // ========== 关键修复：设置pressure (Cxx_res[13-14]) ==========
-    const uint16_t pressure = get_pressure_value(AMS_num, read_num);
     memcpy(set_buf + 8, &pressure, sizeof(pressure));
-
-    // 设置filament_left_char (Cxx_res[29])
-    set_buf[24] = get_filament_left_char(AMS_num);
-    return true;
+    set_buf[24] = get_filament_left_char(ams_num);
+    return ch;
 }
 
 /**
  * 回复短包运动请求
  * @param buf 收到的请求报文
  * @param length 请求长度
- * 要求完整的 12 字节请求；填充响应并计算 CRC，包序号在 0-7 间循环
+ * 要求完整的 12 字节请求；按 Cxx 字段位置更新共用状态机，填充反馈并计算 CRC
  */
-static void send_for_Cxx(unsigned char *buf, const int length) {
+static void send_for_Cxx(const unsigned char *buf, const int length) {
     if (!buf || length < 12) return;
 
+    // Cxx 的通道位于 [7]、运动标志位于 [8]；与 Dxx 的布局不同
+    if (!process_motion_state_machine(buf[5], buf[7], buf[6], buf[8])) return;
+    now_op_num = buf[7];
     Cxx_res[1] = 0xC0 | (package_num << 3);
-
-    if (!set_cxx_buf(Cxx_res + 5, buf, length)) return;
+    Cxx_res[38] = set_motion_response(Cxx_res + 5, buf[5]);
 
     package_send_with_crc(Cxx_res, sizeof(Cxx_res));
     if (package_num < 7)
@@ -1268,17 +1247,13 @@ static unsigned char Dxx_res[] = {
 
 // 0x06 握手锁定的 AMS 编号；0xFF 表示尚未锁定，之后重复握手沿用首个编号
 static uint8_t res_for_06_num = 0xFF;
-// 兼容旧在线检测流程的剩余响应次数；当前代码保留判断但未写入非零值
-static int last_detect = 0;
-// 旧在线检测流程使用的耗材检测位图；当前由 Dxx 在线位图字段直接计算
-static uint8_t filament_flag_detected = 0;
 
 /**
  * 回复长包运动请求
  * @param buf 收到的请求报文
  * @param length 请求长度
  * 解析 AMS/通道/状态标志，驱动状态机并生成包含在线、NFC、长度和压力的 Dxx 响应
- * 使用 millis() 的无符号时间差及独立初始化标记估算报文间隔，零毫秒与回绕均为有效时间
+ * 与 Cxx 共用状态和反馈；Dxx 独有的温湿度与 NFC 字段仍按现有格式填写
  */
 static void send_for_Dxx(const unsigned char *buf, const int length) {
     if (!buf || length < 13) return;
@@ -1286,13 +1261,9 @@ static void send_for_Dxx(const unsigned char *buf, const int length) {
     unsigned char filament_flag_on = 0x00;
     unsigned char filament_flag_NFC = 0x00;
     const unsigned char AMS_num = buf[5];
-    const unsigned char statu_flags = buf[6];
-    const unsigned char filament_motion_flag = buf[7];
-    const unsigned char read_num = buf[9];
-    now_op_num = read_num;
-    float meters = -1;
-
-    if (AMS_num >= AMS_COUNT || AMS_num >= 4) return;
+    // Dxx 的运动标志位于 [7]、通道位于 [9]
+    if (!process_motion_state_machine(AMS_num, buf[9], buf[6], buf[7])) return;
+    now_op_num = buf[9];
 
     for (auto i = 0; i < 4; i++) {
         if (data_save.filament[AMS_num][i].statu == online) {
@@ -1303,88 +1274,14 @@ static void send_for_Dxx(const unsigned char *buf, const int length) {
         }
     }
 
-    // 每个 AMS 上一次处理 Dxx 的毫秒时间，用于估算运动状态机的时间增量
-    static uint32_t last_ticks[4] = {};
-    static bool ticks_seen[4] = {};
-    const uint32_t now_ticks = millis();
-    const uint32_t dt = !ticks_seen[AMS_num] ? 0 : now_ticks - last_ticks[AMS_num];
-    last_ticks[AMS_num] = now_ticks;
-    ticks_seen[AMS_num] = true;
-    const uint32_t time_used = dt > 1000 ? 0 : dt;
-
-    if (read_num != 0xFF && read_num < 4) {
-        process_motion_state_machine(AMS_num, read_num, statu_flags, filament_motion_flag, time_used);
-        meters = data_save.filament[AMS_num][read_num].meters;
-    } else if (read_num == 0xFF && statu_flags == 0x03 && filament_motion_flag == 0x00) {
-        const uint8_t now_ch = data_save.BambuBus_now_filament_num % 4;
-        if (filament_ext[AMS_num][now_ch].motion == filament_motion_internal::before_pull_back) {
-            set_motion_internal(AMS_num, now_ch, filament_motion_internal::pull_back);
-        }
-    } else if (read_num == 0xFF && statu_flags == 0x01) {
-        const uint8_t now_ch = data_save.BambuBus_now_filament_num % 4;
-        if (now_ch < 4) {
-            // 卸载当前通道，设置为idle状态
-            set_motion_internal(AMS_num, now_ch, filament_motion_internal::idle);
-            time_sendout_onuse_ticks[now_ch] = 0;
-            time_sendout_onuse_active[now_ch] = false;
-        }
-    } else if (read_num == 0xFF) {
-        if (data_save.BambuBus_now_filament_num < 16) {
-            const uint8_t now_ch = data_save.BambuBus_now_filament_num % 4;
-            filament_motion_internal m = filament_ext[AMS_num][now_ch].motion;
-            if (m == filament_motion_internal::on_use ||
-                m == filament_motion_internal::before_on_use ||
-                m == filament_motion_internal::stop_on_use) {
-                return;
-            }
-        }
-
-        // 重置所有通道状态
-        for (uint8_t i = 0; i < 4; i++) {
-            set_motion_internal(AMS_num, i, filament_motion_internal::idle);
-            time_sendout_onuse_ticks[i] = 0;
-            time_sendout_onuse_active[i] = false;
-        }
-
-        data_save.BambuBus_now_filament_num = 0xFF;
-    }
-
-    uint16_t pressure = 0xFFFF;
-    uint8_t use_flag = 0x00;
-    if (read_num < 4) {
-        pressure = get_pressure_value(AMS_num, read_num);
-        use_flag = get_filament_use_flag(AMS_num);
-    }
-
     Dxx_res[1] = 0xC0 | (package_num << 3);
     Dxx_res[5] = AMS_num;
     Dxx_res[9] = filament_flag_on;
     Dxx_res[10] = filament_flag_on - filament_flag_NFC;
     Dxx_res[11] = filament_flag_on - filament_flag_NFC;
     Dxx_res[12] = 0xFF;
-    Dxx_res[17] = AMS_num;
-    Dxx_res[19] = use_flag;
-    Dxx_res[20] = read_num == 0xFF ? 0xFF : read_num;
     Dxx_res[13] = filament_flag_NFC;
-    Dxx_res[41] = get_filament_left_char(AMS_num);
-
-    memcpy(Dxx_res + 21, &meters, sizeof(meters));
-    memcpy(Dxx_res + 25, &pressure, sizeof(pressure));
-    // 处理压力值的特殊情况
-    if (pressure == 0xF06F) {
-        // 特殊压力值处理
-    }
-
-    if (last_detect != 0) {
-        if (last_detect > 10) {
-            Dxx_res[19] = 0x01;
-        } else {
-            Dxx_res[12] = filament_flag_detected;
-            Dxx_res[19] = 0x01;
-            Dxx_res[20] = filament_flag_detected;
-        }
-        last_detect--;
-    }
+    set_motion_response(Dxx_res + 17, AMS_num);
 
     // AHT20 有效时把温湿度写入 AMS 长包回复；无效或未检测时恢复固定默认值，
     // 避免把上一次的旧读数继续发给打印机
@@ -1464,15 +1361,17 @@ static void bus_wait_idle_5ms() {
  * 回复在线检测与注册请求
  * @param buf 收到的请求报文
  * @param length 请求长度
- * 处理注册与查询，按 26 字节查询帧的 17 字节身份区确认注册；CRC16 尾部不参与身份比较
+ * 广播发布各 AMS 的统一身份；确认请求先比较 17 字节身份，再回复并更新对应注册状态
+ * 身份不匹配时不发送确认也不取消既有注册；CRC16 尾部不参与身份比较
  */
 void send_for_Fxx(unsigned char *buf, int length) {
-    if (!buf || length < 8) return;
+    if (!TX_IDLE || !buf || length < 8) return;
     if (buf[5] == 0x01u && length < 26) return;
+    refresh_serial_identities();
 
     // 广播注册阶段
     if (buf[5] == 0x00) {
-        for (int i = 0; i < AMS_COUNT; i++) {
+        for (int i = 0; i < AMS_COUNT && i < 4; i++) {
             if (have_registered[i]) continue;
             // AMS 是否存在由 AMS_COUNT 决定，空槽不能让整台 AMS 消失
 
@@ -1490,7 +1389,8 @@ void send_for_Fxx(unsigned char *buf, int length) {
         }
     }
     // 具体查询阶段
-    else if (buf[5] == 0x01 && buf[6] < AMS_COUNT) {
+    else if (buf[5] == 0x01 && buf[6] < AMS_COUNT && buf[6] < 4) {
+        if (!registration_identity_matches(buf, length)) return;
         const uint8_t ams_num = buf[6];
 
         // 使用对应AMS的响应数组
@@ -1504,11 +1404,8 @@ void send_for_Fxx(unsigned char *buf, int length) {
 
         package_send_with_crc(F00_res[ams_num], 29);
 
-        // 只比较请求中的 17 字节身份区，不把 CRC16 和未接收字节纳入身份比较
-        if (memcmp(F00_res[ams_num] + 7, buf + 7, 17) == 0)
-            have_registered[ams_num] = true;
-        else
-            have_registered[ams_num] = false;
+        // 同步发送结束后才确认当前 AMS 注册成功，其他 AMS 的状态不受影响
+        have_registered[ams_num] = true;
     } else if (buf[4] == 0x06) // 握手
     {
         uint8_t ams_num = buf[5];
@@ -1626,27 +1523,17 @@ void send_for_long_packge_filament(unsigned char *buf, int length) {
 
 // ==================== 修复点1：版本和序列号数组定义 ====================
 
-// AMS lite 版本响应中的序列号模板；最后字节在回复时替换为 AMS 编号
-static unsigned char long_packge_version_serial_number_AMS_lite[] = {
-    0x0F, // 序列号长度15
-    0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, // 15字节SN
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 17字节填充
-    0x0E, 0x7D, // 2字节标识
-    0x32, 0x31, 0x31, 0x38, 0x15, 0x00, 0x36, 0x39, 0x37, 0x33, 0xFF, 0xFF, 0xFF, 0xFF, // 14字节额外数据
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xBB, 0x44, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0x00 // 最后字节，将被替换为AMS序号
-};
-
-// AMS 08 版本响应中的序列号模板；最后字节在回复时替换为 AMS 编号
-static unsigned char long_packge_version_serial_number_AMS08[] = {
+// 注册和序列号查询共用的 66 字节载荷模板；[33..48] 为注册身份块
+static const unsigned char serial_identity_template[] = {
     0x0F,
     0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x0E, 0x7D,
+    0x0E, 0xA0,
     0x32, 0x31, 0x31, 0x38, 0x15, 0x00, 0x36, 0x39, 0x37, 0x33, 0xFF, 0xFF, 0xFF, 0xFF,
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xBB, 0x44, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     0x00
 };
+static_assert(sizeof(serial_identity_template) == sizeof(serial_identity[0]), "serial identity payload size");
 
 // 版本号数组（17字节）
 // AMS lite 版本响应中的版本号和型号名模板（"AMS_F102"）
@@ -1664,40 +1551,64 @@ static unsigned char long_packge_version_version_and_name_AMS08[] = {
 };
 
 /**
- * 生成稳定的设备序列号
- * 把芯片唯一 ID 格式化为 15 字节序列号，并填充两套 AMS 序列号缓冲区
+ * 更新各 AMS 的统一注册身份与序列号
+ * 从芯片 ID 生成稳定身份，注册包直接复制序列号载荷的 [33..48]，AMS 编号使身份各不相同
+ * 自定义序列号保持原有 15 字符语义；配置变化时重建载荷并清除注册标记，普通查询不重置注册
  */
-static void build_stable_serial_identity() {
+static void refresh_serial_identities() {
+    static bool ready = false;
+    static char previous_custom[CUSTOM_SERIAL_LENGTH + 1] = {};
+    char current_custom[CUSTOM_SERIAL_LENGTH + 1] = {};
+    for (int i = 0; i < CUSTOM_SERIAL_LENGTH && CUSTOM_SERIAL[i]; ++i)
+        current_custom[i] = CUSTOM_SERIAL[i];
+    if (ready && memcmp(previous_custom, current_custom, sizeof(current_custom)) == 0) return;
+
     static constexpr char hex[] = "0123456789ABCDEF";
     const uint64_t id = hal_get_device_id();
-    unsigned char *serials[] = {
-        long_packge_version_serial_number_AMS_lite,
-        long_packge_version_serial_number_AMS08
-    };
-    for (unsigned char *serial: serials) {
-        serial[0] = 0x0F;
-        serial[1] = '0';
-        serial[2] = 'E';
-        serial[3] = 'A';
-        serial[4] = '0';
-        // 11 个可见字符保留原有 15 字节 SN 长度，同时区分物理设备
-        for (int i = 0; i < 11; i++) {
-            const int shift = (10 - i) * 4;
-            serial[5 + i] = hex[(id >> shift) & 0x0Fu];
+    for (uint8_t ams = 0; ams < 4; ++ams) {
+        auto *serial = serial_identity[ams];
+        memcpy(serial, serial_identity_template, sizeof(serial_identity_template));
+        if (current_custom[0]) {
+            memcpy(serial + 1, current_custom, CUSTOM_SERIAL_LENGTH);
+        } else {
+            serial[1] = '0';
+            serial[2] = 'E';
+            serial[3] = 'A';
+            serial[4] = '0' + ams;
+            for (int i = 0; i < 11; ++i)
+                serial[5 + i] = hex[(id >> ((10 - i) * 4)) & 0x0Fu];
         }
-        serial[33] = 0x0E;
-        serial[34] = 0xA0;
-        for (int i = 0; i < 8; i++)
+        serial[34] = 0xA0 + ams;
+        for (int i = 0; i < 8; ++i)
             serial[35 + i] = static_cast<unsigned char>(id >> (56 - i * 8));
-        serial[65] = 0;
+        serial[65] = ams;
+        F00_res[ams][6] = ams;
+        memcpy(F00_res[ams] + 8, serial + 33, 16);
+        have_registered[ams] = false;
     }
+    memcpy(previous_custom, current_custom, sizeof(current_custom));
+    ready = true;
+}
+
+/**
+ * 检查注册确认请求中的完整身份
+ * @param buf 注册确认请求
+ * @param length 包含 CRC16 的帧长
+ * @return true 表示 AMS、身份前缀和 16 字节身份块均匹配
+ * 不匹配不发确认，也不清除其他合法查询建立的注册状态；CRC 由集中解析入口校验
+ */
+static bool registration_identity_matches(const uint8_t *buf, const int length) {
+    if (!buf || length < 26 || buf[4] != 0x05 || buf[5] != 0x01 ||
+        buf[6] >= AMS_COUNT || buf[6] >= 4) return false;
+    refresh_serial_identities();
+    return memcmp(F00_res[buf[6]] + 7, buf + 7, 17) == 0;
 }
 
 /**
  * 回复序列号或版本查询
  * @param buf 收到的长包
  * @param length 报文长度
- * type=0x402 回复序列号、0x103 回复版本；无效 AMS 不再回退到 AMS 0，支持网页自定义序列号
+ * type=0x402 回复该 AMS 的统一身份载荷，0x103 回复版本；序列号和注册包来自同一份数据
  */
 void send_for_long_packge_version(unsigned char *buf, int length) {
     long_packge_data data{};
@@ -1718,24 +1629,12 @@ void send_for_long_packge_version(unsigned char *buf, int length) {
     {
         if (printer_data_long.data_length < 34u) return;
 
-        build_stable_serial_identity();
-
-        // 关键修复：使用datas[33]作为AMS序号（原始协议要求）
+        // 序列号查询的 AMS 编号位于载荷 [33]，不能使用载荷首字节
         AMS_num = printer_data_long.datas[33];
         if (AMS_num >= AMS_COUNT || AMS_num >= 4) return;
-
-        payload = long_packge_version_serial_number_AMS08;
-        payload_len = sizeof(long_packge_version_serial_number_AMS08);
-
-        // 网页设置了自定义序列号时完整使用该值；否则使用芯片 ID 生成值，
-        // 并保留原有的 AMS 编号位，避免多个 AMS 响应完全重复
-        if (CUSTOM_SERIAL[0]) {
-            memcpy(payload + 1, CUSTOM_SERIAL, CUSTOM_SERIAL_LENGTH);
-        } else {
-            payload[4] = 0x30 + AMS_num; // SN第4字节
-        }
-        payload[34] = 0xA0 + AMS_num; // 标识字节
-        payload[65] = AMS_num; // 最后确认
+        refresh_serial_identities();
+        payload = serial_identity[AMS_num];
+        payload_len = sizeof(serial_identity[AMS_num]);
     } else if (printer_data_long.type == 0x103) // 版本查询
     {
         payload = long_packge_version_version_and_name_AMS08;
@@ -1932,12 +1831,12 @@ uint32_t BambuBus_last_valid_packet_age_ms() {
  * 判断总线最近是否有活动
  * @param quiet_ms 静默时间窗口（毫秒）
  * @return true 表示当前不满足总线静默条件
- * 检查队列、UART、接收回调、未超时残帧及最近收发；残帧静默超过 100ms 后不再阻止保存
+ * 检查请求预占、发送槽、队列、UART、接收回调及最近收发；残帧静默超过 100ms 后不再阻止保存
  */
 bool BambuBus_recent_activity(const uint32_t quiet_ms) {
     // 回调尚未退出时，即使 UART 已读空或帧还未发布也不能开始保存
     const uint32_t callback_seq = hal_atomic_load_u32(&rx_callback_seq);
-    if ((callback_seq & 1u) || !TX_IDLE) return true;
+    if ((callback_seq & 1u) || !TX_IDLE || bus_request_active) return true;
     const uint32_t last_rx = hal_atomic_load_u32(&last_bus_rx_ms);
     const uint32_t partial = hal_atomic_load_u32(&rx_partial);
     const bool received = hal_atomic_load_u32(&bus_rx_seen) != 0;
@@ -1977,15 +1876,21 @@ static const char *package_type_name(const int type) {
 
 /**
  * BambuBus 主处理循环
- * @return 0=无帧或忽略其它设备帧，1=处理了本机合法帧，2=错误帧，-1=合法通信超时
- * 每轮最多处理一帧，解析和回复完成后才释放队首；更新超时锁存，保存由独立后台入口执行
+ * @return 0=无帧、发送忙或忽略其它设备帧，1=处理了本机合法帧，2=错误帧，-1=合法通信超时
+ * 发送槽空闲时才预占并解析队首，每轮最多处理一帧；全部回复及日志完成后释放请求和缓冲
+ * 发送忙时不消费请求、不改变业务状态，仍更新通信超时；保存由独立后台入口执行
  */
 int BambuBus_run() {
     int stu = 0;
     const uint32_t now = millis();
+    if (!TX_IDLE || bus_request_active) {
+        update_bus_timeouts(now);
+        return bus_packet_timed_out ? -1 : 0;
+    }
     const int slot = completed_frame_peek();
 
     if (slot >= 0) {
+        bus_request_active = true;
         const int data_length = completed_len[slot];
         uint8_t *const frame = completed_buf[slot];
         cmd = get_package_type(frame, data_length);
@@ -2043,6 +1948,7 @@ int BambuBus_run() {
         }
         bus_tx_context_type = -1;
         completed_frame_release();
+        bus_request_active = false;
     }
 
     update_bus_timeouts(millis());

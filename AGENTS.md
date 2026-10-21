@@ -16,7 +16,9 @@
 1. `src/main.cpp`：`setup()` 初始化控制台、看门狗、日志、设置、GPIO、I2C、环境传感器、BMCU 和 Web
 2. `src/main.cpp`：`loop()` 持续执行 `BMCU_run()`、`env_sensor_run()`、`check_microswitch_status()`、`web_config_run()` 并喂狗
 3. 打印机报文：RS485 -> `RX_IRQ()` 组帧 -> 两槽接收队列 -> `BambuBus_run()` -> `get_package_type()` 集中校验 -> `send_for_*()` 回复 -> 释放队首；每轮最多处理一帧
+   解析前先预占空闲发送槽，发送与 TX 日志完成后才释放；发送忙时保留队首且不改变业务状态
 4. 运动控制：`BambuBus` 状态机 -> `get_filament_motion()` -> `BMCU_run()` / `BMCU_motion()` -> `motorCmd()` -> `Motor`
+   Cxx/Dxx 共用 `process_motion_state_machine()` 和 `set_motion_response()`；计时及运动状态按 AMS、通道保存，无通道请求只影响所属 AMS，打印头仍只选中一个全局通道
 5. 网页配置：HTTP handler -> `settings_*` -> 写入 Flash/NVS -> `BMCU_apply_io_config()` / `BMCU_apply_channel_modes()` 应用
 6. 耗材保存：`BambuBus_set_need_to_save()` 标记；`loop()` 在运动调度后调用 `BambuBus_save_run()`，确认总线静默后限频写入并回读校验，失败保留标记
 7. 环境数据：AHT20/BMP280 -> `env_sensor_run()` -> `env_sensor_get_aht20()` -> `send_for_Dxx()` 写入 AMS 长包的温度/湿度字段
@@ -51,6 +53,8 @@
 - 协议回复：`send_for_Cxx()`、`send_for_Dxx()`、`send_for_Fxx()`、`send_for_long_packge_*()`、`send_for_Set_filament*()`
 - AMS 温湿度：`send_for_Dxx()` 中 `Dxx_res[6..7]` 为 0.1℃ 小端温度，`Dxx_res[8]` 为湿度百分比；数据来自 `env_sensor_get_aht20()`
 - 协议状态：内部枚举 `filament_motion_internal` 与对外枚举 `filament_motion_state_set` 的转换在 `map_internal_to_api()`、`set_filament_motion()`
+- 运动反馈：`set_motion_response()` 统一生成当前通道、使用标志、长度、压力和在线位图；内部停车调用 `set_filament_motion()` 不解除打印机阻断
+- 注册身份：`refresh_serial_identities()` 为各 AMS 生成统一序列号载荷，注册包复制其中的身份块；`registration_identity_matches()` 在确认前检查身份，不匹配报文按 IGNORED 处理
 - 设置：`settings_snapshot()` 收集，`settings_restore_snapshot()` 回滚，`settings_save_to_flash()` 写入并回读校验
 - 网页接口：`handle_status()`、`handle_settings_get()`、`handle_settings_save()`、`handle_bus_save()`、`handle_pcf_save()`、`handle_manual_motor()`
 - I2C/传感器配置：`handle_pcf_save()` 保存 SDA/SCL；`handle_status()` 返回 `i2c` 设备在线状态和 `env` 温湿度读数
