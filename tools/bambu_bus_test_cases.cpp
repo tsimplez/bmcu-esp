@@ -64,6 +64,10 @@ static void test_parser() {
     f[9] = 4; seal(f); assert(get_package_type(f.data(), f.size()) == BambuBus_package_ERROR);
     f[9] = 255; seal(f); assert(get_package_type(f.data(), f.size()) == BambuBus_package_filament_motion_long);
     f[5] = 4; seal(f); assert(get_package_type(f.data(), f.size()) == BambuBus_package_ERROR);
+    for (uint8_t node = 0x80u; node <= 0x83u; ++node) {
+        f = short_request(5, 26); f[5] = 1; f[6] = node; seal(f);
+        assert(get_package_type(f.data(), f.size()) == BambuBus_package_IGNORED);
+    }
     f = short_request(0x55, 7); assert(get_package_type(f.data(), f.size()) == BambuBus_package_ETC);
     f[1] = 0xc0; seal(f); assert(get_package_type(f.data(), f.size()) == BambuBus_package_IGNORED);
     f = long_request(0x999, 985); assert(get_package_type(f.data(), f.size()) == BambuBus_package_ETC);
@@ -273,6 +277,17 @@ static void test_registration() {
     const auto count = uart_tx.size();
     clock_step = 1; feed(broadcast); assert(BambuBus_run() == 1); clock_step = 0;
     assert(uart_tx.size() == count); // 已注册 AMS 不重复发布
+    bool registered_before[4];
+    memcpy(registered_before, have_registered, sizeof(registered_before));
+    auto auth_probe = short_request(5, 26);
+    auth_probe[5] = 1;
+    for (uint8_t node = 0x80u; node <= 0x83u; ++node) {
+        auth_probe[6] = node; seal(auth_probe);
+        feed(auth_probe); assert(BambuBus_run() == 0);
+        assert(completed_frame_peek() < 0);
+        assert(uart_tx.size() == count);
+        assert(memcmp(have_registered, registered_before, sizeof(registered_before)) == 0);
+    }
     auto short_query = short_request(5, 25); short_query[5] = 1; seal(short_query);
     assert(get_package_type(short_query.data(), short_query.size()) == BambuBus_package_ERROR);
 }

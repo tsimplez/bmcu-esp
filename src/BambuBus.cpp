@@ -1104,6 +1104,9 @@ static package_type get_package_type(unsigned char *buf, const int length) {
                 if (buf[5] == 0x00u) return BambuBus_package_online_detect;
                 if (buf[5] == 0x01u) {
                     if (length < 26) return BambuBus_package_ERROR;
+                    // 打印机认证/能力探测使用 0x80..0x83 等槽位编号；
+                    // 这些帧不属于本机 AMS 注册请求，静默消费且不得伪造认证结果。
+                    if (buf[6] >= 4u) return BambuBus_package_IGNORED;
                     const auto type = addressed_package(BambuBus_package_online_detect, buf[6]);
                     if (type != BambuBus_package_online_detect) return type;
                     return registration_identity_matches(buf, length) ? type : BambuBus_package_IGNORED;
