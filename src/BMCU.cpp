@@ -874,7 +874,7 @@ void BMCU_run() {
 
 /**
  * 电机运动逻辑
- * 根据当前状态控制电机的运动
+ * 根据当前状态控制电机；打印机明确的 07/00 停止供料跳过普通进料结束延迟
  */
 void BMCU_motion() {
     if (printer_bus_fault) {
@@ -894,6 +894,11 @@ void BMCU_motion() {
     }
     auto &ch = channel_state[cur];
     auto &m = ch.motor;
+    if (BambuBus_filament_stop_requested(cur) && m.source == MOTOR_PRINTER && m.direction > 0) {
+        clear_feed_stop_delay(cur);
+        motorCmd(cur, 0);
+        return;
+    }
     // 打印机发起的定时退料不接受打印机后续状态干扰，必须由 Web 超时参数决定停止时间
     if (m.source == MOTOR_PRINTER && m.timed && m.direction < 0) {
         return;

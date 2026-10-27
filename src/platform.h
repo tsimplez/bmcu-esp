@@ -293,7 +293,7 @@ static void hal_watchdog_feed() { esp_task_wdt_reset(); }
  * ESP32 平台扩大接收缓冲后，以 8E1 格式初始化 RS485 串口
  */
 static void hal_bus_begin(const uint32_t baud) {
-    // 1228800 bps 下默认 256 字节 RX 缓冲太小，事件任务来不及取就会丢包
+    // 1250000 bps 下默认 256 字节 RX 缓冲太小，事件任务来不及取就会丢包
     BUS_SERIAL.setRxBufferSize(2048);
     BUS_SERIAL.begin(baud, SERIAL_8E1, BUS_RX, BUS_TX, false);
 }

@@ -100,6 +100,9 @@ extern void send_uart(const unsigned char *data, uint16_t length);
 
 filament_motion_state_set get_filament_motion(int num);
 
+// 只查询打印机明确的停止供料请求，由主循环执行停车
+bool BambuBus_filament_stop_requested(int num);
+
 String get_now_filament_name(int num);
 
 #ifdef BambuBus_use_forwarding_Serial

@@ -7,7 +7,7 @@
 //   FW_TARGET 是 OTA 清单里用来区分不同板子固件的键名
 // ============================================================
 
-#define FW_VERSION "26.10.18"
+#define FW_VERSION "26.10.25"
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
   #define FW_TARGET "esp32s3"

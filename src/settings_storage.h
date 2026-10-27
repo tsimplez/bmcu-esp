@@ -56,8 +56,9 @@ struct SettingsData {
     int32_t ams_version[4];          // 返回给打印机的 AMS 版本（A.B.C.D，每段 0..255）
 };
 
-// 当前开发格式使用 CRC32；格式不匹配时恢复默认值
-#define SETTINGS_MAGIC_NUMBER    0x53415429
+// 布局不变，用记录版本区分 AMS 默认版本迁移；旧记录仍需通过完整 CRC32 校验
+#define SETTINGS_MAGIC_NUMBER    0x5341542A
+#define SETTINGS_MAGIC_PREVIOUS  0x53415429
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**
@@ -72,10 +73,10 @@ inline int active_channel_count() { return AMS_COUNT * 4; }
 constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设置的回退值
 #define DEFAULT_MANUAL_PULSE_MS     300  // 手动点动默认时长（毫秒）
 #define DEFAULT_AUTO_LOAD_MS        1000 // 微动辅助进料默认时长（毫秒）
-#define DEFAULT_AMS_VERSION_MAJOR   90   // 默认 AMS 版本 A 段
+#define DEFAULT_AMS_VERSION_MAJOR   1    // 默认 AMS 版本 A 段
 #define DEFAULT_AMS_VERSION_MINOR   0    // 默认 AMS 版本 B 段
-#define DEFAULT_AMS_VERSION_PATCH   0    // 默认 AMS 版本 C 段
-#define DEFAULT_AMS_VERSION_BUILD   0    // 默认 AMS 版本 D 段
+#define DEFAULT_AMS_VERSION_PATCH   6    // 默认 AMS 版本 C 段
+#define DEFAULT_AMS_VERSION_BUILD   87   // 默认 AMS 版本 D 段
 
 // 点动/辅助进料时长上限（毫秒）：只需小于 30 秒
 #define MAX_PULSE_MS                30000
@@ -118,7 +119,7 @@ bool settings_custom_serial_valid(const char *serial);
 
 /**
  * 解析 A.B.C.D 格式的 AMS 版本
- * @param text 待解析文本，例如 "90.0.0.0"
+ * @param text 待解析文本，例如 "1.0.6.87"
  * @param out 输出四个版本分量
  * @return true 表示格式正确且每段均在 0..255
  * 仅在完整解析成功后写入 out，供网页保存前统一校验

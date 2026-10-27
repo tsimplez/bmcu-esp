@@ -53,7 +53,17 @@
 https://github.com/RobTillaart/PCF8575
 
 ### 其他
+#### 最新版本支持
+https://github.com/Le-Maxime/BMCU-U
+https://github.com/jarczakpawel/BMCU-Flasher
+
 欢迎补充内容
+
+## 打印机ams接口
+上左 B 上右 A
+下左 GND 下右 24V
+
+固件 485模块 也是需要A接A B接B
 
 ## 项目简介
 

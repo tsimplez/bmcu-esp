@@ -43,6 +43,12 @@ static void test_parser() {
         }
         auto f = long_request(rule.first, rule.second);
         assert(get_package_type(f.data(), f.size()) != BambuBus_package_ERROR);
+        const auto expected = get_package_type(f.data(), f.size());
+        f[1] = 4; seal(f);
+        assert(get_package_type(f.data(), f.size()) == expected);
+        f[1] = 0; seal(f);
+        assert(get_package_type(f.data(), f.size()) == BambuBus_package_IGNORED);
+        f[1] = 4;
         f[8] = 3; seal(f);
         assert(get_package_type(f.data(), f.size()) == BambuBus_package_IGNORED);
     }
@@ -187,9 +193,9 @@ static void test_save() {
 static void test_zero_time() {
     process_motion_state_machine(0, 0, 3, 0);
     process_motion_state_machine(0, 0, 7, 0x7f);
-    fake_ms = 4999; process_motion_state_machine(0, 0, 7, 0x7f);
+    fake_ms = 14999; process_motion_state_machine(0, 0, 7, 0x7f);
     assert(filament_ext[0][0].motion == filament_motion_internal::send_out);
-    fake_ms = 5000; process_motion_state_machine(0, 0, 7, 0x7f);
+    fake_ms = 15000; process_motion_state_machine(0, 0, 7, 0x7f);
     assert(filament_ext[0][0].motion == filament_motion_internal::on_use);
     reset_filament_meters(0);
     set_filament_motion(0, waiting);
@@ -201,13 +207,14 @@ static void test_zero_time() {
  * 从广播回复构造身份确认请求
  * @param advertisement 29 字节注册广播回复
  * @return 带真实 CRC 的 26 字节注册确认请求
- * 只复制 17 字节身份，不包含回复的预留字段或 CRC
+ * 确认前缀固定为 0A，只复制 16 字节身份，不包含回复的预留字段或 CRC
  */
 static std::vector<uint8_t> registration_query(const std::vector<uint8_t> &advertisement) {
     assert(advertisement.size() == 29);
     auto frame = short_request(5, 26);
     frame[5] = 1; frame[6] = advertisement[6];
-    memcpy(frame.data() + 7, advertisement.data() + 7, 17);
+    frame[7] = 0x0A;
+    memcpy(frame.data() + 8, advertisement.data() + 8, 16);
     seal(frame);
     return frame;
 }
@@ -244,6 +251,10 @@ static void test_registration() {
     clock_step = 1; feed(broadcast); assert(BambuBus_run() == 1); clock_step = 0;
     assert(uart_tx.size() == 4);
     const auto advertised = uart_tx;
+    for (const auto &frame : advertised) assert(frame[7] == 0x0C);
+    clock_step = 1; feed(broadcast); assert(BambuBus_run() == 1); clock_step = 0;
+    assert(uart_tx.size() == 8);
+    for (size_t i = 4; i < 8; ++i) assert(uart_tx[i][7] == 0x0A);
     for (uint8_t ams = 0; ams < 4; ++ams) {
         assert(advertised[ams][6] == ams && advertised[ams].size() == 29);
         assert(advertised[ams][3] == bus_crc8(advertised[ams].data(), 3));
@@ -255,6 +266,8 @@ static void test_registration() {
         auto query = registration_query(advertised[ams]);
         const auto count = uart_tx.size();
         const auto last_valid = last_bus_packet_ms;
+        auto first_prefix = query; first_prefix[7] = 0x0C; seal(first_prefix);
+        feed(first_prefix); assert(BambuBus_run() == 0 && uart_tx.size() == count);
         for (int offset = 7; offset < 24; ++offset) {
             auto bad = query; bad[offset] ^= 1; seal(bad);
             fake_ms += 1;
@@ -330,6 +343,7 @@ static void test_serial_identity() {
         assert(memcmp(custom.data() + 33, expected_identity, sizeof(expected_identity)) == 0);
         assert(memcmp(custom.data() + 33, F00_res[ams] + 8, 16) == 0);
         assert(!have_registered[ams]);
+        assert(online_detect_phase[ams] == 0 && F00_res[ams][7] == 0x0C);
         assert(custom[34] == 0xa0 + ams);
     }
     memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL)); // 恢复自动值时尾部旧字符不应干扰缓存判断
@@ -362,11 +376,11 @@ static std::vector<uint8_t> query_version(uint8_t ams) {
 /** 验证默认与自定义 AMS 版本按 D.C.B.A 上线，并保持型号和 AMS 编号不变 */
 static void test_ams_version() {
     AMS_COUNT = 4;
-    const int defaults[4] = {90, 0, 0, 0};
+    const int defaults[4] = {1, 0, 6, 87};
     memcpy(AMS_VERSION, defaults, sizeof(defaults));
     const auto factory = query_version(0);
     assert(factory.size() == 21);
-    assert(factory[0] == 0 && factory[1] == 0 && factory[2] == 0 && factory[3] == 90);
+    assert(factory[0] == 87 && factory[1] == 6 && factory[2] == 0 && factory[3] == 1);
     assert(memcmp(factory.data() + 4, "AMS08", 5) == 0 && factory[20] == 0);
 
     const int custom[4] = {90, 1, 2, 3};
@@ -439,6 +453,7 @@ static void request_motion(uint8_t command, uint8_t ams, uint8_t channel, uint8_
     assert(reply[2] == reply.size() && reply[4] == command);
     assert(reply[3] == bus_crc8(reply.data(), 3));
     assert(package_check_crc16(reply.data(), reply.size()));
+    if (command == 4) assert(reply[12] == channel);
 }
 
 /**
@@ -459,7 +474,7 @@ static void expect_motion_feedback(uint8_t ams, uint8_t channel, uint8_t use_fla
     if (channel == 0xFF) {
         float meters = 0;
         memcpy(&meters, reply.data() + offset + 4, sizeof(meters));
-        assert(meters == -1.0f);
+        assert(meters == 0.0f);
     }
 }
 
@@ -483,7 +498,7 @@ static void test_motion_sequences() {
             expect_motion_feedback(ams, ch, 2, 0x4700);
             send(ch, 9, 0xa5);
             assert(get_filament_motion(ams * 4 + ch) == waiting);
-            expect_motion_feedback(ams, ch, 4, 0x2b00);
+            expect_motion_feedback(ams, ch, 4, 0x4700);
             send(ch, 9, 0xa5); // 重复准备请求保持使用中压力
             expect_motion_feedback(ams, ch, 4, 0x2b00);
             send(ch, 7, 0x7f);
@@ -503,11 +518,15 @@ static void test_motion_sequences() {
             send(0xff, 3, 0);
             assert(filament_ext[ams][ch].motion == filament_motion_internal::pull_back);
             expect_motion_feedback(ams, ch, 2, 0x4700);
+            send(0xff, 1, 0); // 轮询不得中止正在进行的退料
+            assert(get_filament_motion(ams * 4 + ch) == need_pull_back);
+            expect_motion_feedback(ams, ch, 2, 0x4700);
+            set_filament_motion(ams * 4 + ch, waiting); // 模拟主循环退料完成
             send(0xff, 1, 0);
             assert(get_filament_motion(ams * 4 + ch) == waiting && get_now_filament_num() == 0xff);
-            expect_motion_feedback(ams, 0xff, 0, 0xffff);
+            expect_motion_feedback(ams, 0xff, 0, 0xff74);
             send(0xff, 0, 0);
-            expect_motion_feedback(ams, 0xff, 0, 0xffff);
+            expect_motion_feedback(ams, 0xff, 0, 0xff74);
         }
     }
     // PJARCZAK 注释中的原始 Cxx 请求，避免测试仅依赖自身构造器
@@ -531,19 +550,19 @@ static void test_motion_isolation() {
     for (uint8_t ams : {0, 2, 3}) for (uint8_t status : {3, 1, 0}) {
         fake_ms += 100;
         request_motion(ams % 2 ? 3 : 4, ams, 0xff, status, 0);
-        expect_motion_feedback(ams, 0xff, 0, 0xffff);
+        expect_motion_feedback(ams, 0xff, 0, 0xff74);
         assert(get_now_filament_num() == 6 && get_filament_motion(6) == need_send_out);
         assert(filament_ext[1][2].is_sendout_onuse_timing);
         assert(filament_ext[1][2].sendout_onuse_start_ticks == started && idle_notifications[6] == 0);
     }
-    fake_ms = started + 5000;
+    fake_ms = started + 15000;
     request_motion(3, 1, 2, 7, 0x7f);
     expect_motion_feedback(1, 2, 4, 0x2b00);
     request_motion(4, 0, 2, 3, 0); // 同号通道，真实切换到另一 AMS
     assert(get_now_filament_num() == 2 && get_filament_motion(6) == waiting);
     assert(!filament_ext[1][2].is_sendout_onuse_timing && idle_notifications[6] == 1);
     request_motion(3, 0, 2, 9, 0xa5);
-    expect_motion_feedback(0, 2, 4, 0x2b00);
+    expect_motion_feedback(0, 2, 4, 0x4700);
     assert(filament_ext[1][2].motion == filament_motion_internal::idle);
 
     // 非当前通道的探测时间不能改变所用通道的长度累计间隔
@@ -561,22 +580,22 @@ static void test_motion_isolation() {
     assert(idle_notifications[0] == notified && !filament_ext[0][0].last_time_valid);
     request_motion(3, 0, 0xff, 1, 0);
     assert(idle_notifications[0] == notified + 1);
-    expect_motion_feedback(0, 0xff, 0, 0xffff);
+    expect_motion_feedback(0, 0xff, 0, 0xff74);
 }
 
 /**
  * 验证混合请求的计时与长度上限
- * 在零起点和 32 位回绕点验证 5 秒边界，同毫秒 Cxx/Dxx 不重复累计时间
+ * 在零起点和 32 位回绕点验证 15 秒边界，同毫秒 Cxx/Dxx 不重复累计时间
  */
 static void test_motion_timing() {
     for (const uint32_t start : {0u, 0xfffffff0u}) {
         reset_motion_fixture(); fake_ms = start;
         request_motion(3, 0, 0, 3, 0);
         request_motion(4, 0, 0, 7, 0x7f);
-        fake_ms = start + 4999u; request_motion(3, 0, 0, 7, 0x7f);
+        fake_ms = start + 14999u; request_motion(3, 0, 0, 7, 0x7f);
         assert(get_filament_motion(0) == need_send_out);
-        expect_motion_feedback(0, 0, 2, 0x4700);
-        fake_ms = start + 5000u; request_motion(4, 0, 0, 7, 0x7f);
+        expect_motion_feedback(0, 0, 4, 0x2b00);
+        fake_ms = start + 15000u; request_motion(4, 0, 0, 7, 0x7f);
         assert(filament_ext[0][0].motion == filament_motion_internal::on_use);
         assert(!filament_ext[0][0].is_sendout_onuse_timing);
         expect_motion_feedback(0, 0, 4, 0x2b00);
@@ -685,6 +704,165 @@ static void test_tx_lifetime() {
     BUS_LOG_ENABLE = 0;
 }
 
+#include "bambu_u_motion_golden.h"
+
+/**
+ * 验证 BMCU-U 的打印准备、持续轮询和明确停料
+ * 全部 45 帧与独立生成的完整字节样例比较，再检查结束、跨 AMS、忙状态和恢复边界
+ */
+static void test_u_compatibility() {
+    BambuBus_init();
+    assert(bus_baud == 1250000);
+    AMS_COUNT = 4;
+    reset_motion_fixture();
+    bambubus_ams_address = BambuBus_address_AMS08;
+    for (auto &filament : data_save.filament[0]) filament.statu = online;
+    data_save.filament[0][0].meters = 1.0f;
+    package_num = 0;
+    for (unsigned i = 0; i < 45; ++i) {
+        request_motion(3, 0, 0, 9, 0x7f);
+        assert(memcmp(uart_tx.back().data(), U_PREPARE_GOLDEN[i], 44) == 0);
+        assert(filament_ext[0][0].prepare_reply_index == i + 1);
+    }
+    request_motion(3, 0, 0, 9, 0x7f);
+    expect_motion_feedback(0, 0, 4, 0x1e34);
+    assert(uart_tx.back()[15] == 0xfd && uart_tx.back()[16] == 0x0a);
+    assert(memcmp(uart_tx.back().data() + 17, Cxx_template + 17, 12) == 0);
+    assert(uart_tx.back()[29] == 0x57);
+    assert(memcmp(uart_tx.back().data() + 30, Cxx_template + 30, 8) == 0);
+    for (unsigned i = 0; i < 6; ++i) {
+        request_motion(i % 2 ? 4 : 3, 0, 0, 7, 0x7f);
+        expect_motion_feedback(0, 0, 4, i < 5 ? 0x1e34 : 0x2b00);
+    }
+    request_motion(3, 0, 0xff, 1, 0);
+    assert(get_now_filament_num() == 0 && filament_ext[0][0].motion == filament_motion_internal::on_use);
+    expect_motion_feedback(0, 0, 4, 0x2b00);
+
+    // 普通 C/D 包必须恢复模板；与协议报告中的整帧构造样例一致。
+    const uint8_t normal_c[] = {
+        0x3d,0xc0,0x2c,0xd9,0x03,0x00,0x00,0x04,0x00,0x00,0x00,0x80,0x3f,0x00,0x2b,0xff,
+        0xff,0x36,0x00,0x00,0x00,0xf8,0xff,0xf7,0xff,0x00,0x00,0x27,0x00,0x57,0xfb,0xf4,
+        0xf2,0xf6,0xb5,0xb7,0xb4,0xb1,0x00,0x00,0x00,0x00,0x46,0xda};
+    const uint8_t normal_d[] = {
+        0x3d,0xc8,0x3c,0x06,0x04,0x00,0xdc,0x00,0x14,0x0f,0x0f,0x0f,0x00,0x00,0x00,0x00,
+        0x00,0x00,0x00,0x04,0x00,0x00,0x00,0x80,0x3f,0x00,0x2b,0xff,0xff,0x36,0x00,0x00,
+        0x00,0xf9,0xff,0xf8,0xff,0x00,0x00,0x27,0x00,0x57,0xfb,0xf4,0xf2,0xf6,0xb5,0xb7,
+        0xb4,0xb1,0x00,0x00,0x00,0x00,0xff,0xff,0xff,0xff,0x00,0xeb};
+    package_num = 0;
+    request_motion(3, 0, 0, 7, 0x7f);
+    assert(memcmp(uart_tx.back().data(), normal_c, sizeof(normal_c)) == 0);
+    sensor_online = true;
+    request_motion(4, 0, 0, 7, 0x7f);
+    assert(memcmp(uart_tx.back().data(), normal_d, sizeof(normal_d)) == 0);
+    sensor_online = false;
+
+    // Dxx 和其他 AMS 的探测不得消耗本通道的 Cxx 回放位置。
+    request_motion(3, 0, 0, 9, 0x7f);
+    assert(filament_ext[0][0].prepare_reply_index == 1);
+    request_motion(4, 0, 0, 9, 0x7f);
+    expect_motion_feedback(0, 0, 4, 0x1e34);
+    request_motion(3, 1, 0xff, 1, 0);
+    assert(filament_ext[0][0].prepare_reply_index == 1);
+    auto prepare = short_request(3, 12);
+    prepare[6] = 9; prepare[8] = 0x7f; seal(prepare);
+    auto bad = prepare; bad.back() ^= 1;
+    feed(bad); assert(BambuBus_run() == 2);
+    assert(filament_ext[0][0].prepare_reply_index == 1);
+    TX_IDLE = false; feed(prepare); assert(BambuBus_run() == 0);
+    assert(filament_ext[0][0].prepare_reply_index == 1 && completed_frame_peek() >= 0);
+    TX_IDLE = true; assert(BambuBus_run() == 1);
+    assert(filament_ext[0][0].prepare_reply_index == 2);
+    request_motion(3, 0, 0, 9, 0xa5);
+    assert(filament_ext[0][0].prepare_reply_index == 0);
+    request_motion(3, 0, 0, 9, 0x7f);
+    expect_motion_feedback(0, 0, 4, 0x403d);
+    request_motion(3, 2, 3, 3, 0); // 真正换 AMS，旧历史必须释放
+    request_motion(3, 2, 3, 9, 0x7f);
+    assert(filament_ext[0][0].prepare_reply_index == 0 && filament_ext[2][3].prepare_reply_index == 1);
+    expect_motion_feedback(2, 3, 4, 0x403d);
+    request_motion(4, 2, 3, 7, 0);
+    assert(BambuBus_filament_stop_requested(11));
+    expect_motion_feedback(2, 3, 4, 0x1e34);
+
+    // 送出中的停止请求也必须有效，不能继续等待 15 秒；非当前通道不影响供料。
+    for (const uint8_t command : {3, 4}) {
+        reset_motion_fixture();
+        request_motion(command, 0, 1, 3, 0);
+        request_motion(command, 0, 1, 7, 0x7f);
+        request_motion(command, 0, 2, 7, 0);
+        assert(get_filament_motion(1) == need_send_out && !BambuBus_filament_stop_requested(1));
+        request_motion(command, 0, 1, 7, 0);
+        assert(BambuBus_filament_stop_requested(1) && get_filament_motion(1) == waiting);
+        assert(!filament_ext[0][1].is_sendout_onuse_timing);
+        expect_motion_feedback(0, 1, 4, 0x2b00);
+    }
+    assert(!BambuBus_filament_stop_requested(-1) && !BambuBus_filament_stop_requested(16));
+}
+
+/**
+ * 验证两种长帧 flags 都经 UART 收包、命令处理和应答
+ * 检查全部已支持长命令的地址交换、双字节序号回显、CRC 与应答长度
+ */
+static void test_long_flags() {
+    for (uint8_t flag : {4, 5}) {
+        for (auto rule : {std::pair<int, int>{0x103, 1}, {0x402, 34}, {0x211, 2}, {0x218, 34}, {0x21a, 1}}) {
+            auto frame = long_request(rule.first, rule.second);
+            frame[1] = flag; frame[2] = 0x34; frame[3] = 0x12;
+            frame[9] = 0x56; frame[10] = 0x78; seal(frame);
+            const auto previous = uart_tx.size();
+            feed(frame); assert(BambuBus_run() == 1 && uart_tx.size() == previous + 1);
+            const auto &reply = uart_tx.back();
+            assert(reply[1] == 0 && reply[2] == 0x34 && reply[3] == 0x12);
+            assert(reply[7] == 0x56 && reply[8] == 0x78 && reply[9] == 0 && reply[10] == 7);
+            assert(reply[11] == frame[11] && reply[12] == frame[12]);
+            assert((reply[4] | (reply[5] << 8)) == reply.size());
+            assert(reply[6] == bus_crc8(reply.data(), 6) && package_check_crc16(reply.data(), reply.size()));
+        }
+    }
+}
+
+/**
+ * 验证真实 BMCU_motion 对停止请求的处理
+ * 请求先通过完整 BambuBus 收发，再执行电机主循环；检查立即停止、取消延迟及来源隔离
+ */
+static void test_motor_stop() {
+    for (uint8_t command : {3, 4}) {
+        reset_motion_fixture();
+        channel_state[0] = {};
+        motor_commands = 0;
+        data_save.filament[0][0].statu = online;
+        request_motion(command, 0, 0, 3, 0);
+        BMCU_motion();
+        assert(channel_state[0].motor.direction == 1 && motor_commands == 1);
+        request_motion(command, 0, 0, 7, 0); // 送出时直接停止，不等待计时
+        assert(motor_commands == 1); // 收发路径只修改状态
+        BMCU_motion();
+        assert(motors[0].stopped && motor_commands == 2);
+
+        request_motion(command, 0, 0, 3, 0); BMCU_motion();
+        request_motion(command, 0, 0, 9, 0xa5); BMCU_motion();
+        assert(channel_state[0].feed_stop_pending && !motors[0].stopped);
+        const auto deadline = channel_state[0].feed_stop_deadline;
+        request_motion(command, 0, 0, 7, 0);
+        assert(fake_ms < deadline);
+        BMCU_motion();
+        assert(motors[0].stopped && !channel_state[0].feed_stop_pending);
+        assert(channel_state[0].feed_stop_deadline == 0);
+
+        // 手动/辅助点动以及已经开始的定时退料保留原有互锁和截止行为。
+        for (MotorSource source : {MOTOR_MANUAL, MOTOR_AUTOLOAD}) {
+            channel_state[0].motor = {source, 1, true};
+            const auto before = motor_commands;
+            BMCU_motion();
+            assert(motor_commands == before && channel_state[0].motor.source == source);
+        }
+        channel_state[0].motor = {MOTOR_PRINTER, -1, true};
+        const auto before = motor_commands;
+        BMCU_motion();
+        assert(motor_commands == before && channel_state[0].motor.direction == -1);
+    }
+}
+
 /**
  * 执行指定回归场景
  * @param argc 参数数量，必须包含一个场景名
@@ -713,6 +891,9 @@ int main(int argc, char **argv) {
     else if (name == "motion_timing") test_motion_timing();
     else if (name == "tx_backpressure") test_tx_backpressure();
     else if (name == "tx_lifetime") test_tx_lifetime();
+    else if (name == "u_compatibility") test_u_compatibility();
+    else if (name == "long_flags") test_long_flags();
+    else if (name == "motor_stop") test_motor_stop();
     else return 2;
     std::printf("PASS %s\n", name.c_str());
 }

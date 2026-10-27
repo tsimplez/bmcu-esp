@@ -99,7 +99,7 @@ bool settings_custom_serial_valid(const char *serial) {
 
 /**
  * 解析 A.B.C.D 格式的 AMS 版本
- * @param text 待解析文本，例如 "90.0.0.0"
+ * @param text 待解析文本，例如 "1.0.6.87"
  * @param out 输出四个版本分量
  * @return true 表示格式正确且每段均在 0..255
  * 必须正好四段十进制数字；仅在完整解析成功后写入 out
@@ -241,15 +241,33 @@ static void apply_settings_values(const SettingsData& data) {
 
 /**
  * 初始化设置存储
- * 读取设置并校验魔数与 CRC32；无效或空片时恢复默认值并重新写入
+ * 读取设置并校验魔数与 CRC32；上一版记录仅迁移旧默认 AMS 版本，保留自定义参数
+ * 迁移仍执行写入及回读校验，失败恢复旧运行值；无效或空片时恢复默认值并重新写入
  */
 void settings_storage_init() {
     SettingsData data{};
 
     read_settings_from_flash(&data);
 
-    if (data.magic == SETTINGS_MAGIC_NUMBER && calculate_crc32(&data) == data.checksum) {
+    if ((data.magic == SETTINGS_MAGIC_NUMBER || data.magic == SETTINGS_MAGIC_PREVIOUS) &&
+        calculate_crc32(&data) == data.checksum) {
         apply_settings_values(data);
+        if (data.magic == SETTINGS_MAGIC_PREVIOUS) {
+            if (data.ams_version[0] == 90 && data.ams_version[1] == 0 &&
+                data.ams_version[2] == 0 && data.ams_version[3] == 0) {
+                AMS_VERSION[0] = DEFAULT_AMS_VERSION_MAJOR;
+                AMS_VERSION[1] = DEFAULT_AMS_VERSION_MINOR;
+                AMS_VERSION[2] = DEFAULT_AMS_VERSION_PATCH;
+                AMS_VERSION[3] = DEFAULT_AMS_VERSION_BUILD;
+            }
+            if (settings_save_to_flash()) {
+                LOG_MAIN("[settings] 旧设置已迁移，AMS 版本=%d.%d.%d.%d", AMS_VERSION[0],
+                         AMS_VERSION[1], AMS_VERSION[2], AMS_VERSION[3]);
+            } else {
+                apply_settings_values(data);
+                LOG_MAIN("[settings] 设置迁移写入或回读失败，已恢复旧运行值");
+            }
+        }
         return;
     }
 
@@ -356,12 +374,13 @@ void settings_reset_to_defaults() {
 /**
  * 检查存储中的设置是否有效
  * @return true 表示魔数和 CRC32 均有效
- * 读取持久化记录并校验完整性
+ * 当前记录和布局相同的上一版记录均校验完整 CRC32，上一版在加载时迁移
  */
 bool settings_is_valid() {
     SettingsData data{};
     read_settings_from_flash(&data);
-    return data.magic == SETTINGS_MAGIC_NUMBER && calculate_crc32(&data) == data.checksum;
+    return (data.magic == SETTINGS_MAGIC_NUMBER || data.magic == SETTINGS_MAGIC_PREVIOUS) &&
+           calculate_crc32(&data) == data.checksum;
 }
 
 /**

@@ -252,10 +252,10 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="hint">完整序列号固定为 0EA + AMS 编号 + 12 位十六进制后缀；自定义只修改后缀，留空时后缀取设备 ID</div>
     <div class="row">
       <span style="color:var(--dim);width:90px">AMS 版本</span>
-      <input id="p-ams-version" class="grow" maxlength="15" pattern="[0-9]+(\.[0-9]+){3}" placeholder="90.0.0.0" inputmode="decimal" autocomplete="off">
+      <input id="p-ams-version" class="grow" maxlength="15" pattern="[0-9]+(\.[0-9]+){3}" placeholder="1.0.6.87" inputmode="decimal" autocomplete="off">
       <button id="save-ams-version" onclick="saveAmsVersion()">保存</button>
     </div>
-    <div class="hint">打印机读取的 AMS 固件版本，格式为 A.B.C.D，每段范围 0..255；默认 90.0.0.0</div>
+    <div class="hint">打印机读取的 AMS 固件版本，格式为 A.B.C.D，每段范围 0..255；默认 1.0.6.87</div>
   </div>
   <div class="card">
     <h2>设备操作</h2>
@@ -1129,7 +1129,7 @@ const loadPara=()=>{
     IO_DRAFT=JSON.parse(JSON.stringify(d));IO_DIRTY=false
     $('p-serial').value=d.serial||''
     $('p-serial').dataset.saved=$('p-serial').value
-    $('p-ams-version').value=d.ams_version||'90.0.0.0'
+    $('p-ams-version').value=d.ams_version||'1.0.6.87'
     $('p-ams-version').dataset.saved=$('p-ams-version').value
     $('u-otaurl').value=d.otaurl||''
     $('u-n1').classList.toggle('on',d.otanotify==1)
@@ -1237,7 +1237,7 @@ const saveAmsVersion=async()=>{
     el.value=value
     el.dataset.saved=value
     toast('AMS 版本已保存')
-  }else el.value=el.dataset.saved||'90.0.0.0'
+  }else el.value=el.dataset.saved||'1.0.6.87'
   el.disabled=false
 }
 /**
@@ -1881,3 +1881,4 @@ setInterval(()=>pollLogChannel(1-activeLog),2000)
 </script>
 </body>
 </html>
+ 

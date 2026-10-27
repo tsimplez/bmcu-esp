@@ -25,13 +25,15 @@ static constexpr int LOW = 0, OUTPUT = 1;
 static constexpr int HAL_REGION_FILAMENT = 0;
 static constexpr int CUSTOM_SERIAL_LENGTH = 12;
 static char CUSTOM_SERIAL[CUSTOM_SERIAL_LENGTH + 1] = {};
-static int AMS_VERSION[4] = {90, 0, 0, 0};
+static int AMS_VERSION[4] = {1, 0, 6, 87};
 static std::deque<uint8_t> uart_rx;
 static std::vector<std::vector<uint8_t>> uart_tx;
 static std::vector<uint8_t> flash_data;
 static bool fail_write = false, corrupt_read = false;
 static int write_count = 0, read_count = 0;
 static unsigned idle_notifications[16] = {};
+static uint32_t bus_baud = 0;
+static bool sensor_online = false;
 static void (*during_tx)() = nullptr;
 static void (*during_read)() = nullptr;
 static void (*during_available)() = nullptr;
@@ -72,8 +74,8 @@ static void hal_bus_write(const uint8_t *data, uint16_t length) {
     if (during_tx) during_tx();
     uart_tx.emplace_back(data, data + length);
 }
-/** 主机测试不初始化硬件 */
-static void hal_bus_begin(uint32_t) {}
+/** 记录协议启动要求的波特率，不初始化硬件 */
+static void hal_bus_begin(uint32_t baud) { bus_baud = baud; }
 #define BUS_IRQ_SETUP() do {} while (0)
 /** 返回稳定的模拟设备 ID */
 static uint64_t hal_get_device_id() { return 0x123456789abcdef0ull; }
@@ -87,8 +89,13 @@ static void pinMode(int, int) {}
  * 验证内部停车不会意外解除打印机阻断
  */
 static void BMCU_printer_idle(int channel) { assert(channel >= 0 && channel < 16); ++idle_notifications[channel]; }
-/** 默认传感器离线，验证现有温湿度回退值 */
-static bool env_sensor_get_aht20(float *, float *) { return false; }
+/** 默认传感器离线；黄金报文场景提供固定 22℃、20% 湿度 */
+static bool env_sensor_get_aht20(float *temperature, float *humidity) {
+    if (!sensor_online) return false;
+    *temperature = 22.0f;
+    *humidity = 20.0f;
+    return true;
+}
 /** 模拟持久化写入，可注入失败 */
 static bool hal_storage_write(int, const void *data, uint32_t length) {
     ++write_count;
