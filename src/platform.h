@@ -2,6 +2,29 @@
 #include <Arduino.h>
 #include <Wire.h>
 
+/**
+ * 内存
+ * airm2m_core_esp32c3
+ * 400 KB 主 SRAM
+ *
+ * 16 KB 用于缓存
+ * 384 KB 由指令和数据共享
+ *
+ * 8 KB RTC SRAM
+ */
+
+// 日志常驻内存按平台分配；C3 需要为 WiFi、HTTP 和 TLS 握手预留堆空间
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+constexpr uint32_t HAL_LOG_MAIN_CAPACITY = 16384;
+constexpr uint32_t HAL_LOG_BUS_CAPACITY = 32768;
+#elif defined(ARDUINO_ARCH_ESP32)
+constexpr uint32_t HAL_LOG_MAIN_CAPACITY = 65536;
+constexpr uint32_t HAL_LOG_BUS_CAPACITY = 65536;
+#else
+constexpr uint32_t HAL_LOG_MAIN_CAPACITY = 8192;
+constexpr uint32_t HAL_LOG_BUS_CAPACITY = 8192;
+#endif
+
 #if defined(ARDUINO_ARCH_RP2040)
 #include <hardware/sync.h>
 #endif
@@ -12,7 +35,7 @@
  * @return 读取到的值
  * RP2040 在当前核心的临界区读取；ESP32 使用 acquire 原子读取，供接收回调与主循环交接数据
  */
-static inline uint32_t hal_atomic_load_u32(const volatile uint32_t *value) {
+static uint32_t hal_atomic_load_u32(const volatile uint32_t *value) {
 #if defined(ARDUINO_ARCH_RP2040)
     const uint32_t state = save_and_disable_interrupts();
     const uint32_t result = *value;
@@ -30,7 +53,7 @@ static inline uint32_t hal_atomic_load_u32(const volatile uint32_t *value) {
  * @return 无返回值
  * RP2040 在当前核心的临界区写入；ESP32 使用 release 原子写入，保证此前写入的帧内容先可见
  */
-static inline void hal_atomic_store_u32(volatile uint32_t *value, uint32_t next) {
+static void hal_atomic_store_u32(volatile uint32_t *value, uint32_t next) {
 #if defined(ARDUINO_ARCH_RP2040)
     const uint32_t state = save_and_disable_interrupts();
     *value = next;
@@ -46,7 +69,7 @@ static inline void hal_atomic_store_u32(volatile uint32_t *value, uint32_t next)
  * @return 无返回值
  * 保护接收回调与主循环共用的错误计数；RP2040 的调用者须位于同一核心
  */
-static inline void hal_atomic_increment_u32(volatile uint32_t *value) {
+static void hal_atomic_increment_u32(volatile uint32_t *value) {
 #if defined(ARDUINO_ARCH_RP2040)
     const uint32_t state = save_and_disable_interrupts();
     ++*value;
@@ -203,7 +226,7 @@ bool hal_storage_write(int region, const void* buf, uint32_t len);
  * 初始化前的 GPIO 预处理
  * ESP32-C3 经典款上释放内部 USB Serial/JTAG 对 GPIO18/19 的占用，其他平台为空操作
  */
-static inline void hal_prepare_gpio() {
+static void hal_prepare_gpio() {
     // ESP32-C3  USB-TTL 转串口芯片
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && C3_BOARD_USB_TTL && !ARDUINO_USB_CDC_ON_BOOT
     // 禁用内部 USB Serial/JTAG 外设对 USB 物理引脚的占用

@@ -275,10 +275,21 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="kv"><span>目标平台</span><b id="u-target">-</b></div>
     <div class="kv"><span>编译时间</span><b id="u-build">-</b></div>
     <div class="row" style="margin-top:10px">
-      <input id="u-otaurl" class="grow" placeholder="更新源目录，例如 https://tsimplez.github.io/bmcu-esp" autocomplete="off">
-      <button onclick="saveOtaSrc()">保存地址</button>
+      <select id="u-channel" onchange="selectOtaChannel()" aria-label="更新渠道">
+        <option value="auto">自动切换（推荐）</option>
+        <option value="github">GitHub 直连</option>
+        <option value="ghfast">ghfast.top</option>
+        <option value="ghproxy">gh-proxy.com</option>
+        <option value="llkk">gh.llkk.cc</option>
+        <option value="custom">自定义地址</option>
+      </select>
     </div>
-    <div class="hint">目录里要有 manifest.json（记录版本/说明/固件文件名）格式和服务器配置见 tools/OTA_SERVER.md</div>
+    <div class="row">
+      <input id="u-otaurl" class="grow" placeholder="更新源目录，例如 https://tsimplez.github.io/bmcu-esp" autocomplete="off">
+      <button onclick="saveOtaSrc()">保存渠道 / 地址</button>
+    </div>
+    <div class="hint">自动模式依次尝试 Pages、GitHub 直连和三个代理；手动选择则固定渠道。更改后请先保存，再检查更新。</div>
+    <div class="hint" id="u-source">尚未检查更新</div>
     <div class="row" style="margin-top:12px">
       <span style="color:var(--dim);width:90px">进页面提示</span>
       <button id="u-n1" onclick="setNotify(1)">提示更新：开</button>
@@ -430,6 +441,8 @@ let mdnsLoaded=false
 let S;
 // 本次页面加载是否已自动检查过 OTA，避免每轮状态刷新都请求服务器
 let otaAutoTried;
+// 渠道检查进行中时不重复提交，避免设备排队处理多个检查请求
+let otaChecking=false;
 // 最近一次检查到的可用更新信息；null 表示没有可更新版本
 let gOtaLatest;
 /**
@@ -1111,7 +1124,7 @@ const saveIoConfig=async()=>{
 /**
  * 读取并渲染完整参数配置
  * @return {Promise<void>} 配置加载完成的 Promise
- * 请求 /api/settings，填充设置项、通道表、BambuBus、PCF8575 和电机控制界面
+ * 请求 /api/settings，填充设置项、更新渠道、通道表、BambuBus 和 PCF8575 界面
  */
 const loadPara=()=>{
   return fetch('/api/settings').then(r=>r.json()).then((d)=>{
@@ -1132,6 +1145,7 @@ const loadPara=()=>{
     $('p-ams-version').value=d.ams_version||'1.0.6.87'
     $('p-ams-version').dataset.saved=$('p-ams-version').value
     $('u-otaurl').value=d.otaurl||''
+    syncOtaChannel()
     $('u-n1').classList.toggle('on',d.otanotify==1)
     $('u-n0').classList.toggle('on',d.otanotify==0)
     renderIoConfig(d)
@@ -1280,11 +1294,12 @@ const gotoUpdate=()=>{showTab('update');
 /**
  * 根据 OTA 检查结果刷新更新界面
  * @param {Object} d OTA 检查结果
- * 保存可更新版本、控制在线更新按钮，并显示版本号、大小和更新说明
+ * 保存可更新版本、控制在线更新按钮，并显示版本号、大小、说明和实际渠道
  */
 const setOtaUi=(d)=>{
   gOtaLatest = d.has_update ? d : null
   $('btn-otapull').disabled = !d.has_update || !S.maintenance
+  $('u-source').textContent='本次检查渠道：'+(d.source||'当前更新源')
   if(d.has_update){
     $('u-stat').innerHTML='发现新版本 <b>'+esc(d.latest)+'</b>，当前 '+esc(d.current)+
       (d.size?('（'+Math.round(d.size/1024)+' KB）'):'')+(d.notes?('<br>'+esc(d.notes)):'')
@@ -1299,19 +1314,27 @@ const setOtaUi=(d)=>{
 /**
  * 检查服务器是否存在新固件
  * @param {boolean} force 是否显示检查过程和失败提示
- * 调用 /api/ota/check，静默模式用于页面自动检查，手动模式会显示结果
+ * 调用 /api/ota/check，避免重复请求；失败清空旧更新结果，手动模式显示原因
  */
 const checkUpdate=(force)=>{
+  if(otaChecking) return
+  otaChecking=true
   if(force) $('u-stat').textContent='正在检查更新…'
   fetch('/api/ota/check'+(force?'?force=1':''),{method:'POST'}).then(r=>r.json()).then((d)=>{
     if(d.skipped){ if(force) $('u-stat').textContent='已在设置里关闭自动提示（仍可手动检查）'; return; }
     if(!d.ok){
+      gOtaLatest=null; $('btn-otapull').disabled=true; hideUpbar()
+      $('u-source').textContent='未找到可用渠道：'+d.msg
       if(force){ $('u-stat').textContent='检查失败：'+d.msg; toast('检查失败：'+d.msg,8000); }
       return
     }
     setOtaUi(d)
     if(force && d.has_update) toast('发现新版本 '+d.latest+'，可以点"在线更新"',8000)
-  }).catch(()=>{ if(force){ $('u-stat').textContent='检查失败：请求超时'; toast('检查失败：请求超时',8000); } })
+  }).catch(()=>{
+    gOtaLatest=null; $('btn-otapull').disabled=true; hideUpbar()
+    $('u-source').textContent='无法连接设备，未取得渠道结果'
+    if(force){ $('u-stat').textContent='检查失败：设备请求中断'; toast('检查失败：设备请求中断',8000); }
+  }).finally(()=>{otaChecking=false})
 }
 
 /**
@@ -1379,12 +1402,45 @@ const uploadFw=()=>{
   xhr.send(fd)
 }
 
+// 使用现有 otaurl 保存选择，无需改变 Flash 设置结构；默认 Pages 地址代表自动模式
+const OTA_CHANNEL_URLS={
+  auto:'https://tsimplez.github.io/bmcu-esp',
+  github:'https://github.com/tsimplez/bmcu-esp/releases/latest/download',
+  ghfast:'https://ghfast.top/https://github.com/tsimplez/bmcu-esp/releases/latest/download',
+  ghproxy:'https://gh-proxy.com/https://github.com/tsimplez/bmcu-esp/releases/latest/download',
+  llkk:'https://gh.llkk.cc/https://github.com/tsimplez/bmcu-esp/releases/latest/download'
+}
 /**
- * 保存 OTA 更新源目录 URL
- * @return {Promise<boolean>} 保存是否成功
- * 去除首尾空白并编码后写入 otaurl 设置
+ * 根据已保存地址同步更新渠道
+ * 识别内置目录，其他地址按自定义源保留
  */
-const saveOtaSrc=()=>postSettings('otaurl='+encodeURIComponent($('u-otaurl').value.trim()),false)
+const syncOtaChannel=()=>{
+  const url=$('u-otaurl').value.trim().replace(/\/+$/,'')
+  $('u-channel').value=Object.keys(OTA_CHANNEL_URLS).find(k=>OTA_CHANNEL_URLS[k]===url)||'custom'
+  $('u-otaurl').readOnly=$('u-channel').value!=='custom'
+}
+/**
+ * 将所选渠道填入地址框
+ * 只更新草稿，点击保存后才写入设备设置
+ */
+const selectOtaChannel=()=>{
+  const channel=$('u-channel').value
+  $('u-otaurl').readOnly=channel!=='custom'
+  if(channel!=='custom') $('u-otaurl').value=OTA_CHANNEL_URLS[channel]
+}
+/**
+ * 保存 OTA 渠道或自定义目录
+ * @return {Promise<boolean>} 保存是否成功
+ * 写入现有 otaurl 设置，成功后清空旧检查结果并同步选择器
+ */
+const saveOtaSrc=async()=>{
+  if(!await postSettings('otaurl='+encodeURIComponent($('u-otaurl').value.trim()),true)) return false
+  syncOtaChannel();gOtaLatest=null;hideUpbar();$('btn-otapull').disabled=true
+  $('u-source').textContent='渠道已保存，请检查更新'
+  $('u-stat').textContent='尚未检查'
+  toast('更新渠道已保存')
+  return true
+}
 /**
  * 设置是否自动提示固件更新
  * @param {number} v 1 开启，0 关闭
@@ -1881,4 +1937,5 @@ setInterval(()=>pollLogChannel(1-activeLog),2000)
 </script>
 </body>
 </html>
+ 
  

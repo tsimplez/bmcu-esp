@@ -548,8 +548,32 @@ static void motor_tick() {
 // 随机数生成器（用于模拟传感器数据） 固定种子的随机数生成器，保证每次上电的模拟距离抖动可复现
 std::mt19937 generator(12345);
 
-// 模拟距离抖动的正态分布，均值 0、标准差约 0.00083
-static std::normal_distribution<> distribution(0.0f, 0.00083f);
+// 正态采样一次生成两个值，缓存另一个供下一轮使用
+static bool as5600_jitter_cached = false;
+static float as5600_jitter_next = 0.0f;
+
+/**
+ * 生成模拟距离使用的正态抖动
+ * @return 均值为 0、标准差为 0.00083 的单精度采样值
+ * 直接将 MT19937 高 24 位转为均匀数，再用极坐标法生成正态分布；
+ * 避免标准分布内部的 long double/logl 路径在部分 RISC-V 工具链中递归溢出
+ */
+static float as5600_distance_jitter() {
+    if (as5600_jitter_cached) {
+        as5600_jitter_cached = false;
+        return as5600_jitter_next * 0.00083f;
+    }
+    float x, y, radius;
+    do {
+        x = static_cast<float>(generator() >> 8) * (1.0f / 8388608.0f) - 1.0f;
+        y = static_cast<float>(generator() >> 8) * (1.0f / 8388608.0f) - 1.0f;
+        radius = x * x + y * y;
+    } while (radius >= 1.0f || radius == 0.0f);
+    const float factor = sqrtf(-2.0f * logf(radius) / radius);
+    as5600_jitter_next = x * factor;
+    as5600_jitter_cached = true;
+    return y * factor * 0.00083f;
+}
 
 // 上一次生成模拟距离的 millis() 时间，用于按时间增量累计距离
 static uint32_t as5600_distance_last_ms = 0;
@@ -565,11 +589,13 @@ float as5600_speed[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // 速度值
 
 /**
  * 初始化AS5600传感器（模拟版）
- * 初始化模拟的AS5600角度传感器
+ * 重置模拟角度、距离计时、随机种子和正态采样缓存，保证重新初始化可复现
  */
 void AS5600_init() {
     // 固定种子便于回放；该数据仍是模拟反馈，不代表真实传感器测量值
     generator.seed(12345u);
+    as5600_jitter_cached = false;
+    as5600_jitter_next = 0.0f;
     randomSeed(12345u);
     as5600_distance_last_ms = millis();
 
@@ -586,8 +612,8 @@ void AS5600_init() {
 
 /**
  * 获取模拟的AS5600距离数据
- * @return 模拟的距离值
- * 生成模拟的距离数据，用于测试
+ * @return 按时间增量计算的模拟距离；同一毫秒重复调用返回 0
+ * 使用单精度正态抖动并限制距离范围，最长只累计 100 毫秒
  */
 float AS5600_get_distance_E() {
     // 以时间增量生成模拟送料距离，避免主循环频率改变累计速度
@@ -599,7 +625,7 @@ float AS5600_get_distance_E() {
 
     const float scale = static_cast<float>(dt_ms) / 10.0f;
     const float nominal = 0.0055f * scale;
-    const float jitter = static_cast<float>(distribution(generator)) * sqrtf(scale);
+    const float jitter = as5600_distance_jitter() * sqrtf(scale);
     const float lower = 0.003f * scale;
     const float upper = 0.008f * scale;
     const float distance = nominal + jitter;

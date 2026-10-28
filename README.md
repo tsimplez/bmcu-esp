@@ -267,3 +267,5 @@ pio run -t clean             # 清理
 似乎和 AS5600_get_distance_E _filament meters 长度有关系
 
 好像要是AMS_COUNT要是4个就得输入4个序列号了吧，不然都是一样的
+
+这样日志太少了，把web的日志逻辑修改一下吧。在web中创建两个临时空间用来保留日志

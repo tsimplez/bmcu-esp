@@ -11,16 +11,12 @@
 
 #if defined(ARDUINO_ARCH_ESP32)
 
-#define LOG_SIZE_MAIN 65536
-#define LOG_SIZE_BUS  65536
 static portMUX_TYPE log_mux = portMUX_INITIALIZER_UNLOCKED;
 #define LOG_LOCK()   portENTER_CRITICAL(&log_mux)
 #define LOG_UNLOCK() portEXIT_CRITICAL(&log_mux)
 
 #else
 
-#define LOG_SIZE_MAIN 8192
-#define LOG_SIZE_BUS  8192
 #include <hardware/sync.h>
 #define LOG_LOCK()   uint32_t _log_irq = save_and_disable_interrupts()
 #define LOG_UNLOCK() restore_interrupts(_log_irq)
@@ -37,10 +33,10 @@ namespace {
     };
 }
 
-// 主板日志环形缓冲：记录业务日志，容量由 LOG_SIZE_MAIN 决定
-static LogRing<LOG_SIZE_MAIN> ring_main;
-// 总线日志环形缓冲：记录 BambuBus 原始收发报文，容量由 LOG_SIZE_BUS 决定
-static LogRing<LOG_SIZE_BUS>  ring_bus;
+// 主板日志环形缓冲：记录业务日志，容量由平台内存预算决定
+static LogRing<HAL_LOG_MAIN_CAPACITY> ring_main;
+// 总线日志环形缓冲：记录 BambuBus 原始收发报文，容量由平台内存预算决定
+static LogRing<HAL_LOG_BUS_CAPACITY>  ring_bus;
 
 namespace {
     struct RingRef {
@@ -60,15 +56,15 @@ namespace {
  * @param ch 日志通道
  * @param r 输出的环形缓冲引用
  * @return 通道是否有效
- * 把主日志或总线日志的缓冲区、容量和游标指针封装到 RingRef 中
+ * 把主日志或总线日志的缓冲区、平台容量和游标指针封装到 RingRef 中
  */
 static bool ring_ref(const int ch, RingRef &r) {
     if (ch == LOG_CH_MAIN) {
-        r = {.buf = ring_main.buf, .cap = LOG_SIZE_MAIN, .total = &ring_main.total, .floor = &ring_main.floor};
+        r = {.buf = ring_main.buf, .cap = HAL_LOG_MAIN_CAPACITY, .total = &ring_main.total, .floor = &ring_main.floor};
         return true;
     }
     if (ch == LOG_CH_BUS) {
-        r = {.buf = ring_bus.buf, .cap = LOG_SIZE_BUS, .total = &ring_bus.total, .floor = &ring_bus.floor};
+        r = {.buf = ring_bus.buf, .cap = HAL_LOG_BUS_CAPACITY, .total = &ring_bus.total, .floor = &ring_bus.floor};
         return true;
     }
     return false;

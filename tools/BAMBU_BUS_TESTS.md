@@ -57,3 +57,13 @@ python tools/test_bambu_bus.py --zig C:/path/to/zig.exe --wasi --settings
 - `pio run -e esp32c3`：通过；没有编译其他板型或烧录设备。
 
 现有主机编译有 `String` 与 C linkage 的警告，不影响本次测试通过。电机测试停在 `motorCmd` 边界，没有验证物理输出、电机电流、RS485 响应延迟或连续打印。后台保存只检查开始写入前的总线静默，不能保证写入期间没有新报文到达。
+
+## AS5600 启动栈溢出回归
+
+`python tools/test_as5600.py --zig C:/path/to/zig.exe` 提取真实模拟采样代码，使用 Zig 0.15.2 或更新版本及 Node.js WASI 验证同毫秒返回零、100 毫秒上限、时钟回绕、重新初始化可复现，以及 10 万次采样的有限值、均值、方差和距离范围。
+
+Espressif32 8.0.0 / RISC-V GCC 14.2.0 环境下，旧 `std::normal_distribution` 经 `generate_canonical` 调用了 `logl`。故障合宙 C3 固件的 PC `0x420f8478`、RA `0x420f847c` 均位于 `logl`，反汇编在 `0x420f847a` 显示调用自身，导致 `loopTask` 约 8 KB 栈耗尽。地址仅对应当次故障 ELF。
+
+修复采用单精度极坐标正态采样，保留种子、标准差和距离限幅；重新初始化时也清除采样缓存。验证目标固件不再包含 `logl` 符号，再检查设备启动和持续运行，不能仅凭主机数值测试判定目标数学库正常。
+
+2026-10-28 合宙 C3 验证：10 万次主机采样测试通过；实际编译、COM3 烧录及写入校验通过；新 ELF 无 `logl` 符号，设备启动后能连接 WiFi 并持续响应状态接口。随后 TLS 日志确认 OTA 另有内存分配失败，缩减 C3 日志缓冲释放 80 KB 后，设备可用堆约 95 KB，GitHub Pages 清单检查成功。没有执行线上旧固件的下载安装，也没有验证连续打印。

@@ -347,7 +347,7 @@ bool settings_save_to_flash() {
 
 /**
  * 恢复所有设置默认值
- * 重置参数、引脚映射、I2C 总线和 OTA 配置，不直接写存储
+ * 重置参数、引脚映射和 I2C 总线；OTA 恢复默认发布目录，不直接写存储
  */
 void settings_reset_to_defaults() {
     for (int i = 0; i < 16; i++) {
@@ -366,6 +366,7 @@ void settings_reset_to_defaults() {
     AMS_VERSION[2] = DEFAULT_AMS_VERSION_PATCH;
     AMS_VERSION[3] = DEFAULT_AMS_VERSION_BUILD;
     memset(OTA_URL, 0, sizeof(OTA_URL));
+    memcpy(OTA_URL, DEFAULT_OTA_URL, sizeof(DEFAULT_OTA_URL));
     OTA_NOTIFY = DEFAULT_OTA_NOTIFY;
     io_config_set_defaults(IO_CONFIG);
     bus_defaults();

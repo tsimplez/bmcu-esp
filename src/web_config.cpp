@@ -979,6 +979,13 @@ static String g_ota_ver;
 static String g_ota_notes;
 // 固件声明的字节数；0 表示清单未提供，下载时跳过长度比对
 static size_t g_ota_size = 0;
+// 自动模式按顺序尝试；代理只转发 GitHub Release 下载地址
+static const char *const OTA_SOURCE_NAMES[] = {"GitHub Pages", "GitHub 直连", "ghfast.top", "gh-proxy.com", "gh.llkk.cc"};
+static const char *const OTA_PROXY_PREFIXES[] = {"", "", "https://ghfast.top/", "https://gh-proxy.com/", "https://gh.llkk.cc/"};
+static constexpr int OTA_SOURCE_COUNT = 5;
+static int g_ota_source = -1;
+// 仅纯文件名允许在官方渠道间回退；版本、大小和 MD5 始终保持不变
+static String g_ota_file;
 
 /**
  * 获取 OTA 服务基础地址
@@ -990,6 +997,31 @@ static String ota_base() {
     b.trim();
     while (b.endsWith("/")) b.remove(b.length() - 1);
     return b;
+}
+
+/**
+ * 生成内置渠道的清单或固件目录
+ * @param source 内置渠道编号
+ * @param version 固件版本；空串表示查询最新清单
+ * @return 对应渠道的下载目录
+ * Release 固件固定到版本标签，避免 latest 在下载期间变化
+ */
+static String ota_source_base(int source, const String &version = "") {
+    if (source == 0) return DEFAULT_OTA_URL;
+    String base = String(OTA_PROXY_PREFIXES[source]) + "https://github.com/tsimplez/bmcu-esp/releases";
+    return base + (version.length() ? "/download/v" + version : String("/latest/download"));
+}
+
+/**
+ * 识别已保存地址对应的内置渠道
+ * @param base 去掉末尾斜杠的更新源目录
+ * @return 内置编号，-1 表示自定义源
+ * 默认 Pages 地址代表自动模式，其余地址固定使用用户选择的渠道
+ */
+static int ota_source_index(const String &base) {
+    for (int i = 0; i < OTA_SOURCE_COUNT; ++i)
+        if (base == ota_source_base(i)) return i;
+    return -1;
 }
 
 // ---- 够用就好的迷你 JSON 取值，不引第三方库 ----
@@ -1154,12 +1186,13 @@ static bool version_valid(const String &v) {
  * 创建 OTA HTTP 客户端
  * @param url 固件或清单地址
  * @return 新建的 WiFiClient 指针
- * HTTPS 使用不校验证书的 WiFiClientSecure 以节省内存，HTTP 使用普通客户端
+ * HTTPS 使用 WiFiClientSecure 并限制握手等待，HTTP 使用普通客户端
  */
 static WiFiClient *ota_make_client(const String &url) {
     if (url.startsWith("https")) {
         auto *c = new WiFiClientSecure();
         c->setInsecure();  // 不校验证书；省掉塞证书要用的几十 KB 内存
+        c->setHandshakeTimeout(3);
         return c;
     }
     return new WiFiClient();
@@ -1196,28 +1229,54 @@ namespace {
 }
 
 /**
+ * 打开 OTA 下载请求并分步处理重定向
+ * @param http HTTP 客户端
+ * @param client 底层网络客户端
+ * @param url 清单或固件地址
+ * @param err 失败原因
+ * @return true 表示服务器返回 HTTP 200
+ * 每次跳转前检查设备状态并喂狗，连接及读取各等待至多 2 秒；失败保留 TLS 诊断
+ */
+static bool ota_http_open(HTTPClient &http, WiFiClient &client, const String &url, String &err) {
+    http.setConnectTimeout(2000);
+    http.setTimeout(2000);
+    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+    if (!http.begin(client, url)) { err = "地址无法解析"; return false; }
+    for (int redirects = 0; redirects <= 4; ++redirects) {
+        if (!BMCU_can_maintain()) { err = "请先停止所有电机运动"; return false; }
+        hal_watchdog_feed();
+        const int code = http.GET();
+        hal_watchdog_feed();
+        if (code == HTTP_CODE_OK) return true;
+        if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+            const String location = http.getLocation();
+            if (redirects < 4 && location.length() && http.setURL(location)) continue;
+            err = "重定向过多或跳转地址不受支持";
+        } else if (code < 0) {
+            err = "连接失败（HTTP " + String(code) + ": " + HTTPClient::errorToString(code) + "）";
+            if (url.startsWith("https://")) {
+                char tls_error[128] = {};
+                const int tls_code = static_cast<WiFiClientSecure &>(client).lastError(tls_error, sizeof(tls_error));
+                if (tls_code) err += "，TLS " + String(tls_code) + ": " + tls_error;
+            }
+        } else err = "服务器返回 HTTP " + String(code);
+        return false;
+    }
+    return false;
+}
+
+/**
  * 执行 OTA HTTP GET 请求
  * @param url 请求地址
  * @param body 响应正文
  * @param err 错误信息
- * @param timeout_ms 超时时间
  * @return true 表示请求成功
- * 跟随重定向，检查 HTTP 状态，并在下载前确认设备处于可维护状态
+ * 清单必须有长度且不超过 8 KB，避免代理错误页占满内存
  */
-static bool ota_http_get(const String &url, String &body, String &err, uint16_t timeout_ms) {
+static bool ota_http_get(const String &url, String &body, String &err) {
     const OtaClientHolder client(url);
     HTTPClient http;
-    http.setTimeout(timeout_ms);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-
-    if (!http.begin(client.ref(), url)) {
-        err = "地址无法解析";
-        http.end();
-        return false;
-    }
-    const int code = http.GET();
-    if (code != HTTP_CODE_OK) {
-        err = "服务器返回 HTTP " + String(code);
+    if (!ota_http_open(http, client.ref(), url, err)) {
         http.end();
         return false;
     }
@@ -1226,35 +1285,39 @@ static bool ota_http_get(const String &url, String &body, String &err, uint16_t 
         http.end();
         return false;
     }
+    const int length = http.getSize();
+    if (length <= 0 || length > 8192) {
+        err = "清单长度无效或超过 8 KB";
+        http.end();
+        return false;
+    }
     body = http.getString();
+    hal_watchdog_feed();
     http.end();
+    if (body.length() != static_cast<unsigned int>(length)) { err = "清单下载不完整"; return false; }
     return true;
 }
 
 /**
  * 获取并解析 OTA 清单
+ * @param base 当前尝试的更新源目录
+ * @param source 内置渠道编号；-1 为自定义
  * @param err 错误信息
  * @return true 表示成功取得当前板型固件信息
  * 读取 manifest.json，提取目标平台的 url、md5、version、notes 和 size，并校验版本与 MD5 格式
  */
-static bool ota_fetch_manifest(String &err) {
-    const String base = ota_base();
-    if (!base.length()) {
-        err = "还没有配置更新源地址";
-        return false;
-    }
-
+static bool ota_fetch_manifest_from(const String &base, int source, String &err) {
+    g_ota_url = g_ota_md5 = g_ota_ver = g_ota_notes = g_ota_file = "";
+    g_ota_size = 0;
+    g_ota_source = -1;
     String body;
-    if (!ota_http_get(base + "/manifest.json", body, err, 3000)) return false;
+    if (!ota_http_get(base + "/manifest.json", body, err)) return false;
 
     String obj;
     if (!json_get_object(body, FW_TARGET, obj)) {
         err = "清单里没有 " + String(FW_TARGET) + " 对应的固件";
         return false;
     }
-
-    g_ota_url = g_ota_md5 = g_ota_ver = g_ota_notes = "";
-    g_ota_size = 0;
 
     json_get(obj, "url", g_ota_url);
     json_get(obj, "md5", g_ota_md5);
@@ -1283,6 +1346,12 @@ static bool ota_fetch_manifest(String &err) {
     if (json_get_raw(obj, "size", sz)) g_ota_size = static_cast<size_t>(strtoul(sz.c_str(), nullptr, 10));
 
     g_ota_url.trim();
+    if (source >= 0 && g_ota_url.length() && g_ota_url.indexOf('/') < 0 &&
+        g_ota_url.indexOf('\\') < 0 && g_ota_url.indexOf(':') < 0 &&
+        g_ota_url.indexOf('?') < 0 && g_ota_url.indexOf('#') < 0 && g_ota_url.indexOf("..") < 0) {
+        g_ota_file = g_ota_url;
+        g_ota_url = ota_source_base(source, g_ota_ver) + "/" + g_ota_file;
+    }
     if (g_ota_url.length() && !g_ota_url.startsWith("http")) {
         g_ota_url = base + "/" + g_ota_url;  // 清单里允许只写文件名
     }
@@ -1290,7 +1359,39 @@ static bool ota_fetch_manifest(String &err) {
         err = "清单里没有写 url";
         return false;
     }
+    g_ota_source = source;
     return true;
+}
+
+/**
+ * 按用户设置获取第一个有效的 OTA 清单
+ * @param err 全部失败时的最后渠道及错误原因
+ * @return true 表示已取得有效清单
+ * 自动模式顺序回退，固定或自定义源只尝试一次，失败不保留旧下载信息
+ */
+static bool ota_fetch_manifest(String &err) {
+    const String base = ota_base();
+    const int selected = ota_source_index(base);
+    const int count = selected == 0 ? OTA_SOURCE_COUNT : 1;
+    for (int i = 0; i < count; ++i) {
+        const int source = selected == 0 ? i : selected;
+        const String name = source >= 0 ? OTA_SOURCE_NAMES[source] : "自定义";
+        const String candidate = selected == 0 ? ota_source_base(source) : base;
+        err = "";
+        if (!candidate.length()) err = "还没有配置更新源地址";
+        else if (ota_fetch_manifest_from(candidate, source, err)) {
+            LOG_MAIN("[ota] 已选渠道: %s", name.c_str());
+            return true;
+        }
+        LOG_MAIN("[ota] 渠道 %s 检查失败: %s", name.c_str(), err.c_str());
+        err = name + "：" + err;
+        if (!BMCU_can_maintain()) break;
+    }
+    g_ota_url = g_ota_md5 = g_ota_ver = g_ota_notes = g_ota_file = "";
+    g_ota_size = 0;
+    g_ota_source = -1;
+    if (selected == 0) err = "自动渠道检查失败，最后尝试 " + err;
+    return false;
 }
 
 /**
@@ -1315,7 +1416,7 @@ static bool ota_require_stopped() {
 // ---- 检查更新 ----
 /**
  * 处理检查更新请求
- * 可配置关闭自动提示；带 force 参数时强制检查，返回当前版本、最新版本、更新说明和下载信息
+ * 可配置关闭自动提示；手动检查返回版本、更新说明、实际渠道和下载信息
  */
 static void handle_ota_check() {
     if (!ota_require_stopped()) return;
@@ -1339,6 +1440,7 @@ static void handle_ota_check() {
     j  = "{\"ok\":true";
     j += ",\"current\":\"" + String(FW_VERSION) + "\"";
     j += ",\"target\":\"" + String(FW_TARGET) + "\"";
+    j += ",\"source\":\"" + String(g_ota_source >= 0 ? OTA_SOURCE_NAMES[g_ota_source] : "自定义") + "\"";
     j += ",\"latest\":\"" + json_escape(g_ota_ver.c_str()) + "\"";
     j += ",\"has_update\":" + String(has ? "true" : "false");
     j += ",\"notes\":\"" + json_escape(g_ota_notes.c_str()) + "\"";
@@ -1353,24 +1455,18 @@ static void handle_ota_check() {
 // ---- 在线更新：下载 → 写 flash → 重启 ----
 /**
  * 从 URL 下载并写入固件
+ * @param url 本次尝试的固件地址
  * @param err 错误信息
+ * @param retryable 是否允许换渠道重试
  * @return true 表示下载、校验和写入全部成功
- * 按 Content-Length 下载，写入 Update 分区并持续校验 MD5、设备空闲状态和看门狗
+ * 传输失败会中止本次写入；设备忙或 Flash 写入失败不换渠道重试
  */
-static bool ota_flash_from_url(String &err) {
-    const OtaClientHolder client(g_ota_url);
+static bool ota_flash_attempt(const String &url, String &err, bool &retryable) {
+    retryable = false;
+    const OtaClientHolder client(url);
     HTTPClient http;
-    http.setTimeout(3000);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-
-    if (!http.begin(client.ref(), g_ota_url)) {
-        err = "固件地址无法解析";
-        http.end();
-        return false;
-    }
-    int code = http.GET();
-    if (code != HTTP_CODE_OK) {
-        err = "下载固件失败，HTTP " + String(code);
+    if (!ota_http_open(http, client.ref(), url, err)) {
+        retryable = BMCU_can_maintain();
         http.end();
         return false;
     }
@@ -1383,11 +1479,13 @@ static bool ota_flash_from_url(String &err) {
 
     int len = http.getSize();
     if (len <= 0) {
+        retryable = true;
         err = "服务器必须提供 Content-Length，不支持分块传输";
         http.end();
         return false;
     }
     if (g_ota_size && g_ota_size != static_cast<size_t>(len)) {
+        retryable = true;
         err = "固件大小与清单不一致";
         http.end();
         return false;
@@ -1422,8 +1520,9 @@ static bool ota_flash_from_url(String &err) {
 
         int n = stream->readBytes(buf, want);
         if (n <= 0) {
-            if (millis() - last_rx > 15000) { timeout = true; break; }
+            if (!http.connected() || millis() - last_rx > 15000) { timeout = true; break; }
             hal_watchdog_feed();
+            delay(1);  // 等待数据时让出 CPU，避免空闲任务看门狗超时
             continue;
         }
         last_rx = millis();
@@ -1438,10 +1537,11 @@ static bool ota_flash_from_url(String &err) {
     http.end();
 
     if (err.length()) { Update.abort(); return false; }
-    if (timeout) { Update.abort(); err = "下载超时"; return false; }
+    if (timeout) { Update.abort(); err = "下载超时或连接中断"; retryable = true; return false; }
     if (written != static_cast<size_t>(len)) {
         Update.abort();
         err = "下载不完整（" + String(static_cast<unsigned long>(written)) + "/" + String(len) + " 字节）";
+        retryable = true;
         return false;
     }
     if (!BMCU_can_maintain()) {
@@ -1450,10 +1550,42 @@ static bool ota_flash_from_url(String &err) {
         return false;
     }
     if (!Update.end()) {
+        retryable = Update.getError() == UPDATE_ERROR_MD5;
         err = String("写入结束失败: ") + Update.errorString();
+        Update.abort();
         return false;
     }
     return true;
+}
+
+/**
+ * 下载固件并在自动模式下回退渠道
+ * @param err 最后一次失败原因
+ * @return true 表示固件完整写入且校验通过
+ * 优先使用取得清单的渠道，重试固定同一版本文件、大小和 MD5；自定义源不改写
+ */
+static bool ota_flash_from_url(String &err) {
+    const bool automatic = ota_source_index(ota_base()) == 0 && g_ota_file.length();
+    const int first = g_ota_source;
+    for (int attempt = -1; attempt < (automatic ? OTA_SOURCE_COUNT : 0); ++attempt) {
+        if (attempt >= 0 && attempt == first) continue;
+        const int source = attempt < 0 ? first : attempt;
+        const String url = attempt < 0 ? g_ota_url : ota_source_base(source, g_ota_ver) + "/" + g_ota_file;
+        const String name = source >= 0 ? OTA_SOURCE_NAMES[source] : "自定义";
+        if (!BMCU_can_maintain()) { err = "请先停止所有电机运动"; return false; }
+        bool retryable = false;
+        err = "";
+        LOG_MAIN("[ota] 下载渠道: %s", name.c_str());
+        if (ota_flash_attempt(url, err, retryable)) {
+            g_ota_url = url;
+            g_ota_source = source;
+            return true;
+        }
+        LOG_MAIN("[ota] 渠道 %s 下载失败: %s", name.c_str(), err.c_str());
+        err = name + "：" + err;
+        if (!retryable) break;
+    }
+    return false;
 }
 
 /**
