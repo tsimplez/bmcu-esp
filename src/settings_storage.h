@@ -73,10 +73,10 @@ inline int active_channel_count() { return AMS_COUNT * 4; }
 constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设置的回退值
 #define DEFAULT_MANUAL_PULSE_MS     300  // 手动点动默认时长（毫秒）
 #define DEFAULT_AUTO_LOAD_MS        1000 // 微动辅助进料默认时长（毫秒）
-#define DEFAULT_AMS_VERSION_MAJOR   1    // 默认 AMS 版本 A 段
-#define DEFAULT_AMS_VERSION_MINOR   0    // 默认 AMS 版本 B 段
-#define DEFAULT_AMS_VERSION_PATCH   6    // 默认 AMS 版本 C 段
-#define DEFAULT_AMS_VERSION_BUILD   87   // 默认 AMS 版本 D 段
+#define DEFAULT_AMS_VERSION_MAJOR   00   // 默认 AMS 版本 A 段
+#define DEFAULT_AMS_VERSION_MINOR   00   // 默认 AMS 版本 B 段
+#define DEFAULT_AMS_VERSION_PATCH   50   // 默认 AMS 版本 C 段
+#define DEFAULT_AMS_VERSION_BUILD   10   // 默认 AMS 版本 D 段
 
 // 点动/辅助进料时长上限（毫秒）：只需小于 30 秒
 #define MAX_PULSE_MS                30000
@@ -89,7 +89,7 @@ constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设�
 
 // OTA 更新源
 #define OTA_URL_MAX                 128 // OTA 更新源地址缓冲区长度，包含结尾 NUL
-#define DEFAULT_OTA_URL             "https://tuanzisimple.github.io/bmcu-esp" // 默认 OTA 发布目录
+#define DEFAULT_OTA_URL             "https://tsimplez.github.io/bmcu-esp" // 默认 OTA 发布目录
 #define DEFAULT_OTA_NOTIFY          1   // 默认进入页面时自动检查更新
 
 // 初始化设置存储（在setup中调用）

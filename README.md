@@ -1,4 +1,4 @@
-# 自动材料更换控制单元（BMCU-ESP）
+# 自动材料更换控制单元（团子 BMCU-ESP）
 
 [交流群 1093447641 欢迎加入](https://qm.qq.com/q/hrK8NNwo6Y)
 
@@ -10,6 +10,7 @@
 [教程 https://docs.qq.com/doc/DVm9tRkhkSXF1ZGZi](https://docs.qq.com/doc/DVm9tRkhkSXF1ZGZi)
 
 ### Top ams
+之前使用此方案的，可以很方便迁移到本项目（只需要加 1个ttl转485模块）
 - ***不推荐使用的是(mqtt方案)，其他项目都是使用485方案(和打印机直接通信)***
 - 功能: 微动
 - 群: 882091399
@@ -18,6 +19,7 @@
 - [tt模型 https://makerworld.com.cn/models/1418429](https://makerworld.com.cn/models/1418429)
 
 ### 天枢TTC
+之前使用此方案的，可以很方便迁移到本项目（只需要加 一个esp32 ）
 - 功能: 微动
 - 群: 981655616
 - [教程 https://my.feishu.cn/wiki/N4bXwJpWUirYBFkMr81cw0umn72](https://my.feishu.cn/wiki/N4bXwJpWUirYBFkMr81cw0umn72)
@@ -40,6 +42,10 @@
 - 功能: 霍尔 + 双微动 + 370电机 + 回卷
 - 群 735647789
 - [教程 https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9](https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9)
+
+### NeMCU
+- 功能: esp32 + 全霍尔 + 370电机
+- 群 851019565
 
 ### 波兰固件
 [仓库](https://github.com/jarczakpawel/BMCU-C-PJARCZAK)
@@ -64,6 +70,45 @@ https://github.com/jarczakpawel/BMCU-Flasher
 下左 GND 下右 24V
 
 固件 485模块 也是需要A接A B接B
+
+## 硬件方案
+### 最低成本（无io扩展模块，4色（最低24元）或者8色）
+*** 必须 ***
+- esp32（合宙esp32c3）
+- tt电机（1/48黑头单轴）
+- ttl转485模块（TX和RX最好，有DE也可以用就是了）
+- drv8833电机驱动（黑版最好）
+- 杜邦线
+
+--- 可选 ---
+- pcb版（没有画，用杜邦线连接吧）
+- 微动（三脚带柄13.5mm按键微动）
+- 弹簧外径5*长度10*线径0.4
+- M3*20沉头螺丝
+- M3*5沉头螺丝
+- AMS数据线（4pin公对公，原厂线序，不是延长线）
+- MX3 2*2 弯针座
+
+### 团子pcb板子（最大支持16色）
+*** 必须 ***
+- esp32（合宙esp32c3）
+- tt电机（1/48黑头单轴）
+- ttl转485模块（TX和RX最好，有DE也可以用就是了）
+- drv8833电机驱动（黑版最好）
+- 杜邦线
+
+--- 可选 ---
+- [嘉立创pcb版 https://oshwhub.com/tz_simple/project_vsifmgrt](https://oshwhub.com/tz_simple/project_vsifmgrt)
+- 微动（三脚带柄13.5mm按键微动）
+- PCF8575 (io扩展模块)
+- AMS数据线（4pin公对公，原厂线序，不是延长线）
+- MX3 2*2 弯针座
+- 弹簧外径5*长度10*线径0.4
+- M3*20沉头螺丝
+- M3*5沉头螺丝
+
+### 其他
+![RS485 模块推荐这个，可以少一个DE引脚](RS485.png)
 
 ## 项目简介
 
@@ -102,15 +147,6 @@ BambuBus 通信协议，支持多通道耗材管理、电机控制、编码器�
 - **网页管理 / OTA**：ESP32 平台提供配网热点、管理页面与在线/本地固件升级
 - **看门狗**：防止程序卡死（10 秒任务看门狗）
 - **自定义序列号后缀**：完整序列号固定为 `0EA + AMS 编号 + 12 位后缀`；网页只允许修改末 12 位，留空则按芯片 ID 自动生成后缀
-
-## 硬件要求
-
-- 主控：Raspberry Pi Pico / ESP32-S3 / ESP32-C3（合宙 AirM2M CORE ESP32-C3）
-- 通信：UART + RS485 收发模块（BambuBus）、可选 PCF8575（I2C）
-- 电机驱动：DRV8833 等（每通道两个方向脚）
-- 检测：微动开关（材料在线检测）
-
-![RS485 模块推荐这个，可以少一个DE引脚](RS485.png)
 
 ## 软件架构
 

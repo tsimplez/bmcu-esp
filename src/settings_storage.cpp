@@ -6,6 +6,7 @@
 // ============================
 // 运行期设置变量（初值为默认值，启动时由 settings_storage_init() 覆盖）
 // ============================
+
 // 各通道退料动作超时时间，单位秒；打印机请求退料时用作电机限时停止保护
 int PULLBACK_TIMEOUT[16] = {7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
 // 各通道工作模式：0=离线，1=在线，2=自动（按微动开关触发辅助进料）
@@ -199,7 +200,7 @@ static void apply_settings_values(const SettingsData& data) {
                       ? min(static_cast<int>(data.motor_limit), active_channel_count()) : 1;
 
     // 先加载整组候选接线，再交叉校验，避免用旧总线引脚误判新配置
-    IoConfig loaded = data.io_config;
+    const IoConfig loaded = data.io_config;
     BUS_RX = data.bus_rx; BUS_TX = data.bus_tx; BUS_DE = data.bus_de;
     // I2C 总线由 SDA/SCL 是否同时配置决定，旧版 pcf_enable 字段只用于兼容旧记录
     pcf_defaults();
@@ -389,7 +390,7 @@ bool settings_is_valid() {
  * @return 离线/在线/自动/未知
  * 用于日志输出
  */
-static const char *channel_mode_name(int mode) {
+static const char *channel_mode_name(const int mode) {
     switch (mode) {
         case CHANNEL_MODE_OFFLINE: return "离线";
         case CHANNEL_MODE_ONLINE:  return "在线";

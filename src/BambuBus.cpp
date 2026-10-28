@@ -1916,12 +1916,12 @@ static bool heartbeat_timed_out = false;
 /**
  * 更新通信和心跳超时锁存
  * @param now 当前 32 位毫秒时间
- * 主循环每轮调用；分别保持 1 秒合法通信超时和 5 秒心跳超时，直到新的合法报文清除
+ * 主循环每轮调用；分别保持 1 秒合法通信超时和 10 秒心跳超时，直到新的合法报文清除
  */
-static void update_bus_timeouts(uint32_t now) {
+static void update_bus_timeouts(const uint32_t now) {
     if (bus_packet_seen && now - last_bus_packet_ms > 1000u)
         bus_packet_timed_out = true;
-    if (heartbeat_seen && now - last_heartbeat_ms >= 5000u)
+    if (heartbeat_seen && now - last_heartbeat_ms >= 10000u)
         heartbeat_timed_out = true;
 }
 

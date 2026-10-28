@@ -1601,9 +1601,6 @@ static void setup_routes() {
     server.onNotFound(handle_not_found);
 }
 
-// ============================================================
-// 对外接口
-// ============================================================
 /**
  * 初始化 Web 管理服务
  * 读取 WiFi 凭据，优先连接已保存网络，失败或未配置时启动配网热点，然后注册路由并启动 HTTP 服务
@@ -1633,7 +1630,7 @@ void web_config_init() {
  */
 void web_config_run() {
     if (wifi_state == ST_CONNECTING) {
-        if (WiFiClass::status() == WL_CONNECTED) {
+        if (WiFi.status() == WL_CONNECTED) {
             on_sta_connected();
         } else if (static_cast<int32_t>(millis() - connect_deadline) >= 0) {
             LOG_MAIN("[web] 连接 WiFi 超时，转入配网模式");
