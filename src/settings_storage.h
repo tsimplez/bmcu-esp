@@ -56,7 +56,7 @@ struct SettingsData {
 };
 
 // 只接受当前布局的记录；结构改变时更新此标识，不匹配则恢复默认值
-#define SETTINGS_MAGIC_NUMBER    0x5341542A
+#define SETTINGS_MAGIC_NUMBER    0x53415429
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**
@@ -71,10 +71,10 @@ inline int active_channel_count() { return AMS_COUNT * 4; }
 constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设置的回退值
 #define DEFAULT_MANUAL_PULSE_MS     1000  // 手动点动默认时长（毫秒）
 #define DEFAULT_AUTO_LOAD_MS        5000 // 微动辅助进料默认时长（毫秒）
-#define DEFAULT_AMS_VERSION_MAJOR   10   // 默认 AMS 版本 A 段
-#define DEFAULT_AMS_VERSION_MINOR   50   // 默认 AMS 版本 B 段
-#define DEFAULT_AMS_VERSION_PATCH   00   // 默认 AMS 版本 C 段
-#define DEFAULT_AMS_VERSION_BUILD   00   // 默认 AMS 版本 D 段
+#define DEFAULT_AMS_VERSION_MAJOR   1    // 默认 AMS 版本 A 段
+#define DEFAULT_AMS_VERSION_MINOR   0    // 默认 AMS 版本 B 段
+#define DEFAULT_AMS_VERSION_PATCH   6    // 默认 AMS 版本 C 段
+#define DEFAULT_AMS_VERSION_BUILD   87   // 默认 AMS 版本 D 段
 
 // 点动/辅助进料时长上限（毫秒）：只需小于 30 秒
 #define MAX_PULSE_MS                30000
