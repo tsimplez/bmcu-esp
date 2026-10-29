@@ -10,6 +10,7 @@
 #include <Update.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <esp_system.h>
 
 #include "log_bus.h"
 #include "platform.h"
@@ -977,10 +978,50 @@ static void handle_scan() {
 
 /**
  * 处理日志读取请求
- * 支持按游标增量读取、清空和下载；主板日志和 BambuBus 日志通过 ch 参数选择
- * 响应同时携带 X-Log-Seq 与 X-Uptime-Ms，网页据此增量读取并把开机毫秒换算成本地时间
+ * both=1 时一次读取两路日志，以主板字节块、总线字节块顺序返回，头部携带长度和独立游标
+ * 合并读取支持启动标识、清空位图和抓取边界；旧单通道接口仍供已有客户端使用
  */
 static void handle_log() {
+    // 两个接口共用原有大小的发送缓冲；合并请求每路最多 8 KiB，不增加设备日志容量。
+    static char buf[LOG_PULL_MAX + 64];
+    static const String boot_id = String(esp_random(), HEX) + String(esp_random(), HEX);
+    if (server.arg("both") == "1") {
+        constexpr size_t chunk = LOG_PULL_MAX / 2;
+        const bool reset = server.hasArg("boot") && server.arg("boot") != boot_id;
+        const unsigned clear_mask = server.hasArg("clear_mask") ? server.arg("clear_mask").toInt() & 3 : 0;
+        uint32_t seq[2] = {
+            reset ? 0U : static_cast<uint32_t>(strtoul(server.arg("main_seq").c_str(), nullptr, 10)),
+            reset ? 0U : static_cast<uint32_t>(strtoul(server.arg("bus_seq").c_str(), nullptr, 10))
+        };
+        for (int channel = 0; channel < LOG_CH_COUNT; channel++) {
+            if (clear_mask & (1U << channel)) {
+                log_bus_clear(channel);
+                seq[channel] = log_bus_total(channel);
+            }
+        }
+        const uint32_t boundary = log_bus_total(LOG_CH_BUS);
+        const uint32_t uptime = millis();
+        uint32_t dropped[2] = {};
+        const size_t main_len = log_bus_read(LOG_CH_MAIN, &seq[0], buf, chunk + 1, &dropped[0]);
+        const size_t bus_len = log_bus_read(LOG_CH_BUS, &seq[1], buf + chunk + 1, chunk + 1, &dropped[1]);
+        server.sendHeader("X-Log-Boot", boot_id);
+        server.sendHeader("X-Uptime-Ms", String(uptime));
+        server.sendHeader("X-Log-Main-Length", String(main_len));
+        server.sendHeader("X-Log-Bus-Length", String(bus_len));
+        server.sendHeader("X-Log-Main-Seq", String(seq[0]));
+        server.sendHeader("X-Log-Bus-Seq", String(seq[1]));
+        server.sendHeader("X-Log-Main-Total", String(log_bus_total(LOG_CH_MAIN)));
+        server.sendHeader("X-Log-Bus-Total", String(log_bus_total(LOG_CH_BUS)));
+        server.sendHeader("X-Log-Main-Dropped", String(dropped[0]));
+        server.sendHeader("X-Log-Bus-Dropped", String(dropped[1]));
+        server.sendHeader("X-Log-Boundary", String(boundary));
+        server.sendHeader("Cache-Control", "no-store");
+        server.setContentLength(main_len + bus_len);
+        server.send(200, "application/octet-stream", "");
+        if (main_len) server.sendContent(buf, main_len);
+        if (bus_len) server.sendContent(buf + chunk + 1, bus_len);
+        return;
+    }
     int ch = server.hasArg("ch") ? server.arg("ch").toInt() : LOG_CH_MAIN;
     if (ch < 0 || ch >= LOG_CH_COUNT) ch = LOG_CH_MAIN;
 
@@ -995,8 +1036,6 @@ static void handle_log() {
 
     uint32_t seq = server.hasArg("seq") ? strtoul(server.arg("seq").c_str(), nullptr, 10) : 0;
 
-    // 日志响应复用缓冲区；容量在单次拉取上限外留出格式化余量
-    static char buf[LOG_PULL_MAX + 64];
     log_bus_read(ch, &seq, buf, sizeof(buf));
 
     server.sendHeader("X-Log-Seq", String(seq));

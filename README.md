@@ -113,6 +113,20 @@ https://github.com/jarczakpawel/BMCU-Flasher
 ### 其他
 ![RS485 模块推荐这个，可以少一个DE引脚](RS485.png)
 
+#### 多个 PCF8575 说明
+0x20 (默认) 项目需要的其他三个按照下面进行配置就可以了
+
+| I2C 总线地址 | A2  | A1 | A0 |
+|---|---|---|---|
+| 0x20 | GND | GND | GND | 
+| 0x21 | GND | GND | VCC |
+| 0x22 | GND | VCC | GND |
+| 0x23 | GND | VCC | VCC |
+| 0x24 | VCC | GND | GND |
+| 0x25 | VCC | GND | VCC |
+| 0x26 | VCC | VCC | GND |
+| 0x27 | VCC | VCC | VCC |
+
 ## 项目简介
 
 团子 BMCU 是一套面向 3D 打印机的自动材料更换控制单元固件，实现了与 Bambu Lab 打印机的
@@ -278,5 +292,3 @@ pio run -t clean             # 清理
 似乎和 AS5600_get_distance_E _filament meters 长度有关系
 
 好像要是AMS_COUNT要是4个就得输入4个序列号了吧，不然都是一样的
-
-这样日志太少了，把web的日志逻辑修改一下吧。在web中创建两个临时空间用来保留日志

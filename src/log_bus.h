@@ -32,8 +32,8 @@ void log_bus_clear(int ch);
 uint32_t log_bus_total(int ch);
 
 // 增量读取：*seq 传入上次拿到的游标、传出新游标；返回写入 out 的字节数
-// out 会被补 '\0'，需要 max_len 字节空间
-size_t log_bus_read(int ch, uint32_t *seq, char *out, size_t max_len);
+// out 会被补 '\0'，需要 max_len 字节空间；dropped 可选返回本次读取前丢失的字节数
+size_t log_bus_read(int ch, uint32_t *seq, char *out, size_t max_len, uint32_t *dropped = nullptr);
 
 // 主板日志：进环形缓冲，同时输出到串口控制台
 #define LOG_MAIN(...) log_bus_printf(LOG_CH_MAIN, __VA_ARGS__)

@@ -141,10 +141,12 @@ uint32_t log_bus_total(const int ch) {
  * @param seq 输入上次游标，输出新游标
  * @param out 输出缓冲区
  * @param max_len 输出缓冲区大小
+ * @param dropped 可选输出：本次读取前被覆盖或清空的字节数
  * @return 实际写入 out 的字节数
  * 从游标位置读取未消费日志；若中间数据已被覆盖，会先插入丢弃提示
  */
-size_t log_bus_read(const int ch, uint32_t *seq, char *out, size_t max_len) {
+size_t log_bus_read(const int ch, uint32_t *seq, char *out, size_t max_len, uint32_t *dropped) {
+    if (dropped) *dropped = 0;
     if (!seq || !out || max_len == 0) return 0;
     out[0] = 0;
 
@@ -162,6 +164,7 @@ size_t log_bus_read(const int ch, uint32_t *seq, char *out, size_t max_len) {
     if (s > total) s = total;  // 日志被清空过，游标回退
 
     if (s < oldest) {  // 用户太久没来取，中间已被覆盖
+        if (dropped) *dropped = oldest - s;
         // 游标落后超过缓冲区容量时，返回给网页的提示文本
         static constexpr char mark[] = "[... 较早日志已滚动丢弃 ...]\n";
         size_t ml = sizeof(mark) - 1;

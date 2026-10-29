@@ -28,6 +28,8 @@ tools/
 | `tests/test_project_presets.py` | 项目预设、接线校验、存储和 HTTP 接口 | Python、GCC/Clang |
 | `tests/test_pcf8575.py` | 四片扩展器的 64 位映射、独立重试、输入输出及通道状态 | Python、GCC/Clang |
 | `tests/test_web_config.cjs` | 设置、OTA 交互和移动端布局 | Node.js、Playwright、Edge |
+| `tests/test_web_logs.cjs` | 双日志环形缓存、单请求轮询、虚拟滚动、下载/抓取及持续写满测试 | Node.js、Playwright、Edge |
+| `tests/test_log_bus.py` | 真实日志缓冲与合并 HTTP 接口的分块、游标、覆盖和清空 | Python、Zig、Node.js |
 | `tests/test_project_presets_web.cjs` | 项目下拉框、预览弹窗、应用与失败处理 | Node.js、Playwright、Edge；需上面的项目测试导出 JSON |
 
 常用命令：
@@ -47,8 +49,10 @@ python -B tools/tests/test_ota.py --zig C:/path/to/zig.exe
 python -B tools/tests/test_project_presets.py --cxx C:/path/to/g++.exe --json "$env:TEMP/bmcu-projects.json"
 node tools/tests/test_project_presets_web.cjs "$env:TEMP/bmcu-projects.json"
 node tools/tests/test_web_config.cjs
+node tools/tests/test_web_logs.cjs
+python -B tools/tests/test_log_bus.py --zig C:/path/to/zig.exe
 ```
 
 将示例编译器路径换为本机路径。网页测试需要 Node.js 能找到 `playwright` 包，可通过 `NODE_PATH` 指向已有依赖目录；默认使用已安装的 Microsoft Edge，也可用 `BROWSER_CHANNEL` 指定 Playwright 支持且本机已安装的浏览器渠道。设置 `WEB_TEST_SCREENSHOT_DIR` 可保存项目预览截图。
 
-测试在临时目录构建，模拟设备接口，不连接硬件。WASI 模式跳过多线程队列用例；详细覆盖与验证边界见 [测试说明](../docs/TESTING.md)，项目扩展方法见 [项目配置预设](../docs/PROJECT_PRESETS.md)。
+测试在临时目录构建，模拟设备接口，不连接硬件。WASI 模式跳过多线程队列用例；详细覆盖与验证边界见 [测试说明](../docs/TESTING.md)，项目扩展方法见 [项目配置预设](../docs/PROJECT_PRESETS.md)，日志缓存、接口和性能验证见 [网页日志](../docs/WEB_LOGS.md)。

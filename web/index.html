@@ -60,7 +60,12 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .scanlist div:hover{background:#242935}
 .scanlist div:last-child{border-bottom:0}
 .scanlist i{color:var(--dim);font-style:normal;font-size:12px}
-.logbox{white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12px;line-height:1.5;height:60vh;overflow:auto;background:#0c0e13;border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0 0}
+#t-logs>.card{display:flex;flex-direction:column;min-height:calc(100vh - var(--log-header-height,120px) - 32px);min-height:calc(100dvh - var(--log-header-height,120px) - 32px);margin-bottom:0}
+#t-logs>.card>:not(.logbox){flex-shrink:0}
+.logbox{white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12px;line-height:1.5;flex:1 0 180px;min-height:180px;overflow:auto;background:#0c0e13;border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0 0}
+.logspace{position:relative;overflow-anchor:none}
+.logline{position:absolute;left:0;right:0;min-height:18px;white-space:pre-wrap;word-break:break-all}
+.logbox{overflow-anchor:none}
 .logfilters{display:flex;gap:6px 12px;align-items:center;flex-wrap:wrap;margin-top:8px}
 .logfilter{display:inline-flex;align-items:center;gap:4px;color:var(--fg);font-size:12px;white-space:nowrap;cursor:pointer}
 .logfilter input{width:auto;margin:0;padding:0;accent-color:var(--acc);cursor:pointer}
@@ -369,8 +374,10 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <button onclick="setAllBusLogFilters(true)">全选</button>
       <button onclick="setAllBusLogFilters(false)">全不选</button>
     </div>
-    <pre id="log0" class="logbox"></pre>
-    <pre id="log1" class="logbox hide"></pre>
+    <div id="log0" class="logbox" tabindex="0" aria-label="主板日志"></div>
+    <div id="log1" class="logbox hide" tabindex="0" aria-label="BambuBus 日志"></div>
+    <div id="log-cache" class="hint" role="status"></div>
+    <div class="hint">浏览器临时缓存：主板 1 MiB、BambuBus 2 MiB；写满后覆盖最早日志，刷新或关闭网页后释放。暂停只冻结显示，下载包含当前通道的全部缓存。</div>
     <div class="hint">日志行首显示浏览器本地时间；设备没有实时时钟，时间由日志里的开机毫秒数结合浏览器时钟换算</div>
     <div class="hint bus-only-control hide">BambuBus 面板显示 RS485 上的原始十六进制报文：<b>RX</b> = 收到、<b>TX</b> = 发出，以及解析出的包类型「抓取 30 秒」按当前勾选的显示类型抓取未来 30 秒的报文，抓完自动下载 .log 文件</div>
   </div>
@@ -424,7 +431,7 @@ let TAB = 'status';
 /**
  * 切换页面标签页
  * @param {string} name 标签页名称
- * 显示目标面板、更新导航高亮、保存当前标签，并在状态页或设置页按需重载参数
+ * 显示目标面板并保存当前标签；首次进入日志页启动持续收集，状态和设置页按需重载参数
  */
 const showTab=(name)=>{
   if(['status','wifi','settings','update','logs'].indexOf(name)<0) name='status'
@@ -434,6 +441,7 @@ const showTab=(name)=>{
   const bs = document.querySelectorAll('nav button');
   for(let i=0; i<bs.length; i++) bs[i].classList.toggle('on',bs[i].getAttribute('data-tab')===name)
   if((name==='status'||name==='settings') && !IO_DIRTY) loadPara()
+  if(name==='logs') startLogCollection()
 }
 
 // ---------- 状态 ----------
@@ -1666,47 +1674,34 @@ const doFactory=()=>{if(confirm('确定恢复出厂设置？WiFi 凭据也会被
 // ---------- 日志 ----------
 // 设备开机毫秒数到浏览器本地时间的换算基准；null 表示尚未同步
 let logClockOffset = null
+// 最近一次同步的设备毫秒数，用有符号差值处理 32 位运行时间回绕。
+let logClockUptime = 0
 /**
  * 同步日志时间基准
  * @param {number} uptimeMs 设备当前开机毫秒数
- * 记录浏览器本地时间与设备运行时间的差值，供日志行首时间换算使用
+ * 记录浏览器与设备时间基准，供入库时换算日志时间及处理毫秒计数回绕
  */
 const setLogClock=(uptimeMs)=>{
   const n=Number(uptimeMs)
   if(!isFinite(n)||n<0) return
+  logClockUptime=n
   logClockOffset=Date.now()-n
-}
-/**
- * 从日志响应头同步设备运行时间
- * @param {Response} r fetch 返回的响应对象
- * 读取 X-Uptime-Ms；响应头缺失时保留上一次的时间基准
- */
-const syncLogClock=(r)=>{
-  const s=r.headers.get('X-Uptime-Ms')
-  if(s!==null) setLogClock(parseInt(s,10))
 }
 /**
  * 把日志行首的开机毫秒数转换成浏览器本地时间
  * @param {string} line 原始日志行
- * @return {string} 使用 [yyyy-MM-dd HH:mm:ss.SSS] 前缀的日志行
- * 只替换形如“[1234] ”的时间前缀，其余内容和未识别行保持原样
+ * @return {string} 使用 [HH:mm:ss.SSS] 前缀的日志行
+ * 只替换形如“[1234] ”的时间前缀；以最近同步点的有符号毫秒差处理计数回绕
  */
 const fmtLogLine=(line)=>{
   const m=/^\[(\d+)\] /.exec(line)
   if(!m||logClockOffset===null) return line
-  const d=new Date(logClockOffset+parseInt(m[1],10))
+  const d=new Date(logClockOffset+logClockUptime+((parseInt(m[1],10)-logClockUptime)|0))
   if(isNaN(d.getTime())) return line
   const pad=(v,n)=>String(v).padStart(n,'0')
   const ts= pad(d.getHours(),2)+':'+pad(d.getMinutes(),2)+':'+pad(d.getSeconds(),2)+'.'+ pad(d.getMilliseconds(),3)
   return '['+ts+'] '+line.slice(m[0].length)
 }
-/**
- * 批量转换日志文本中的时间前缀
- * @param {string} text 原始日志文本
- * @return {string} 使用浏览器本地时间前缀的日志文本
- * 按行调用 fmtLogLine()，用于日志显示和下载文件
- */
-const fmtLogText=(text)=>String(text||'').split('\n').map(fmtLogLine).join('\n')
 /**
  * 触发浏览器下载文本文件
  * @param {string} name 下载文件名
@@ -1744,372 +1739,475 @@ const busLogColors = Object.fromEntries(BUS_LOG_TYPES.map(item=>[item.type,item.
 const busLogFilters = {};
 // 日志筛选条件在 localStorage 中的键名
 const busLogFilterStorage = 'bmcu-bus-log-filters';
-// 两路日志的增量拉取状态：[0]=主板日志，[1]=BambuBus 总线日志
-// seq=已读服务端序号，el=输出节点，paused=是否暂停，txt=已拼接文本，
-// records=结构化总线记录，pending=未成行的半截文本，rawBytes=已接收原始字节数，
-// busy=是否有未完成的拉取请求，防止慢请求叠加
-const LOGS = [
-  {seq: 0, el: null, paused: false, txt: '', pending: '', busy: false},
-  {seq: 0, el: null, paused: false, txt: '', records: [], pending: '', rawBytes: 0, busy: false}
-];
-// 当前日志页签：0=主板日志，1=总线日志
-let activeLog = 0
-// 当前日志视图是否暂停自动滚动/拉取
-let paused = false;
+// 两路浏览器环形缓存：容量按收到的 UTF-8 字节计量，记录索引另设上限以约束短行开销。
+const LOG_CAPACITIES=[1048576,2097152], LOG_SLOTS=65536, LOG_PENDING_MAX=16384
+const logEncoder=new TextEncoder(), logDecoder=new TextDecoder()
+const logMeasure=document.createElement('canvas').getContext('2d')
+logMeasure.font='12px Consolas, "Courier New", monospace'
+let activeLog=0, paused=false, logRenderFrame=0, logBoot=null
+
+/**
+ * 保存有字节上限的日志记录，并用树状数组索引可见行的高度
+ * 每个槽位循环复用；淘汰不搬移数组，按像素查找记录只需对数次访问
+ */
+class LogRing {
+  /**
+   * 初始化一个日志通道
+   * @param {number} ch 通道编号
+   */
+  constructor(ch){
+    this.ch=ch;this.capacity=LOG_CAPACITIES[ch];this.slots=new Array(LOG_SLOTS)
+    this.tree=new Float64Array(LOG_SLOTS+1);this.head=0;this.next=0;this.bytes=0;this.evicted=0
+    this.seq=0;this.epoch=0;this.clearPending=false;this.pending=new Uint8Array(0);this.discard=false
+    this.width=600;this.height=18;this.follow=true;this.anchor=0;this.anchorDelta=0
+    this.nodes=new Map();this.programmaticTop=null
+  }
+  /**
+   * 按递增编号取得仍在缓存中的记录
+   * @param {number} id 记录编号
+   * @return {Object|null} 记录或空值
+   */
+  get(id){return id>=this.head&&id<this.next?this.slots[id%LOG_SLOTS]:null}
+  /**
+   * 查询物理槽位之前的总显示高度
+   * @param {number} end 不包含的槽位下标
+   * @return {number} 像素高度
+   */
+  sum(end){let result=0;for(let i=end;i>0;i-=i&-i)result+=this.tree[i];return result}
+  /**
+   * 修改单行高度或隐藏状态
+   * @param {Object} rec 日志记录
+   * @param {number} height 新显示高度，零表示被筛选隐藏
+   */
+  setHeight(rec,height){
+    const delta=height-rec.height;rec.height=height
+    for(let i=rec.id%LOG_SLOTS+1;i<=LOG_SLOTS;i+=i&-i)this.tree[i]+=delta
+  }
+  /**
+   * 取得缓存中所有匹配行的显示高度
+   * @return {number} 像素高度
+   */
+  totalHeight(){return this.sum(LOG_SLOTS)}
+  /**
+   * 计算一行相对最早缓存行的垂直位置
+   * @param {number} id 记录编号
+   * @return {number} 像素偏移
+   */
+  offset(id){
+    const slot=id%LOG_SLOTS, first=this.head%LOG_SLOTS
+    return this.sum(slot)-this.sum(first)+(slot<first?this.totalHeight():0)
+  }
+  /**
+   * 按逻辑滚动位置找到覆盖该像素的可见记录
+   * @param {number} y 相对缓存起点的像素
+   * @return {Object|null} 对应记录，无可见行时为空
+   */
+  atPixel(y){
+    const total=this.totalHeight();if(total<=0)return null
+    let target=Math.min(Math.max(0,y),total-0.01)+this.sum(this.head%LOG_SLOTS)
+    if(target>=total)target-=total
+    let slot=0
+    for(let bit=LOG_SLOTS;bit;bit>>=1){
+      const next=slot+bit
+      if(next<=LOG_SLOTS&&this.tree[next]<=target){slot=next;target-=this.tree[next]}
+    }
+    return this.slots[Math.min(slot,LOG_SLOTS-1)]||null
+  }
+  /**
+   * 估算自动换行高度，进入可视区后再用实际行高校正
+   * @param {Object} rec 日志记录
+   * @return {number} 匹配记录的估算高度
+   */
+  estimate(rec){
+    if(this.ch===1&&busLogFilters[rec.type]===false)return 0
+    return Math.max(1,Math.ceil(rec.textWidth/Math.max(1,this.width)))*this.height
+  }
+  /**
+   * 添加完整记录，超限时逐槽淘汰最早记录
+   * @param {Object} rec 已解析并换算好时间的记录
+   */
+  push(rec){
+    if(rec.bytes>this.capacity){this.evicted++;return}
+    while(this.head<this.next&&(this.bytes+rec.bytes>this.capacity||this.next-this.head>=LOG_SLOTS)){
+      const old=this.get(this.head);this.setHeight(old,0);this.bytes-=old.bytes
+      this.slots[this.head%LOG_SLOTS]=undefined;this.head++;this.evicted++
+    }
+    rec.id=this.next++;rec.height=0;this.slots[rec.id%LOG_SLOTS]=rec;this.bytes+=rec.bytes
+    this.setHeight(rec,this.estimate(rec))
+  }
+  /**
+   * 在宽度或筛选变化时重建高度索引，不创建历史行 DOM
+   */
+  reindex(){
+    this.tree.fill(0)
+    for(let id=this.head;id<this.next;id++){
+      const rec=this.get(id);rec.height=this.estimate(rec);this.tree[id%LOG_SLOTS+1]=rec.height
+    }
+    for(let i=1;i<=LOG_SLOTS;i++){const parent=i+(i&-i);if(parent<=LOG_SLOTS)this.tree[parent]+=this.tree[i]}
+  }
+  /**
+   * 清除浏览器历史和未完成尾行，保留网络请求代次
+   */
+  clear(){
+    this.slots.fill(undefined);this.tree.fill(0);this.head=this.next=0;this.bytes=0;this.evicted=0
+    this.pending=new Uint8Array(0);this.discard=false;this.follow=true;this.anchor=0;this.anchorDelta=0
+    this.nodes.clear();if(this.space)this.space.replaceChildren()
+  }
+}
+const LOGS=[new LogRing(0),new LogRing(1)]
+
 /**
  * 判断日志类型是否已定义
  * @param {number} type 日志类型编号
  * @return {boolean} 是否为已知类型
- * 遍历 BUS_LOG_TYPES，供筛选和类型解析复用
  */
-const busLogHasType=(type)=>{
-  for(let i=0; i<BUS_LOG_TYPES.length; i++) if(BUS_LOG_TYPES[i].type===type) return true
-  return false
-}
+const busLogHasType=(type)=>Object.prototype.hasOwnProperty.call(busLogColors,type)
 /**
  * 保存 BambuBus 日志筛选条件
- * 把 busLogFilters 序列化到 localStorage，忽略存储不可用等异常
+ * 本地存储不可用时仍保留当前页面的筛选结果
  */
-const saveBusLogFilters=()=>{
-  try{localStorage.setItem(busLogFilterStorage,JSON.stringify(busLogFilters));}catch(e){}
-}
+const saveBusLogFilters=()=>{try{localStorage.setItem(busLogFilterStorage,JSON.stringify(busLogFilters))}catch(e){}}
 /**
- * 初始化 BambuBus 日志类型筛选器
- * 读取本地保存的筛选状态，生成彩色复选框，并在用户切换时立即重绘日志
- */
-const initBusLogFilters=()=>{
-  let saved = {};
-  try{saved=JSON.parse(localStorage.getItem(busLogFilterStorage)||'{}')||{};}catch(e){}
-  const box = $('bus-log-filters');
-  for(let i=0; i<BUS_LOG_TYPES.length; i++){
-    const item = BUS_LOG_TYPES[i], key = String(item.type);
-    busLogFilters[item.type]=saved[key]!==false
-    const label = document.createElement('label'), input = document.createElement('input'),
-            text = document.createElement('span');
-    label.className='logfilter'
-    label.style.color=item.color
-    input.style.accentColor=item.color
-    input.type='checkbox'; input.checked=busLogFilters[item.type]; input.dataset.busType=key
-    input.onchange=function(){
-      const type = parseInt(this.dataset.busType, 10);
-      busLogFilters[type]=this.checked
-      saveBusLogFilters()
-      renderBusLog()
-    }
-    text.textContent=item.label
-    label.appendChild(input); label.appendChild(text); box.appendChild(label)
-  }
-}
-/**
- * 全选或取消全部日志类型
- * @param {boolean} checked 是否选中所有类型
- * 同步内存筛选值、复选框状态和本地存储，并重绘日志
- */
-const setAllBusLogFilters=(checked)=>{
-  for(let i=0; i<BUS_LOG_TYPES.length; i++) busLogFilters[BUS_LOG_TYPES[i].type]=checked
-  const inputs = document.querySelectorAll('#bus-log-filters input');
-  for(let j=0; j<inputs.length; j++) inputs[j].checked=checked
-  saveBusLogFilters()
-  renderBusLog()
-}
-/**
- * 从一行日志中解析类型编号
- * @param {string} line 包含 type=... 元数据的日志行
- * @return {number} 已知类型编号；无法识别时返回 -1
- * 用于按类型筛选以及抓取时决定是否保留该行
+ * 从原始日志行中读取类型编号
+ * @param {string} line 原始日志行
+ * @return {number} 已知类型编号或 -1
  */
 const busLogTypeFromLine=(line)=>{
-  const m = /\btype=(-?\d+)\b/.exec(line);
-  if(!m) return -1
-  const type = parseInt(m[1], 10);
+  const match=/\btype=(-?\d+)\b/.exec(line),type=match?Number(match[1]):-1
   return busLogHasType(type)?type:-1
 }
 /**
- * 按筛选条件重绘 BambuBus 日志
- * 从缓存记录生成彩色文本片段，移除内部 type 元数据，并保持当前日志滚动到底部
+ * 初始化筛选按钮，改变筛选时只重建高度索引及可视区
  */
-const renderBusLog=()=>{
-  const L = LOGS[1], out = document.createDocumentFragment();
-  for(let i=0; i<L.records.length; i++){
-    const rec = L.records[i];
-    if(busLogFilters[rec.type]===false) continue
-    const line = document.createElement('span');
-    line.style.color=busLogColors[rec.type]||busLogColors[-1]
-    // type=... 是给筛选器使用的元数据；页面保留原来的可读日志格式
-    line.textContent=fmtLogLine(rec.text.replace(/\btype=-?\d+\s+/,''))
-    out.appendChild(line)
+const initBusLogFilters=()=>{
+  let saved={};try{saved=JSON.parse(localStorage.getItem(busLogFilterStorage)||'{}')||{}}catch(e){}
+  for(const item of BUS_LOG_TYPES){
+    busLogFilters[item.type]=saved[item.type]!==false
+    const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span')
+    label.className='logfilter';label.style.color=item.color;input.style.accentColor=item.color
+    input.type='checkbox';input.checked=busLogFilters[item.type];input.dataset.busType=String(item.type)
+    input.onchange=()=>{busLogFilters[item.type]=input.checked;saveBusLogFilters();renderBusLog()}
+    text.textContent=item.label;label.append(input,text);$('bus-log-filters').appendChild(label)
   }
-  $('log1').replaceChildren(out)
-  if(activeLog===1) $('log1').scrollTop=$('log1').scrollHeight
 }
 /**
- * 追加 BambuBus 原始日志
- * @param {string} text 新收到的日志文本
- * 按行切分并解析类型，缓存完整行；超过 256KB 时裁剪到约 128KB，
- * 只有当前页签为 BambuBus 时才重绘页面
+ * 全选或取消所有日志类型
+ * @param {boolean} checked 是否显示全部类型
  */
-const appendBusLog=(text)=>{
-  const L = LOGS[1];
-  L.pending+=text
-  const lines = L.pending.split('\n');
-  L.pending=lines.pop()
-  for(let i=0; i<lines.length; i++){
-    const recordText = lines[i] + '\n';
-    L.records.push({type:busLogTypeFromLine(lines[i]),text:recordText})
-    L.rawBytes+=recordText.length
-  }
-  if(L.rawBytes>262144){
-    const target = 131072;
-    while(L.records.length&&L.rawBytes>target){L.rawBytes-=L.records.shift().text.length}
-  }
-  if(activeLog===1) renderBusLog()
+const setAllBusLogFilters=(checked)=>{
+  for(const item of BUS_LOG_TYPES)busLogFilters[item.type]=checked
+  for(const input of document.querySelectorAll('#bus-log-filters input'))input.checked=checked
+  saveBusLogFilters();renderBusLog()
 }
 /**
- * 切换日志显示通道
- * @param {number} ch 0 为主板日志，1 为 BambuBus 日志
- * 切换日志框和相关控制栏，更新按钮高亮，并滚动到最新内容
+ * 更新总线筛选后的高度索引，暂停时保留画面
+ */
+const renderBusLog=()=>{LOGS[1].reindex();requestLogRender()}
+/**
+ * 合并一帧内的显示更新，隐藏页和暂停期间不操作日志 DOM
+ */
+const requestLogRender=()=>{
+  if(logRenderFrame||TAB!=='logs'||paused||document.hidden)return
+  logRenderFrame=requestAnimationFrame(()=>{logRenderFrame=0;if(TAB==='logs'&&!paused&&!document.hidden)renderLogViewport(LOGS[activeLog])})
+}
+/**
+ * 保存当前可见顶部记录，新增和淘汰后用它保持阅读位置
+ * @param {LogRing} L 通道缓存
+ */
+const rememberLogAnchor=(L)=>{
+  const rec=L.atPixel(L.el.scrollTop)
+  if(rec){L.anchor=rec.id;L.anchorDelta=L.el.scrollTop-L.offset(rec.id)}
+}
+/**
+ * 按日志框实际内边距计算可视区，复用预留行节点并校正换行高度
+ * @param {LogRing} L 当前显示的通道缓存
+ */
+const renderLogViewport=(L)=>{
+  const width=L.space.clientWidth
+  if(width<=0)return
+  if(Math.abs(L.width-width)>0.5){L.width=width;L.reindex()}
+  const style=getComputedStyle(L.el)
+  const viewport=Math.max(0,L.el.clientHeight-parseFloat(style.paddingTop)-parseFloat(style.paddingBottom))
+  let top=L.follow?Math.max(0,L.totalHeight()-viewport):Math.max(0,L.offset(Math.max(L.head,Math.min(L.anchor,L.next-1)))+L.anchorDelta)
+  if(!L.get(L.anchor)&&!L.follow){top=0;L.anchor=L.head;L.anchorDelta=0}
+  top=Math.min(top,Math.max(0,L.totalHeight()-viewport))
+  const wanted=new Map();let rec=L.atPixel(Math.max(0,top-180)),count=0
+  while(rec&&count++<256){
+    const offset=L.offset(rec.id);if(offset>top+viewport+180)break
+    let node=L.nodes.get(rec.id)
+    if(!node){
+      node=document.createElement('div');node.className='logline';node.dataset.logId=String(rec.id)
+      node.textContent=rec.display||'\u200b'
+      if(L.ch===1)node.style.color=busLogColors[rec.type]||busLogColors[-1]
+      L.space.appendChild(node)
+    }
+    wanted.set(rec.id,node)
+    const next=offset+rec.height
+    rec=next<L.totalHeight()-0.01?L.atPixel(next+0.01):null
+  }
+  for(const [id,node] of L.nodes)if(!wanted.has(id))node.remove()
+  L.nodes=wanted
+  // 集中读完高度，再集中更新位置，避免逐行读写交错。
+  const measured=[]
+  for(const [id,node] of wanted)measured.push([L.get(id),node.getBoundingClientRect().height])
+  let corrected=false
+  for(const [item,height] of measured)if(height>0&&Math.abs(height-item.height)>0.5){L.setHeight(item,height);corrected=true}
+  for(const [id,node] of wanted)node.style.transform='translateY('+L.offset(id)+'px)'
+  L.space.style.height=L.totalHeight()+'px'
+  if(L.follow)top=Math.max(0,L.totalHeight()-viewport)
+  else if(L.get(L.anchor))top=Math.max(0,L.offset(L.anchor)+L.anchorDelta)
+  L.el.scrollTop=top;L.programmaticTop=L.el.scrollTop
+  rememberLogAnchor(L)
+  $('log-cache').textContent=(L.bytes/1048576).toFixed(2)+' / '+(L.capacity/1048576)+' MiB · '+(L.next-L.head)+' 行'+
+    (L.evicted?' · 已淘汰 '+L.evicted+' 行':'')+' · '+(logPollError?'连接中断，正在重试':paused?'显示已暂停，仍在收集':'正在收集')
+  if(corrected)requestLogRender()
+}
+/**
+ * 同步页头占用的高度，让日志卡片按视口剩余空间自动分配两路日志框
+ * 页头换行或升级提示出现时更新 CSS 变量，不在日志轮询中反复测量
+ */
+const syncLogLayout=()=>{
+  $('t-logs').style.setProperty('--log-header-height',document.querySelector('header').getBoundingClientRect().height+'px')
+}
+/**
+ * 安装滚动、页头和日志框尺寸监听器，初始化自适应高度与虚拟列表容器
+ */
+const initLogViews=()=>{
+  syncLogLayout()
+  new ResizeObserver(syncLogLayout).observe(document.querySelector('header'))
+  for(const L of LOGS){
+    L.el=$('log'+L.ch);L.space=document.createElement('div');L.space.className='logspace';L.el.replaceChildren(L.space)
+    L.el.addEventListener('scroll',()=>{
+      if(L.programmaticTop!==null&&Math.abs(L.el.scrollTop-L.programmaticTop)<1){L.programmaticTop=null;return}
+      L.programmaticTop=null;L.follow=L.el.scrollHeight-L.el.scrollTop-L.el.clientHeight<24
+      rememberLogAnchor(L);requestLogRender()
+    },{passive:true})
+    new ResizeObserver(()=>requestLogRender()).observe(L.el)
+  }
+  logMeasure.font=getComputedStyle(LOGS[0].el).font
+  document.addEventListener('visibilitychange',()=>{requestLogRender();if(!document.hidden&&logStarted)scheduleLogPoll(0)})
+}
+/**
+ * 切换两路日志的显示及控制栏，历史缓冲保持不变
+ * @param {number} ch 主板为 0，总线为 1
  */
 const showLog=(ch)=>{
   activeLog=ch
-  $('log0').classList.toggle('hide',ch!==0)
-  $('log1').classList.toggle('hide',ch!==1)
-  const busControls = document.querySelectorAll('.bus-only-control');
-  for(let k=0; k<busControls.length; k++) busControls[k].classList.toggle('hide',ch!==1)
-  const bs = document.querySelectorAll('[data-log]');
-  for(let i=0; i<bs.length; i++) bs[i].classList.toggle('on',+bs[i].getAttribute('data-log')===ch)
-  if(ch===1) renderBusLog()
-  else $('log0').textContent=LOGS[0].txt
-  const el = $('log' + ch);
-  el.scrollTop=el.scrollHeight
+  $('log0').classList.toggle('hide',ch!==0);$('log1').classList.toggle('hide',ch!==1)
+  for(const control of document.querySelectorAll('.bus-only-control'))control.classList.toggle('hide',ch!==1)
+  for(const button of document.querySelectorAll('[data-log]'))button.classList.toggle('on',Number(button.dataset.log)===ch)
+  requestLogRender()
 }
 /**
- * 暂停或继续日志刷新
- * 翻转暂停状态，并更新按钮文字和显示样式
+ * 暂停或恢复显示，后台轮询和环形缓冲继续工作
  */
 const togglePause=()=>{
-  paused=!paused
-  $('btn-pause').textContent=paused?'继续':'暂停'
-  $('btn-pause').classList.toggle('on',paused)
+  paused=!paused;$('btn-pause').textContent=paused?'继续':'暂停';$('btn-pause').classList.toggle('on',paused)
+  $('log-cache').textContent=paused?'显示已暂停，后台继续收集；继续后可查看仍在缓存中的日志':''
+  requestLogRender()
 }
 /**
- * 清空当前日志缓冲区
- * 请求服务端清除日志并同步日志序号，同时清理前端缓存和显示内容
+ * 解析完整日志行并追加到缓存，时间只换算一次
+ * @param {LogRing} L 通道缓存
+ * @param {Uint8Array} bytes 完整行原始字节
+ * @param {number} startSeq 此行的设备起始游标
+ * @param {number} endSeq 此行的设备结束游标
+ */
+const storeLogLine=(L,bytes,startSeq,endSeq)=>{
+  const raw=logDecoder.decode(bytes).replace(/\r?\n$/,''),match=/^\[(\d+)\] /.exec(raw)
+  const text=fmtLogLine(raw),type=busLogTypeFromLine(raw),display=L.ch===1?text.replace(/\btype=-?\d+\s+/,''):text
+  L.push({text,display,bytes:bytes.length,type,boot:logBoot,uptime:match?Number(match[1]):null,startSeq,endSeq,
+    textWidth:logMeasure.measureText(display.replace(/\t/g,'        ')).width})
+  if(L.ch===1&&busCapture&&busCapture.firstId===null&&match&&logBoot===busCapture.boot&&
+    ((startSeq-busCapture.startSeq)>>>0)<0x80000000&&((Number(match[1])-busCapture.uptime)>>>0)<=BUS_CAPTURE_MS)busCapture.firstId=L.next-1
+}
+/**
+ * 添加本地分界或截断提示，保留独立行以免与设备尾行粘连
+ * @param {LogRing} L 通道缓存
+ * @param {string} message 提示文本
+ */
+const addLogNotice=(L,message)=>{
+  const text='[浏览器] '+message
+  storeLogLine(L,logEncoder.encode(text+'\n'),L.seq,L.seq)
+}
+/**
+ * 按字节组装跨请求的完整行，保证中文不会在 HTTP 分块边界被截断
+ * @param {LogRing} L 通道缓存
+ * @param {Uint8Array} bytes 新日志字节
+ * @param {number} endSeq 本批结束游标
+ */
+const appendLogBytes=(L,bytes,endSeq)=>{
+  const joined=new Uint8Array(L.pending.length+bytes.length)
+  joined.set(L.pending);joined.set(bytes,L.pending.length)
+  const base=(endSeq-joined.length)>>>0;let start=0
+  for(let i=0;i<joined.length;i++)if(joined[i]===10){
+    if(!L.discard&&i+1-start<=LOG_PENDING_MAX)storeLogLine(L,joined.subarray(start,i+1),(base+start)>>>0,(base+i+1)>>>0)
+    else if(!L.discard)addLogNotice(L,'单行过长，已丢弃该行')
+    L.discard=false;start=i+1
+  }
+  const tail=joined.subarray(start)
+  if(tail.length>LOG_PENDING_MAX){if(!L.discard)addLogNotice(L,'单行过长，正在跳过至下一换行');L.discard=true}
+  L.pending=L.discard?new Uint8Array(0):tail.slice()
+}
+/**
+ * 清空当前通道并将设备清空操作排入下一次合并请求
+ * 请求代次防止较早的在途响应重新填入已清空日志
  */
 const clearLog=()=>{
-  const ch = activeLog;
-  fetch('/api/log?ch='+ch+'&clear=1').then((r)=>{
-    const L = LOGS[ch];
-    L.seq=parseInt(r.headers.get('X-Log-Seq')||'0',10)
-    L.txt=''
-    L.pending=''
-    if(ch===1){L.records=[];L.rawBytes=0;renderBusLog();}
-    else $('log'+ch).textContent=''
-  })
+  const L=LOGS[activeLog];L.epoch++;L.clearPending=true;L.clear();L.space.style.height='0px'
+  if(L.ch===1&&(busCapture||busCapturePending)){
+    busCapture=null;busCapturePending=false;busCaptureVersion++;busCaptureRefresh();toast('总线日志已清空，抓取已取消')
+  }
+  $('log-cache').textContent='已清空浏览器缓存，正在同步设备';requestLogRender();scheduleLogPoll(0)
 }
 /**
- * 下载当前日志文件
- * 拉取当前通道的完整环形缓冲，把行首毫秒数转换为浏览器本地时间后下载
+ * 生成带本地时间的日志文件名
+ * @param {number} ch 日志通道
+ * @return {string} 下载文件名
+ */
+const logFileName=(ch)=>{
+  const d=new Date(),pad=(v)=>String(v).padStart(2,'0')
+  return (ch===1?'bambubus-':'main-')+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'-'+pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds())+'.log'
+}
+/**
+ * 导出当前通道的全部缓存记录，不受虚拟显示和筛选影响
  */
 const downloadLog=()=>{
-  const ch=activeLog, parts=[]
-  /**
-   * 分块拉取完整日志
-   * @param {number} seq 服务端读取游标
-   * @return {Promise<string>} 拼接后的完整日志文本
-   * 单次接口最多返回 16KB，拿满后继续按新游标拉取，避免下载内容被截断
-   */
-  const readAll=(seq)=>{
-    return fetch('/api/log?ch='+ch+'&seq='+seq).then((r)=>{
-      syncLogClock(r)
-      const next=parseInt(r.headers.get('X-Log-Seq')||'0',10)
-      return r.blob().then((blob)=>{
-        if(blob.size) parts.push(blob)
-        if(blob.size>=BUS_CAPTURE_CHUNK) return readAll(next)
-        return new Response(new Blob(parts)).text()
-      })
-    })
-  }
-  readAll(0).then((text)=>{
-    const d=new Date(),pad=(v)=>String(v).padStart(2,'0')
-    const name=(ch===1?'bambubus-':'main-')+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'-'+
-               pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds())+'.log'
-    saveTextFile(name,fmtLogText(text))
-  }).catch(()=>toast('日志下载失败',4000))
+  const L=LOGS[activeLog],parts=[]
+  if(L.evicted)parts.push('[浏览器] 环形缓冲已淘汰 '+L.evicted+' 行较早日志\n')
+  for(let id=L.head;id<L.next;id++)parts.push(L.get(id).text+'\n')
+  saveTextFile(logFileName(activeLog),parts.join(''))
 }
 
-// ---------- BambuBus 报文抓取：抓未来 10 秒的数据，抓完下载 ----------
-// 单次抓取的持续时间（毫秒）
+// 一个轮询器负责普通收集、清空及抓取；请求失败时不推进任何游标。
+let logStarted=false,logPollBusy=false,logPollTimer=null,logPollError=false
 const BUS_CAPTURE_MS=30000
-// 无积压时的轮询间隔（毫秒）
-const BUS_CAPTURE_STEP=200
-// 服务端单次拉取上限；拿满说明还有积压，立即继续拉取
-const BUS_CAPTURE_CHUNK=16384
-// 大于写游标的伪序号：只同步游标，不返回旧数据
-const BUS_CAPTURE_SYNC=4294967295
-// 当前抓取任务对象；null 表示未抓取
-let busCapture=null
-// 是否正在同步抓取起点，防止重复启动
-let busCaptureBusy=false
-// 用一个超前序号让服务端把游标退回当前写入位置，保证只抓点击之后的数据
+let busCapture=null,busCapturePending=false,busCaptureVersion=0,busCaptureLabelTimer=null
 /**
- * 同步 BambuBus 日志抓取起点
- * @return {Promise<number>} 当前日志写入序号
- * 发送超前序号只读取游标，确保抓取只包含点击开始之后产生的报文
+ * 安排下一次合并读取；忙碌时由当前请求收尾继续调度
+ * @param {number} delay 等待毫秒数
  */
-const busCaptureSyncSeq=()=>
-  fetch('/api/log?ch=1&seq='+BUS_CAPTURE_SYNC).then((r)=>{
-    syncLogClock(r)
-    const s=r.headers.get('X-Log-Seq')
-    return r.text().then(()=>{
-      const seq=s===null?NaN:parseInt(s,10)
-      return (isFinite(seq)&&seq!==BUS_CAPTURE_SYNC)?seq:LOGS[1].seq
-    })
-  }).catch(()=>LOGS[1].seq)
+const scheduleLogPoll=(delay)=>{
+  if(!logStarted||logPollBusy)return
+  if(logPollTimer!==null)clearTimeout(logPollTimer)
+  logPollTimer=setTimeout(pollLogs,delay)
+}
 /**
- * 刷新报文抓取按钮状态
- * 根据抓取进行状态禁用或启用按钮，并显示剩余抓取秒数
+ * 第一次进入日志页开始收集，此后切换功能页继续保留并接收日志
+ */
+const startLogCollection=()=>{if(!logStarted){logStarted=true;scheduleLogPoll(0)}requestLogRender()}
+/**
+ * 检查合并响应中的无符号整数字段
+ * @param {Response} response HTTP 响应
+ * @param {string} name 响应头名称
+ * @return {number} 已验证的 32 位无符号值
+ */
+const logHeaderNumber=(response,name)=>{
+  const value=response.headers.get(name)
+  if(value===null||!/^\d+$/.test(value)||Number(value)>4294967295)throw new Error('日志响应头无效：'+name)
+  return Number(value)
+}
+/**
+ * 下载已保留的抓取区间，按开始时的筛选条件输出并提示数据缺口
+ * @param {string} reason 可选的不完整原因
+ */
+const finishBusCapture=(reason='')=>{
+  const cap=busCapture;if(!cap)return
+  const L=LOGS[1],parts=[],overwritten=cap.firstId!==null&&L.head>cap.firstId;let count=0
+  if(reason||cap.lost||overwritten)parts.push('[浏览器] 抓取不完整：'+(reason||'部分日志已被设备或浏览器覆盖')+'\n')
+  for(let id=Math.max(L.head,cap.firstId===null?L.next:cap.firstId);id<L.next;id++){
+    const rec=L.get(id),distance=(rec.startSeq-cap.startSeq)>>>0
+    if(rec.boot!==cap.boot||rec.uptime===null||distance>=0x80000000||((rec.uptime-cap.uptime)>>>0)>BUS_CAPTURE_MS)continue
+    if(cap.stopSeq!==null&&((rec.endSeq-cap.startSeq)>>>0)>((cap.stopSeq-cap.startSeq)>>>0))continue
+    if(cap.filters[rec.type]===false)continue
+    parts.push(rec.text+'\n');count++
+  }
+  busCapture=null;busCaptureRefresh();saveTextFile(logFileName(1),parts.join(''))
+  toast('抓取结束，共 '+count+' 行'+(reason||cap.lost||overwritten?'，部分数据不完整':''),6000)
+}
+/**
+ * 更新抓取按钮倒计时，仅在任务运行期间保留计时器
  */
 const busCaptureRefresh=()=>{
-  const btn=$('btn-buscap');if(!btn) return
-  btn.disabled=!!busCapture||busCaptureBusy
-  btn.classList.toggle('on',!!busCapture)
-  btn.textContent=busCapture?('抓取中 '+Math.max(0,(busCapture.until-Date.now())/1000).toFixed(1)+'s'):'抓取 30 秒'
-}
-// 逐行解析：显示类型里没勾选的一律不抓
-/**
- * 把新日志追加到抓取结果
- * @param {Object} cap 当前抓取上下文
- * @param {string} text 新收到的日志文本
- * 按行解析类型，只保留筛选器勾选的完整日志行
- */
-const busCaptureAppend=(cap,text)=>{
-  cap.pending+=text
-  const lines=cap.pending.split('\n');
-  cap.pending=lines.pop()
-  for(let i=0;i<lines.length;i++){
-    if(!lines[i]) continue                       // 空行不入档
-    const type=busLogTypeFromLine(lines[i])
-    if(cap.filters[type]===false) continue       // 显示类型里没勾选的类型不抓
-    cap.lines.push(fmtLogLine(lines[i]))
-  }
+  const button=$('btn-buscap');button.disabled=!!busCapture||busCapturePending
+  button.classList.toggle('on',!!busCapture)
+  button.textContent=busCapturePending?'正在同步抓取起点':busCapture?('抓取中 '+Math.max(0,(busCapture.until-Date.now())/1000).toFixed(1)+'s'):'抓取 30 秒'
+  if((busCapture||busCapturePending)&&busCaptureLabelTimer===null)busCaptureLabelTimer=setInterval(busCaptureRefresh,100)
+  if(!busCapture&&!busCapturePending&&busCaptureLabelTimer!==null){clearInterval(busCaptureLabelTimer);busCaptureLabelTimer=null}
 }
 /**
- * 下载抓取到的 BambuBus 日志
- * @param {Object} cap 当前抓取上下文
- * 按本地时间生成文件名，把缓存行打包成文本并触发浏览器下载
- */
-const busCaptureSave=(cap)=>{
-  /**
-   * 把数字补齐为两位
-   * @param {number} v 待补零数字
-   * @return {string} 至少两位的文本
-   * 用于生成 yyyyMMdd-HHmmss 格式的日志文件名
-   */
-  const d=new Date(),pad=(v)=>String(v).padStart(2,'0')
-  const name='bambubus-'+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'-'+
-             pad(d.getHours())+pad(d.getMinutes())+pad(d.getSeconds())+'.log'
-  const text=cap.lines.length?(cap.lines.join('\n')+'\n'):''
-  saveTextFile(name,text)
-}
-/**
- * 结束并保存报文抓取
- * @param {Object} cap 当前抓取上下文
- * 清理计时器、恢复按钮、下载日志，并按抓取行数显示完成提示
- */
-const busCaptureFinish=(cap)=>{
-  if(busCapture!==cap) return
-  busCapture=null
-  if(cap.timer) clearTimeout(cap.timer)
-  clearInterval(cap.labelTimer)
-  busCaptureRefresh()
-  busCaptureSave(cap)
-  toast(cap.lines.length?('抓取结束，共 '+cap.lines.length+' 行，开始下载'):'30 秒内没有抓到所选类型的报文，已下载空文件',6000)
-}
-/**
- * 拉取一段抓取期间产生的日志
- * 从记录序号增量读取，追加筛选后的内容；到截止时间后结束并保存，否则安排下一次轮询
- */
-const busCapturePoll=()=>{
-  const cap=busCapture
-  if(!cap) return
-  cap.timer=null
-  fetch('/api/log?ch=1&seq='+cap.seq).then((r)=>{
-    syncLogClock(r)
-    const s=r.headers.get('X-Log-Seq')
-    if(s!==null) cap.seq=parseInt(s,10)
-    return r.text()
-  }).then((t)=>{
-    if(busCapture!==cap) return
-    if(t) busCaptureAppend(cap,t)
-    // 到点后再拉一次，把截止时间之前写进缓冲区、还没取走的数据取干净
-    const left=cap.until-Date.now()
-    if(left<=0) busCaptureFinish(cap)
-    else cap.timer=setTimeout(busCapturePoll,t.length>=BUS_CAPTURE_CHUNK?0:Math.min(BUS_CAPTURE_STEP,left))
-  }).catch(()=>{
-    if(busCapture!==cap) return
-    const left=cap.until-Date.now()
-    if(left<=0) busCaptureFinish(cap)
-    else cap.timer=setTimeout(busCapturePoll,Math.min(400,left))
-  })
-}
-/**
- * 开始 30 秒 BambuBus 报文抓取
- * 先同步日志游标，记录当前筛选条件，启动轮询和按钮倒计时
+ * 在下一次统一请求中同步抓取起点，不启动额外网络轮询
  */
 const startBusCapture=()=>{
-  if(busCapture||busCaptureBusy) return
-  busCaptureBusy=true
-  busCaptureRefresh()
-  busCaptureSyncSeq().then((seq)=>{
-    busCaptureBusy=false
-    if(busCapture) return
-    const filters={}
-    for(let i=0;i<BUS_LOG_TYPES.length;i++)
-      filters[BUS_LOG_TYPES[i].type]=busLogFilters[BUS_LOG_TYPES[i].type]!==false
-    busCapture={seq:seq,until:Date.now()+BUS_CAPTURE_MS,lines:[],pending:'',filters:filters,timer:null,labelTimer:null}
-    busCaptureRefresh()
-    busCapture.labelTimer=setInterval(busCaptureRefresh,100)
-    toast('正在抓取 BambuBus 报文…')
-    busCapturePoll()
-  })
+  if(busCapture||busCapturePending)return
+  busCapturePending={filters:{...busLogFilters}};busCaptureVersion++;busCaptureRefresh();startLogCollection();scheduleLogPoll(0)
 }
 /**
- * 追加指定通道的日志文本
- * @param {number} ch 日志通道，0 为主板，1 为 BambuBus
- * @param {string} text 新日志
- * BambuBus 走按类型缓存的渲染逻辑；主板日志按 256KB/128KB 上限裁剪
- * 非当前页签只更新缓存，不写 DOM，切回时由 showLog() 统一渲染
+ * 一次获取两路日志，完整校验响应后再更新对应通道的缓存与游标
+ * 清空使用请求代次隔离；启动标识变化时保留历史并重置尾行和时间基准
  */
-const appendLog=(ch,text)=>{
-  if(ch===1){appendBusLog(text);return}
-  const L = LOGS[ch], el = $('log' + ch);
-  L.pending+=text
-  const lines=L.pending.split('\n')
-  L.pending=lines.pop()
-  for(let i=0;i<lines.length;i++) L.txt+=fmtLogLine(lines[i])+'\n'
-  if(L.txt.length>262144) L.txt=L.txt.slice(-131072)
-  if(ch!==activeLog) return
-  el.textContent=L.txt
-  el.scrollTop=el.scrollHeight
+const pollLogs=async()=>{
+  logPollTimer=null;if(!logStarted||logPollBusy)return
+  logPollBusy=true
+  const epochs=LOGS.map(L=>L.epoch),clearMask=LOGS.reduce((mask,L)=>mask|(L.clearPending?(1<<L.ch):0),0)
+  const captureVersion=busCaptureVersion,starting=busCapturePending,stopping=busCapture&&Date.now()>=busCapture.until&&busCapture.stopSeq===null
+  const query=new URLSearchParams({both:'1',main_seq:String(LOGS[0].seq),bus_seq:String(LOGS[1].seq)})
+  if(logBoot!==null)query.set('boot',logBoot)
+  if(clearMask)query.set('clear_mask',String(clearMask))
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),5000)
+  let delay=busCapture?200:800
+  try{
+    const response=await fetch('/api/log?'+query,{signal:controller.signal,cache:'no-store'})
+    if(!response.ok)throw new Error('日志 HTTP '+response.status)
+    const boot=response.headers.get('X-Log-Boot');if(!boot)throw new Error('缺少日志启动标识')
+    const uptime=logHeaderNumber(response,'X-Uptime-Ms'),boundary=logHeaderNumber(response,'X-Log-Boundary')
+    const channels=['Main','Bus'].map(name=>({length:logHeaderNumber(response,'X-Log-'+name+'-Length'),
+      seq:logHeaderNumber(response,'X-Log-'+name+'-Seq'),total:logHeaderNumber(response,'X-Log-'+name+'-Total'),dropped:logHeaderNumber(response,'X-Log-'+name+'-Dropped')}))
+    const bytes=new Uint8Array(await response.arrayBuffer())
+    if(channels.some(ch=>ch.length>8192)||bytes.length!==channels[0].length+channels[1].length)throw new Error('日志响应长度不匹配')
+    const restarted=logBoot!==null&&logBoot!==boot
+    if(restarted){
+      if(busCapture)finishBusCapture('设备已重启')
+      for(const L of LOGS){L.pending=new Uint8Array(0);L.discard=false}
+    }
+    logBoot=boot;setLogClock(uptime);logPollError=false
+    if(restarted)for(const L of LOGS)if(epochs[L.ch]===L.epoch&&!L.clearPending)addLogNotice(L,'设备已重启，以下为新的启动周期')
+    if(starting&&busCapturePending&&captureVersion===busCaptureVersion){
+      busCapturePending=false
+      busCapture={boot,uptime,startSeq:boundary,stopSeq:null,until:Date.now()+BUS_CAPTURE_MS,filters:starting.filters,firstId:null,lost:false}
+      busCaptureRefresh()
+    }
+    if(stopping&&busCapture&&captureVersion===busCaptureVersion)busCapture.stopSeq=boundary
+    let offset=0,backlog=false
+    for(let ch=0;ch<2;ch++){
+      const L=LOGS[ch],part=channels[ch],data=bytes.subarray(offset,offset+part.length);offset+=part.length
+      if(epochs[ch]!==L.epoch)continue
+      if(part.dropped){
+        L.pending=new Uint8Array(0);L.discard=false
+        if(ch===1&&busCapture){
+          const lostAfterStart=(L.seq+part.dropped-busCapture.startSeq)>>>0
+          if(lostAfterStart>0&&lostAfterStart<0x80000000)busCapture.lost=true
+        }
+      }
+      appendLogBytes(L,data,part.seq);L.seq=part.seq
+      if(clearMask&(1<<ch))L.clearPending=false
+      backlog=backlog||part.seq!==part.total
+    }
+    if(busCapture&&busCapture.stopSeq!==null&&((LOGS[1].seq-busCapture.stopSeq)>>>0)<0x80000000)finishBusCapture()
+    if(busCapture&&Date.now()>busCapture.until+10000)finishBusCapture('未能及时读完截止前的日志')
+    delay=backlog?20:busCapture?200:800
+    requestLogRender()
+  }catch(error){
+    logPollError=true;delay=1000
+    if(busCapture&&Date.now()>busCapture.until+10000)finishBusCapture('连接中断')
+    if(TAB==='logs')$('log-cache').textContent='日志连接中断，正在重试；已收到的日志仍保留'
+  }finally{
+    clearTimeout(timeout);logPollBusy=false
+    if(LOGS.some(L=>L.clearPending)||busCapturePending)delay=logPollError?1000:0
+    scheduleLogPoll(delay)
+  }
 }
-/**
- * 增量轮询指定日志通道
- * @param {number} ch 日志通道，0 为主板，1 为 BambuBus
- * 只在日志标签页且未暂停时请求新内容；busy 防止同一通道重复请求，
- * 非当前页签只更新缓存，由 showLog() 在切换时渲染
- */
-const pollLogChannel=(ch)=>{
-  if(TAB!=='logs'||paused) return
-  const L = LOGS[ch];
-  if(L.busy) return
-  L.busy=true
-  fetch('/api/log?ch='+ch+'&seq='+L.seq).then((r)=>{
-    syncLogClock(r)
-    const s = r.headers.get('X-Log-Seq');
-    if(s!==null) L.seq=parseInt(s,10)
-    return r.text()
-  }).then((t)=>{ if(t) appendLog(ch,t); }).catch(()=>{}).finally(()=>{L.busy=false})
-}
+
 
 // ---------- 启动 ----------
 document.getElementById('toast').onclick=toastOff
@@ -2122,14 +2220,14 @@ S = {};
 let savedTab = 'status';
 try{savedTab=localStorage.getItem('bmcu-tab')||'status';}catch(e){}
 initBusLogFilters()
+initLogViews()
 showTab(savedTab)
 refreshStatus()
 loadPara()
 loadProjects()
 setInterval(refreshStatus,1000)
 setInterval(renderMotorControls,200)
-setInterval(()=>pollLogChannel(activeLog),800)
-setInterval(()=>pollLogChannel(1-activeLog),2000)
+
 </script>
 </body>
 </html>
