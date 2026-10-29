@@ -11,6 +11,15 @@ const path = require('node:path');
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
     const pins = Array.from({ length: 48 }, (_, id) => ({ id, label: `IO${id}` }));
+    const gpioPins = pins.slice();
+    for (let id = 50; id <= 113; ++id) {
+      const offset = id - 50, bit = offset % 16;
+      pins.push({ id, label: `PCF8575 0x${(0x20 + Math.floor(offset / 16)).toString(16)} P${bit < 8 ? bit : bit + 2}` });
+    }
+    const i2cStatus = { configured: false, pcf: false, pcf_devices: [
+      { address: 0x23, online: true }, { address: 0x20, online: false },
+      { address: 0x22, online: false }, { address: 0x21, online: true },
+    ] };
     const settings = {
       ams: 1, channels: 4, maxams: 4, motor_limit: 1, manual_ms: 300, auto_ms: 1000,
       cm: Array(16).fill(2), to: Array(16).fill(7), serial: '', ams_version: '90.0.0.0',
@@ -19,7 +28,7 @@ const path = require('node:path');
         motor: Array.from({ length: 16 }, (_, i) => i < 4 ? [i * 2, i * 2 + 1] : [255, 255]),
         microswitch: Array(16).fill(255), pins,
       },
-      pcf: { supported: true, sda: 46, scl: 47, pins },
+      pcf: { configured: true, sda: 46, scl: 47, pins: gpioPins },
     };
     const posts = [];
     let failSave = false;
@@ -57,6 +66,7 @@ const path = require('node:path');
       else if (url.pathname === '/api/status') data = {
         ...settings, mode: 'STA', ip: '192.0.2.1', chip: 'ESP32-C3', rs485: 1,
         maintenance: true, printer: 0, motors: [], fl: [], uptime: 10, heap: 102400, heap_total: 204800,
+        i2c: i2cStatus,
       };
       await route.fulfill({ json: data });
     });
@@ -169,11 +179,47 @@ const path = require('node:path');
     await page.waitForFunction(() => !otaChecking);
     assert.match(await page.locator('#u-stat').innerText(), /检查失败/);
     assert.equal(await page.locator('#btn-otapull').isDisabled(), true, 'failure must invalidate old update');
+
+    // 四片按地址显示状态，数组顺序和首片缺失不应影响其他芯片。
+    await page.evaluate(() => refreshStatus());
+    for (const id of ['s-pcf', 's-pcf-1', 's-pcf-2', 's-pcf-3'])
+      assert.equal(await page.locator('#' + id).textContent(), '未配置');
+    i2cStatus.configured = true;
+    await page.evaluate(() => refreshStatus());
+    for (const [id, expected] of [['s-pcf', '未检测'], ['s-pcf-1', '已检测'], ['s-pcf-2', '未检测'], ['s-pcf-3', '已检测']])
+      assert.equal(await page.locator('#' + id).textContent(), expected);
+
+    await page.reload();
+    await page.waitForFunction(() => document.querySelectorAll('#iobody tr').length === 4);
+    await page.click('[data-tab="settings"]');
+    await page.evaluate(() => loadPara());
+    assert.equal(await page.locator('#io-mf0 option').evaluateAll(options =>
+      options.filter(option => Number(option.value) >= 50 && Number(option.value) <= 113).length), 64);
+    assert.match(await page.locator('#io-mf0 option[value="113"]').textContent(), /0x23 P17/);
+    for (let ch = 0; ch < 4; ++ch) {
+      await page.selectOption('#io-mf' + ch, String(50 + ch * 16));
+      await page.selectOption('#io-mb' + ch, String(51 + ch * 16));
+      await page.selectOption('#io-sw' + ch, String(65 + ch * 16));
+    }
+    const beforePcfSave = posts.length;
+    await page.selectOption('#io-mf1', '50');
+    await page.evaluate(() => saveIoConfig());
+    assert.equal(posts.length, beforePcfSave, '同一扩展脚重复使用仍须拒绝');
+    await page.selectOption('#io-mf1', '66');
+    await page.evaluate(() => saveIoConfig());
+    assert.equal(posts.at(-1).get('io_sw3'), '113');
+    await page.evaluate(() => loadPara());
+    for (let ch = 0; ch < 4; ++ch) {
+      assert.equal(await page.inputValue('#io-mf' + ch), String(50 + ch * 16));
+      assert.equal(await page.inputValue('#io-sw' + ch), String(65 + ch * 16));
+    }
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'mobile layout must fit');
+    await page.click('[data-tab="status"]');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '四片状态必须适配手机宽度');
     if (process.env.WEB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.WEB_TEST_SCREENSHOT, fullPage: true });
     assert.deepEqual(errors, []);
-    console.log('PASS: settings, channel persistence, OTA source display/failure, duplicate checks, mobile layout');
+    console.log('PASS: settings, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
   } finally {
     await browser.close();
   }

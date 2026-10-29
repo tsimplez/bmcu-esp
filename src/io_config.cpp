@@ -236,12 +236,17 @@ bool io_config_pin_has_warning(int pin) {
 /**
  * 生成引脚可读名称
  * @param pin 引脚号
- * @return “无”、IOx 或 PCF8575 Px
- * 供网页和日志统一显示引脚名称
+ * @return “无”、IOx 或带芯片地址的 PCF8575 Px
+ * 网页和日志按地址区分四片扩展器；面板名称与寄存器位序分开转换
  */
 String io_config_pin_label(int pin) {
     if (pin == PIN_NONE) return "无";
-    if (IS_PCF8575_VIRTUAL_PIN(pin)) return String("PCF8575 P") + String(VIRTUAL_TO_PCF8575_PIN(pin));
+    if (IS_PCF8575_VIRTUAL_PIN(pin)) {
+        char label[24];
+        snprintf(label, sizeof(label), "PCF8575 0x%02X P%d",
+                 PCF8575_ADDR + VIRTUAL_TO_PCF8575_DEVICE(pin), VIRTUAL_TO_PCF8575_PIN(pin));
+        return String(label);
+    }
     return String("IO") + String(pin);
 }
 

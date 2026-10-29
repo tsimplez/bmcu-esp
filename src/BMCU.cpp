@@ -55,9 +55,6 @@ struct ChannelState {
 };
 }
 
-// PCF8575 扩展 IO 对象；I2C 总线配置有效时由 PCF8575_init() 初始化
-PCF8575 pcf8575(PCF8575_ADDR);
-
 // 所有电机调用均在 Arduino loop 中串行执行，不在 ISR 中驱动
 // 每个通道的运行、互锁、延迟停车和微动状态集中保存在这里
 static ChannelState channel_state[IO_CONFIG_MAX_CHANNELS];
@@ -155,8 +152,8 @@ static bool channel_switch_ready(const int motorNum) {
 /**
  * 检查通道电机引脚是否配置完整
  * @param motorNum 通道编号
- * @return true 表示进料和退料引脚都已配置
- * 任一方向引脚为 PIN_NONE 时拒绝启动电机，避免界面显示运行但硬件无输出
+ * @return true 表示进料和退料引脚均已配置且各自所属扩展芯片在线
+ * 任一方向为 PIN_NONE 或所属芯片缺失时拒绝启动，不能借用其他芯片的在线状态
  */
 bool BMCU_channel_motor_ready(const int motorNum) {
     if (!valid_channel(motorNum)) return false;
@@ -164,8 +161,8 @@ bool BMCU_channel_motor_ready(const int motorNum) {
     const int backward_pin = IO_CONFIG.motor[motorNum][1];
     if (forward_pin == PIN_NONE || backward_pin == PIN_NONE) return false;
     // 扩展引脚依赖 PCF8575；芯片未检测到时不能假装电机已就绪
-    if ((IS_PCF8575_VIRTUAL_PIN(forward_pin) || IS_PCF8575_VIRTUAL_PIN(backward_pin)) &&
-        !PCF8575_is_online()) {
+    if ((IS_PCF8575_VIRTUAL_PIN(forward_pin) && !PCF8575_pin_is_online(forward_pin)) ||
+        (IS_PCF8575_VIRTUAL_PIN(backward_pin) && !PCF8575_pin_is_online(backward_pin))) {
         return false;
     }
     return true;
@@ -272,7 +269,7 @@ int BMCU_channel_filament_state(const int motorNum) {
 
 /**
  * 按通道模式刷新在线状态
- * 在线模式直接标记有料；自动模式读取微动；其余模式标记无料
+ * 在线模式直接标记有料；自动模式按微动所属芯片判断可读性；其余模式标记无料
  */
 void BMCU_apply_channel_modes() {
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
@@ -281,8 +278,8 @@ void BMCU_apply_channel_modes() {
         if (enabled && CHANNEL_MODE[i] == CHANNEL_MODE_AUTO &&
             IO_CONFIG.microswitch[i] != PIN_NONE) {
             int pin = IO_CONFIG.microswitch[i];
-            if (!IS_PCF8575_VIRTUAL_PIN(pin) || PCF8575_is_online())
-                online_now = !(IS_PCF8575_VIRTUAL_PIN(pin) ? PCF8575_digitalRead(pin) : digitalRead(pin));
+            if (!IS_PCF8575_VIRTUAL_PIN(pin) || PCF8575_pin_is_online(pin))
+                online_now = !digitalRead_PCF8575(pin);
             else
                 online_now = false;
         }
@@ -749,7 +746,7 @@ static bool autoload_blocked(const int motorNum) {
 
 /**
  * 检测微动开关并触发自动进料
- * 轮询各通道微动状态，做 30ms 防抖；自动模式下由无料变有料时启动限时辅助进料
+ * 轮询各通道微动状态，按所属扩展芯片检查在线状态并做 30ms 防抖；自动模式下由无料变有料触发辅助进料
  */
 void check_microswitch_status() {
     const uint32_t now = millis();
@@ -772,13 +769,13 @@ void check_microswitch_status() {
             continue;
         }
         // PCF8575 未检测到时不能读取扩展输入，保持未知状态并跳过辅助进料
-        if (IS_PCF8575_VIRTUAL_PIN(pin) && !PCF8575_is_online()) {
+        if (IS_PCF8575_VIRTUAL_PIN(pin) && !PCF8575_pin_is_online(pin)) {
             ch.msw_previous = ch.msw_raw = -1;
             continue;
         }
 
         // sw 微动高低电平 默认拉低是在线
-        const bool sw = IS_PCF8575_VIRTUAL_PIN(pin) ? PCF8575_digitalRead(pin) : digitalRead(pin);
+        const bool sw = digitalRead_PCF8575(pin);
         const bool online = !sw;
         set_filament_online(i / 4, i % 4, online); // 通道状态立即生效，界面实时刷新
 
@@ -806,13 +803,15 @@ void check_microswitch_status() {
 
 /**
  * BMCU系统初始化
- * 初始化IO引脚、传感器、通信等
+ * 初始化四片扩展 IO、通道引脚、传感器和通信，逐地址记录检测结果
  */
 void BMCU_init() {
     // 初始化 PCF8575 虚拟引脚映射；I2C 未配置时不访问总线
     if (i2c_bus_configured()) {
         PCF8575_init();
-        LOG_MAIN("[i2c] PCF8575=%s", PCF8575_is_online() ? "已检测" : "未检测");
+        for (uint8_t device = 0; device < PCF8575_DEVICE_COUNT; ++device)
+            LOG_MAIN("[i2c] PCF8575 0x%02X=%s", PCF8575_ADDR + device,
+                     PCF8575_is_online(device) ? "已检测" : "未检测");
     }
 
     if (switchPin != PIN_NONE) pinMode(switchPin, INPUT_PULLUP);

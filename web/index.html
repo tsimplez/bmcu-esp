@@ -179,6 +179,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <h2>I2C 设备与温湿度</h2>
     <div class="kv"><span>I2C 总线</span><b id="s-i2c">-</b></div>
     <div class="kv"><span>PCF8575（0x20）</span><b id="s-pcf">-</b></div>
+    <div class="kv"><span>PCF8575（0x21）</span><b id="s-pcf-1">-</b></div>
+    <div class="kv"><span>PCF8575（0x22）</span><b id="s-pcf-2">-</b></div>
+    <div class="kv"><span>PCF8575（0x23）</span><b id="s-pcf-3">-</b></div>
     <div class="kv"><span>AHT20（0x38）</span><b id="s-aht">-</b></div>
     <div class="kv"><span>BMP280（0x76/0x77）</span><b id="s-bmp">-</b></div>
     <div class="kv"><span>AHT20 温度</span><b id="s-aht-temp">-</b></div>
@@ -255,7 +258,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
         <button id="save-pcf" class="primary" onclick="savePcf()" disabled>保存并重启</button>
       </div>
       <div class="hint">PCF8575、AHT20 和 BMP280 共用这一条 I2C 总线，只需要 SDA、SCL 两根线
-        SDA 和 SCL 必须同时选择或同时选“无”；只配置其中一个不能保存配置后通道可使用 PCF8575 Px 扩展脚，
+        SDA 和 SCL 必须同时选择或同时选“无”；只配置其中一个不能保存。最多支持 4 个 PCF8575，地址分别设为 0x20、0x21、0x22、0x23，共 64 个扩展脚；下拉选项按地址和 Px 区分，
         扫描不到的设备会自动停用并在状态页提示保存后重启，请先断电换线</div>
       <div class="hint" id="pcf-state" role="status">正在读取接线配置…</div>
     </div>
@@ -505,7 +508,7 @@ const showSensorValue=(id,value,unit)=>{
 /**
  * 拉取并刷新设备运行状态
  * @return {Promise<void>|undefined} 请求完成后的 Promise；已有请求时返回 undefined
- * 带 3 秒超时读取 /api/status，更新状态、电机、项目和 OTA 区域，首次成功时自动检查更新
+ * 带 3 秒超时读取 /api/status，逐地址显示四片 PCF 状态并更新电机、项目和 OTA，首次成功时自动检查更新
  */
 const refreshStatus=()=>{
   if(statusPending) return
@@ -544,7 +547,10 @@ const refreshStatus=()=>{
     const i2c=d.i2c||{},env=d.env||{}
     $('s-i2c').textContent = i2c.configured?'SDA/SCL 已配置':'未配置'
     $('s-i2c').style.color = i2c.configured?'var(--ok)':'var(--dim)'
-    showI2cDevice('s-pcf',i2c.configured,i2c.pcf)
+    for(let device=0;device<4;device++){
+      const online=i2c.pcf_devices?.find(p=>p.address===0x20+device)?.online??(device===0&&i2c.pcf)
+      showI2cDevice(device===0?'s-pcf':'s-pcf-'+device,i2c.configured,online)
+    }
     showI2cDevice('s-aht',i2c.configured,i2c.aht20)
     showI2cDevice('s-bmp',i2c.configured,i2c.bmp280)
     showSensorValue('s-aht-temp',env.aht_temp,' ℃')
@@ -820,7 +826,17 @@ const renderProjectPreview=()=>{
      * @param {number} pin 固件提供的物理或扩展引脚编号
      * @return {string} 可读引脚名称，255 显示为“无”
      */
-    const pinLabel=pin=>pin===255?'无':(pin>=50?'扩展 IO':'IO')+pin
+    /**
+     * 格式化项目预览引脚，按芯片地址和面板名称区分四片扩展器
+     * @param {number} pin 配置中的引脚编号
+     * @return {string} 无、主控 IO 或带地址的扩展引脚名称
+     */
+    const pinLabel=pin=>{
+      if(pin===255) return '无'
+      if(pin<50||pin>=114) return 'IO'+pin
+      const offset=pin-50,bit=offset%16
+      return 'PCF8575 0x'+(0x20+Math.floor(offset/16)).toString(16)+' P'+(bit<8?bit:bit+2)
+    }
     const summary=$('project-summary');summary.textContent=''
     const details=[
       ['RS485 模式',preset.rs485 ? '模式 1：只用 RXD / TXD' : '模式 2：RO / DI / RE / DE'],

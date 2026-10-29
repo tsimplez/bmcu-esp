@@ -72,6 +72,9 @@ https://github.com/jarczakpawel/BMCU-Flasher
 固件 485模块 也是需要A接A B接B
 
 ## 硬件方案
+
+支持同一 I2C 总线连接 4 片 PCF8575（`0x20～0x23`），共 64 个扩展引脚，接线与配置见 [PCF8575 扩展说明](docs/PCF8575.md)。
+
 ### 最低成本（无io扩展模块，4色（最低24元）或者8色）
 *** 必须 ***
 - esp32（合宙esp32c3）

@@ -1,7 +1,8 @@
 // 仅模拟 Flash、HTTP 和设备运行状态；项目接线、CRC、校验与 handler 使用生产函数。
 static SettingsData flash_record{};
 static int writes = 0, reads = 0, restarts = 0;
-static bool fail_write = false, corrupt_readback = false, busy = false, pcf_online = false;
+static bool fail_write = false, corrupt_readback = false, busy = false;
+static bool pcf_online[PCF8575_DEVICE_COUNT] = {};
 static int response_code = 0;
 static String response_body;
 static size_t stored_size = sizeof(flash_record);
@@ -36,8 +37,10 @@ static bool hal_storage_write(int, const void *data, uint32_t size) {
 }
 /** 模拟设备忙闲条件 */
 static bool BMCU_can_maintain() { return !busy; }
-/** 模拟已配置扩展芯片的在线状态 */
-static bool PCF8575_is_online() { return pcf_online; }
+/** 按虚拟引脚模拟四片扩展器的独立在线状态 */
+static bool PCF8575_pin_is_online(uint8_t pin) {
+    return IS_PCF8575_VIRTUAL_PIN(pin) && pcf_online[VIRTUAL_TO_PCF8575_DEVICE(pin)];
+}
 /** 提供与主循环相同的有效通道边界 */
 static bool valid_channel(int ch) { return ch >= 0 && ch < active_channel_count(); }
 /** 测试不做实际等待 */

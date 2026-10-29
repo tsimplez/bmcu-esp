@@ -26,7 +26,7 @@ bool io_config_pin_available(int pin, bool allow_none = false, const IoBusConfig
 bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active_channels, String *error = nullptr,
                             const IoBusConfig *bus = nullptr);
 
-// 返回网页/日志使用的可读名称（GPIOx 或 PCF8575 Px）
+// 返回网页/日志使用的可读名称（GPIOx 或带地址的 PCF8575 Px）
 String io_config_pin_label(int pin);
 
 // 启动绑带脚等可用但需要用户注意的引脚

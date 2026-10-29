@@ -390,7 +390,7 @@ static String sensor_json_value(bool valid, float value, int digits) {
 
 /**
  * 处理运行状态查询
- * 汇总 WiFi、IP、项目匹配、总线、电机、耗材、传感器、维护状态和版本信息为 JSON
+ * 汇总 WiFi、IP、项目匹配、总线、电机、耗材、传感器和版本；PCF 状态按四个地址分别输出
  */
 static void handle_status() {
     IPAddress ip = ap_mode ? WiFi.softAPIP() : WiFi.localIP();
@@ -450,8 +450,13 @@ static void handle_status() {
     j += ",\"otasize\":" + String(ESP.getSketchSize());
     const EnvSensorStatus &env = env_sensor_status();
     j += ",\"i2c\":{\"configured\":" + String(i2c_bus_configured() ? "true" : "false") +
-         ",\"pcf\":" + String(PCF8575_is_online() ? "true" : "false") +
-         ",\"aht20\":" + String(env.aht20_online ? "true" : "false") +
+         ",\"pcf\":" + String(PCF8575_is_online() ? "true" : "false") + ",\"pcf_devices\":[";
+    for (uint8_t device = 0; device < PCF8575_DEVICE_COUNT; ++device) {
+        if (device) j += ',';
+        j += "{\"address\":" + String(PCF8575_ADDR + device) +
+             ",\"online\":" + String(PCF8575_is_online(device) ? "true" : "false") + "}";
+    }
+    j += "],\"aht20\":" + String(env.aht20_online ? "true" : "false") +
          ",\"bmp280\":" + String(env.bmp280_online ? "true" : "false") + "}";
     j += ",\"env\":{\"aht_temp\":" + sensor_json_value(env.aht20_online && env.aht20_valid, env.temperature_c, 2) +
          ",\"humidity\":" + sensor_json_value(env.aht20_online && env.aht20_valid, env.humidity_pct, 2) +

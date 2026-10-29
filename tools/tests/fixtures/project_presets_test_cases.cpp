@@ -105,9 +105,64 @@ int main(int argc, char **argv) {
         assert(IO_CONFIG.microswitch[ch] == PIN_NONE && !BMCU_channel_motor_ready(ch));
     }
     assert(!BMCU_channel_motor_ready(0));
-    pcf_online = true;
+    pcf_online[0] = true;
     assert(BMCU_channel_motor_ready(0));
     assert(std::string(project_preset_match(settings_snapshot())) == pcb->id);
+
+    // 四片引脚可独立使用；同一片同一脚仍拒绝重复，关闭 I2C 必须清掉所有扩展接线。
+    const auto pcb_settings = settings_snapshot();
+    AMS_COUNT = 4;
+    for (int ch = 0; ch < 16; ++ch) {
+        const int base = 50 + (ch / 4) * 16 + (ch % 4) * 3;
+        IO_CONFIG.motor[ch][0] = base;
+        IO_CONFIG.motor[ch][1] = base + 1;
+        IO_CONFIG.microswitch[ch] = base + 2;
+    }
+    IO_CONFIG.microswitch[15] = 113; // 最后一片 P17
+    assert(io_config_validate(IO_CONFIG, active_channel_count()));
+    assert(io_config_pin_label(50) == "PCF8575 0x20 P0");
+    assert(io_config_pin_label(58) == "PCF8575 0x20 P10");
+    assert(io_config_pin_label(113) == "PCF8575 0x23 P17");
+    String options;
+    io_config_append_pin_options(options);
+    for (int pin = 50; pin <= 113; ++pin)
+        assert(options.find("\"id\":" + std::to_string(pin) + ",") != std::string::npos);
+    assert(!io_config_pin_available(49) && !io_config_pin_available(114));
+    auto invalid = IO_CONFIG;
+    invalid.motor[4][0] = 50;
+    assert(!io_config_validate(invalid, active_channel_count()));
+    invalid = IO_CONFIG;
+    invalid.microswitch[15] = 114;
+    assert(!io_config_validate(invalid, active_channel_count()));
+    for (int device = 0; device < 4; ++device) pcf_online[device] = device % 2 == 0;
+    for (int ch = 0; ch < 16; ++ch)
+        assert(BMCU_channel_motor_ready(ch) == (ch / 4 % 2 == 0));
+    // 电机两脚跨片时必须两片都在线，真实 GPIO 不依赖其他 PCF 芯片。
+    const auto complete_io = IO_CONFIG;
+    IO_CONFIG.motor[0][1] = 66;
+    assert(!BMCU_channel_motor_ready(0));
+    pcf_online[1] = true;
+    assert(BMCU_channel_motor_ready(0));
+    pcf_online[0] = false;
+    assert(!BMCU_channel_motor_ready(0));
+    IO_CONFIG.motor[0][0] = 0;
+    assert(BMCU_channel_motor_ready(0));
+    IO_CONFIG.motor[0][1] = PIN_NONE;
+    assert(!BMCU_channel_motor_ready(0));
+    IO_CONFIG = complete_io;
+    assert(settings_save_to_flash());
+    const auto four_chips = settings_snapshot();
+    settings_reset_to_defaults();
+    settings_storage_init();
+    same_settings(four_chips, settings_snapshot());
+    invalid = IO_CONFIG;
+    assert(io_config_clear_invalid_pins(invalid, false, PIN_NONE, PIN_NONE) == 48);
+    for (int ch = 0; ch < 16; ++ch)
+        assert(invalid.motor[ch][0] == PIN_NONE && invalid.motor[ch][1] == PIN_NONE &&
+               invalid.microswitch[ch] == PIN_NONE);
+    PCF_SDA = PCF_SCL = PIN_NONE;
+    for (int pin = 50; pin <= 113; ++pin) assert(!io_config_pin_available(pin));
+    settings_restore_snapshot(pcb_settings);
 
     // 反向切换时一次清掉扩展接线，已有非接线参数保留，并发上限收敛。
     MOTOR_LIMIT = 7;

@@ -72,6 +72,8 @@ const path = require('node:path');
     await page.selectOption('#project-select', pcb.id);
     assert.equal(posts.length, 0, '选择项目只预览，不写入');
     assert.equal(await page.locator('#project-pins tr').count(), 8);
+    assert.deepEqual(await page.locator('#project-pins tr').first().locator('td').allTextContents(),
+      ['1', 'PCF8575 0x20 P0', 'PCF8575 0x20 P4', 'PCF8575 0x20 P12']);
     for (let row = 4; row < 8; ++row)
       assert.deepEqual(await page.locator('#project-pins tr').nth(row).locator('td').allTextContents(),
         [String(row + 1), '无', '无', '无']);

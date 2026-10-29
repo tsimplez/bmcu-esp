@@ -45,7 +45,6 @@ const ProjectPreset &hal_default_project_preset();
 '''
     pcf = read('src/PCF8575_PinMap.h')
     pcf = pcf[pcf.index('#define PCF8575_VIRTUAL_PIN_BASE'):pcf.index('/**\n * 初始化PCF8575')]
-    pcf = pcf.replace('extern PCF8575 pcf8575;', '')
     platform = read('src/platform.cpp')
     web = read('src/web_config.cpp')
     unit = '\n'.join((arduino, preamble, header('src/io_config.h'), header('src/settings_storage.h'),

@@ -14,7 +14,7 @@ struct ProjectPreset {
 };
 
 // 项目接线的唯一数据源：新增项目只需追加记录，ID 保持唯一且稳定。
-// 第一项是 C3 默认项目；50～65 是 PCF8575 虚拟引脚编号。
+// 第一项是 C3 默认项目；50～113 为四片 PCF8575 虚拟引脚，每片占 16 个编号。
 static const ProjectPreset PROJECT_PRESETS[] = {
     {"esp32c3-4switch", "esp32c3(4色4微动)", "esp32c3", 1,
      {18, 19, PIN_NONE, RS485_MODE_RXTX, PIN_NONE, PIN_NONE}, 4,

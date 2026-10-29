@@ -36,7 +36,7 @@
 | `src/settings_storage.cpp` / `.h` | 设置结构、默认值、加载/保存/快照/回滚、CRC32 | `settings_storage_init()`、`settings_save_to_flash()`、`apply_settings_values()` |
 | `src/project_presets.h` / `.cpp` | 项目接线预设、候选校验、整套应用和当前配置匹配 | `PROJECT_PRESETS`、`project_preset_validate()`、`project_preset_apply()`、`project_preset_match()` |
 | `src/io_config.cpp` / `.h` | 引脚合法性、冲突校验、网页引脚选项 | `io_config_validate()`、`io_config_bus_validate()`、`io_config_pin_available()` |
-| `src/PCF8575_PinMap.cpp` / `.h` | PCF8575 虚拟引脚映射与 GPIO 透明分发 | `PCF8575_*()`、`pinMode_PCF8575()`、`digitalRead_PCF8575()` |
+| `src/PCF8575_PinMap.cpp` / `.h` | 四片 PCF8575（0x20～0x23）映射为虚拟引脚 50～113，按片独立缓存与重试 | `PCF8575_*()`、`PCF8575_pin_is_online()`、`digitalRead_PCF8575()`；见 `docs/PCF8575.md` |
 | `src/log_bus.cpp` / `.h` | 主板/总线两路环形日志，网页按游标增量读取 | `log_bus_write()`、`log_bus_read()`、`log_bus_hex_typed()` |
 | `src/crc_bus.c` / `.h` | BambuBus 专用 CRC8/CRC16 查表 | `bus_crc_init()`、`bus_crc8()`、`bus_crc16()` |
 | `src/Motor.cpp` / `.h` | 单个电机的两线方向控制 | `Motor::forward()`、`Motor::backward()`、`Motor::stop()` |
