@@ -83,7 +83,7 @@ def main():
     """生成 OTA 发布目录和跨板型累加的 manifest.json
 
     校验版本与编译产物，复制各环境 firmware.bin，并写入版本、大小和
-    MD5；已有清单中的其他板型条目会保留
+    MD5；已有清单只接受各板型独立版本的当前格式，其他板型条目原样保留
     """
     ap = argparse.ArgumentParser(description='生成 OTA 发布目录（固件 + manifest.json）')
     ap.add_argument('targets', nargs='+', help='PlatformIO 环境名，同时也是清单里的板子键名')
@@ -112,19 +112,10 @@ def main():
                 manifest = json.load(f)
         except ValueError:
             sys.exit('%s 不是合法 JSON，先挪走再重跑' % manifest_path)
-    legacy = [key for key, value in manifest.items()
-              if key in KNOWN_TARGETS and key not in args.targets
-              and isinstance(value, dict) and 'version' not in value]
-    if legacy:
-        sys.exit('旧清单的板型条目缺少独立 version，请先一起重新发布：%s' % ', '.join(legacy))
-    manifest.pop('version', None)
-    manifest.pop('notes', None)
-    # 清掉旧版脚本写入的冗余字段（设备端只读取下面 entry 中的 5 个字段）
-    obsolete = {'sha256', 'source_commit', 'source_dirty', 'capabilities'}
-    for entry in manifest.values():
-        if isinstance(entry, dict):
-            for key in obsolete:
-                entry.pop(key, None)
+    if not isinstance(manifest, dict) or any(
+            not isinstance(entry, dict) or not isinstance(entry.get('version'), str)
+            for entry in manifest.values()):
+        sys.exit('清单格式无效：每个板型必须有独立的 version，请重新生成发布目录')
 
     published = []
     for env in args.targets:
@@ -155,7 +146,7 @@ def main():
     for env, name, size in published:
         print('  %-22s %-34s %7.1f KB' % (env, name, size / 1024.0))
     print('输出目录：%s' % out_dir)
-    print('清单里的板子：%s' % ', '.join(k for k in manifest if k not in ('version', 'notes')))
+    print('清单里的板子：%s' % ', '.join(manifest))
     print('\n把这个目录整个上传到服务器，然后在设备网页里填它的 URL')
 
 

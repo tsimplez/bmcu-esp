@@ -52,13 +52,11 @@ struct SettingsData {
     int32_t bus_rx;                  // BambuBus 串口 RX 引脚
     int32_t bus_tx;                  // BambuBus 串口 TX 引脚
     int32_t bus_de;                  // RS485 DE 方向控制引脚；RXTX 模式下不使用
-    int32_t pcf_enable;              // 旧版 PCF8575 开关字段，仅保留结构兼容，不再作为运行开关
     int32_t ams_version[4];          // 返回给打印机的 AMS 版本（A.B.C.D，每段 0..255）
 };
 
-// 布局不变，用记录版本区分 AMS 默认版本迁移；旧记录仍需通过完整 CRC32 校验
+// 只接受当前布局的记录；结构改变时更新此标识，不匹配则恢复默认值
 #define SETTINGS_MAGIC_NUMBER    0x5341542A
-#define SETTINGS_MAGIC_PREVIOUS  0x53415429
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**
@@ -71,19 +69,19 @@ inline int active_channel_count() { return AMS_COUNT * 4; }
 // 默认值定义
 #define DEFAULT_PULLBACK_TIMEOUT    7    // 退料超时默认值（秒）
 constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设置的回退值
-#define DEFAULT_MANUAL_PULSE_MS     300  // 手动点动默认时长（毫秒）
-#define DEFAULT_AUTO_LOAD_MS        1000 // 微动辅助进料默认时长（毫秒）
-#define DEFAULT_AMS_VERSION_MAJOR   00   // 默认 AMS 版本 A 段
-#define DEFAULT_AMS_VERSION_MINOR   00   // 默认 AMS 版本 B 段
-#define DEFAULT_AMS_VERSION_PATCH   50   // 默认 AMS 版本 C 段
-#define DEFAULT_AMS_VERSION_BUILD   10   // 默认 AMS 版本 D 段
+#define DEFAULT_MANUAL_PULSE_MS     1000  // 手动点动默认时长（毫秒）
+#define DEFAULT_AUTO_LOAD_MS        5000 // 微动辅助进料默认时长（毫秒）
+#define DEFAULT_AMS_VERSION_MAJOR   10   // 默认 AMS 版本 A 段
+#define DEFAULT_AMS_VERSION_MINOR   50   // 默认 AMS 版本 B 段
+#define DEFAULT_AMS_VERSION_PATCH   00   // 默认 AMS 版本 C 段
+#define DEFAULT_AMS_VERSION_BUILD   00   // 默认 AMS 版本 D 段
 
 // 点动/辅助进料时长上限（毫秒）：只需小于 30 秒
 #define MAX_PULSE_MS                30000
 
 // RS485 收发模式
 #define RS485_MODE_RXTX             1   // 只用 RXD/TXD，不驱动 DE（模块自动收发方向）
-#define RS485_MODE_DE               2   // RO/DI/RE/DE 四线，由 PIN_BUS_DE 控制方向（默认）
+#define RS485_MODE_DE               2   // RO/DI/RE/DE 四线，由配置的 BUS_DE 控制方向
 #define DEFAULT_RS485_MODE          RS485_MODE_RXTX
 #define DEFAULT_BUS_LOG             1   // 默认开启 BambuBus 原始报文日志
 
@@ -104,6 +102,9 @@ void settings_restore_snapshot(const SettingsData &data);
 
 // 保存当前设置到Flash
 bool settings_save_to_flash();
+
+// 保存已校验的候选设置并重算 CRC、回读验证；不改变运行期配置
+bool settings_save_snapshot(const SettingsData &candidate);
 
 // 重置为默认值（不自动保存，需手动调用save）
 void settings_reset_to_defaults();

@@ -10,6 +10,11 @@ struct IoConfig {
     int32_t microswitch[IO_CONFIG_MAX_CHANNELS]; // 各通道微动开关引脚，PIN_NONE 表示无输入
 };
 
+// 整套候选总线接线；校验项目预设时不借用或修改运行期设置
+struct IoBusConfig {
+    int rx, tx, de, mode, sda, scl;
+};
+
 // 生成当前平台的固件默认映射
 void io_config_set_defaults(IoConfig &config);
 
@@ -17,8 +22,9 @@ void io_config_set_defaults(IoConfig &config);
 int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda, int scl);
 
 // 判断某个引脚是否可以出现在网页的选择列表中
-bool io_config_pin_available(int pin, bool allow_none = false);
-bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active_channels, String *error = nullptr);
+bool io_config_pin_available(int pin, bool allow_none = false, const IoBusConfig *bus = nullptr);
+bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active_channels, String *error = nullptr,
+                            const IoBusConfig *bus = nullptr);
 
 // 返回网页/日志使用的可读名称（GPIOx 或 PCF8575 Px）
 String io_config_pin_label(int pin);
@@ -27,7 +33,8 @@ String io_config_pin_label(int pin);
 bool io_config_pin_has_warning(int pin);
 
 // 校验整组配置error 可选，用于返回可读的拒绝原因
-bool io_config_validate(const IoConfig &config, int active_channels, String *error = nullptr);
+bool io_config_validate(const IoConfig &config, int active_channels, String *error = nullptr,
+                        const IoBusConfig *bus = nullptr);
 
 // 生成网页需要的可选引脚 JSON 数组
 void io_config_append_pin_options(String &json, bool i2c_only = false);

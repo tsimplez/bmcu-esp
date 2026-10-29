@@ -34,6 +34,7 @@
 | `src/BMCU.cpp` / `src/BMCU.h` | 核心业务：电机、手动队列、微动辅助进料、AS5600 模拟、运行调度 | `BMCU_run()`、`BMCU_motion()`、`motorCmd()`、`check_microswitch_status()` |
 | `src/BambuBus.cpp` / `src/BambuBus.h` | BambuBus 协议：组帧、校验、状态机、长短包回复、耗材记录 | `BambuBus_run()`、`RX_IRQ()`、`get_package_type()`、`process_motion_state_machine()` |
 | `src/settings_storage.cpp` / `.h` | 设置结构、默认值、加载/保存/快照/回滚、CRC32 | `settings_storage_init()`、`settings_save_to_flash()`、`apply_settings_values()` |
+| `src/project_presets.h` / `.cpp` | 项目接线预设、候选校验、整套应用和当前配置匹配 | `PROJECT_PRESETS`、`project_preset_validate()`、`project_preset_apply()`、`project_preset_match()` |
 | `src/io_config.cpp` / `.h` | 引脚合法性、冲突校验、网页引脚选项 | `io_config_validate()`、`io_config_bus_validate()`、`io_config_pin_available()` |
 | `src/PCF8575_PinMap.cpp` / `.h` | PCF8575 虚拟引脚映射与 GPIO 透明分发 | `PCF8575_*()`、`pinMode_PCF8575()`、`digitalRead_PCF8575()` |
 | `src/log_bus.cpp` / `.h` | 主板/总线两路环形日志，网页按游标增量读取 | `log_bus_write()`、`log_bus_read()`、`log_bus_hex_typed()` |
@@ -41,7 +42,8 @@
 | `src/Motor.cpp` / `.h` | 单个电机的两线方向控制 | `Motor::forward()`、`Motor::backward()`、`Motor::stop()` |
 | `src/web_config.cpp` / `.h` | ESP32 WiFi 配网、REST API、日志、OTA；RP2040 为空实现 | `web_config_init()`、`handle_settings_save()`、`handle_ota_*()` |
 | `web/index.html` | 网页管理界面，编译时嵌入固件 | 页面与 REST 字段 |
-| `tools/make_ota.py`、`tools/OTA_SERVER.md` | OTA 清单与发布工具 | 升级服务 |
+| `tools/make_ota.py`、`docs/OTA_SERVER.md` | OTA 清单与发布工具 | 升级服务 |
+| `tools/tests/`、`tools/tests/fixtures/` | 主机与网页回归入口、C++ 测试用例和硬件桩 | `tools/README.md`、`docs/TESTING.md` |
 | `.pio/`、`compile_commands.json` | 构建产物/生成文件 | 不手改 |
 
 ## 关键方法定位
@@ -56,6 +58,8 @@
 - 运动反馈：`set_motion_response()` 统一生成当前通道、使用标志、长度、压力和在线位图；内部停车调用 `set_filament_motion()` 不解除打印机阻断
 - 注册身份：`refresh_serial_identities()` 为各 AMS 生成统一序列号载荷，注册包复制其中的身份块；`registration_identity_matches()` 在确认前检查身份，不匹配报文按 IGNORED 处理
 - 设置：`settings_snapshot()` 收集，`settings_restore_snapshot()` 回滚，`settings_save_to_flash()` 写入并回读校验
+- 项目配置：`handle_projects_get()` 返回预览；`handle_project_save()` 校验项目后通过 `settings_save_snapshot()` 写入候选设置，重启前不改运行接线；扩展方法见 `docs/PROJECT_PRESETS.md`
+- 默认项目：`hal_default_project_preset()` 在平台层选择；C3 复用 `PROJECT_PRESETS`，当前格式的有效设置优先加载
 - 网页接口：`handle_status()`、`handle_settings_get()`、`handle_settings_save()`、`handle_bus_save()`、`handle_pcf_save()`、`handle_manual_motor()`
 - I2C/传感器配置：`handle_pcf_save()` 保存 SDA/SCL；`handle_status()` 返回 `i2c` 设备在线状态和 `env` 温湿度读数
 - OTA：`ota_fetch_manifest()`、`ota_flash_from_url()`、`handle_ota_check()`、`handle_ota_pull()`、`handle_ota_upload()`
@@ -79,7 +83,7 @@
 - I2C 总线由 `PCF_SDA`、`PCF_SCL` 是否同时有效决定，不再使用运行期开关；PCF8575、AHT20、BMP280 共用该总线
 - 有效通道数统一使用 `active_channel_count()`（`AMS_COUNT * 4`）
 - 电机命令统一走 `motorCmd()`，不要在中断或回调中直接驱动电机
-- 修改设置结构时必须同时处理默认值、范围校验、CRC、加载兼容和网页字段
+- 修改设置结构时必须同时处理默认值、范围校验、CRC、格式标识和网页字段；只支持当前记录格式，不做历史迁移，不匹配则恢复默认值
 - 修改协议帧时必须同步检查长度、CRC8/CRC16、短包/长包分支和收发两端
 - 保持现有代码风格，改动尽量小且聚焦；不要顺手重构无关模块
 - 文本后面不要出现  这个字符

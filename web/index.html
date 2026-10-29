@@ -11,6 +11,19 @@ body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,"
 header{padding:14px 16px 0;background:#171a22;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
 h1{margin:0;font-size:17px;font-weight:600}
 h1 small{color:var(--dim);font-weight:400;font-size:12px;margin-left:8px}
+.header-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.project-picker{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.project-picker label{color:var(--dim);white-space:nowrap}
+.project-picker select{width:240px;max-width:100%}
+.project-preview{width:620px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);padding:0;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg);box-shadow:0 18px 60px #0008}
+.project-preview::backdrop{background:#0009}
+.project-preview[open]{display:flex;flex-direction:column}
+.project-preview h2{margin:0;padding:16px 20px;border-bottom:1px solid var(--line);font-size:16px;font-weight:600}
+.project-preview-body{padding:16px 20px;overflow:auto;min-height:0}
+.project-preview .tbl{margin:10px 0}
+.project-preview-actions{display:flex;justify-content:flex-end;gap:8px;padding:14px 20px;border-top:1px solid var(--line)}
+body.project-open{overflow:hidden}
+@media(max-width:640px){.project-picker{width:100%}.project-picker select{flex:1;min-width:0}.project-preview-actions button{flex:1}}
 nav{display:flex;gap:4px;margin-top:12px;overflow-x:auto}
 nav button{background:none;border:0;border-bottom:2px solid transparent;color:var(--dim);padding:8px 14px;font-size:14px;cursor:pointer;white-space:nowrap}
 nav button.on{color:var(--fg);border-bottom-color:var(--acc)}
@@ -76,7 +89,13 @@ button:disabled{opacity:.45;cursor:not-allowed}
 </head>
 <body>
 <header>
-  <h1>团子 BMCU 控制台<small id="hdr">-</small></h1>
+  <div class="header-top">
+    <h1>团子 BMCU 控制台<small id="hdr">-</small></h1>
+    <div class="project-picker">
+      <label for="project-select">项目配置</label>
+      <select id="project-select" onchange="selectProject()" disabled><option value="">正在读取…</option></select>
+    </div>
+  </div>
   <div id="printer" class="hint" role="status">正在读取打印机状态…</div>
   <nav>
     <button data-tab="status" class="on">状态</button>
@@ -92,6 +111,19 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <button onclick="hideUpbar()">忽略</button>
   </div>
 </header>
+  <dialog id="project-preview" class="project-preview" aria-labelledby="project-name" oncancel="event.preventDefault();closeProjectPreview()">
+    <h2 id="project-name">项目接线预览</h2>
+    <div class="project-preview-body">
+    <div id="project-summary"></div>
+    <table class="tbl"><thead><tr><th>通道</th><th>进料</th><th>退料</th><th>微动</th></tr></thead><tbody id="project-pins"></tbody></table>
+    <div class="hint">应用会替换 RS485、I2C、AMS 数量和全部通道接线；未定义的通道设为“无”。请确认实物接线与预览一致。</div>
+    <div id="project-state" class="hint" role="status"></div>
+    </div>
+    <div class="project-preview-actions">
+      <button id="cancel-project" onclick="closeProjectPreview()" autofocus>取消</button>
+      <button id="apply-project" class="primary" onclick="applyProject()" disabled>应用并重启</button>
+    </div>
+  </dialog>
 <main>
 
 <!-- ================= 状态 ================= -->
@@ -252,10 +284,10 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="hint">完整序列号固定为 0EA + AMS 编号 + 12 位十六进制后缀；自定义只修改后缀，留空时后缀取设备 ID</div>
     <div class="row">
       <span style="color:var(--dim);width:90px">AMS 版本</span>
-      <input id="p-ams-version" class="grow" maxlength="15" pattern="[0-9]+(\.[0-9]+){3}" placeholder="1.0.6.87" inputmode="decimal" autocomplete="off">
+      <input id="p-ams-version" class="grow" maxlength="15" pattern="[0-9]+(\.[0-9]+){3}" placeholder="10.50.00.00" inputmode="decimal" autocomplete="off">
       <button id="save-ams-version" onclick="saveAmsVersion()">保存</button>
     </div>
-    <div class="hint">打印机读取的 AMS 固件版本，格式为 A.B.C.D，每段范围 0..255；默认 1.0.6.87</div>
+    <div class="hint">打印机读取的 AMS 固件版本，格式为 A.B.C.D，每段范围 0..255；默认 10.50.00.00</div>
   </div>
   <div class="card">
     <h2>设备操作</h2>
@@ -473,7 +505,7 @@ const showSensorValue=(id,value,unit)=>{
 /**
  * 拉取并刷新设备运行状态
  * @return {Promise<void>|undefined} 请求完成后的 Promise；已有请求时返回 undefined
- * 带 3 秒超时读取 /api/status，更新状态、电机和 OTA 区域，首次成功时自动检查更新
+ * 带 3 秒超时读取 /api/status，更新状态、电机、项目和 OTA 区域，首次成功时自动检查更新
  */
 const refreshStatus=()=>{
   if(statusPending) return
@@ -485,6 +517,7 @@ const refreshStatus=()=>{
   }).then((d)=>{
     S=d
     statusAt=performance.now()
+    syncProjectCurrent(d.project)
     $('printer').textContent=['等待打印机连接','打印机在线','打印机离线'][d.printer]||'打印机状态未知'
     $('printer').style.color=d.printer===1?'var(--ok)':d.printer===2?'var(--err)':'var(--dim)'
     $('s-mode').textContent = d.mode==='AP' ? 'AP 配网热点' : 'STA 已联网'
@@ -529,6 +562,7 @@ const refreshStatus=()=>{
     if(!otaAutoTried){otaAutoTried=true; if(d.otanotify==1 && d.otaurl) checkUpdate(0);}
   }).catch(()=>{
     statusAt=0
+    updateProjectControls()
     $('printer').textContent='设备连接中断，打印机状态未知'
     $('printer').style.color='var(--warn)'
     renderMotorControls()
@@ -757,6 +791,151 @@ const startHandoff=(ip)=>{
 const doForget=()=>api('/api/forget',{method:'POST'}).then(t=>toast(JSON.parse(t).msg,6000))
 
 // ---------- BambuBus 接线 ----------
+// ---------- 项目配置 ----------
+let PROJECTS=[],PROJECT_CURRENT='',PROJECT_DIRTY=false,PROJECT_SAVING=false,PROJECT_LOADED=false
+/**
+ * 刷新项目应用按钮和维护提示
+ * 弹窗关闭、状态过期或设备忙时禁用应用，保存期间禁用取消；后端仍检查维护条件
+ */
+const updateProjectControls=()=>{
+  const preset=PROJECTS.find(p=>p.id===$('project-select').value)
+  const ready=statusAt>0&&performance.now()-statusAt<4000&&S.maintenance===true
+  $('project-select').disabled=PROJECT_SAVING||!PROJECT_LOADED
+  $('apply-project').disabled=!$('project-preview').open||PROJECT_SAVING||!preset||!preset.available||!PROJECT_DIRTY||!ready
+  $('cancel-project').disabled=PROJECT_SAVING
+  if(PROJECT_SAVING) return
+  $('project-state').textContent=!preset?'':!preset.available?preset.reason:
+    !PROJECT_DIRTY?'当前已应用此项目':!ready?'设备空闲并连接正常后可应用':'待应用：点击“应用并重启”保存整套配置'
+}
+/**
+ * 显示所选项目的整套接线
+ * 将总线、AMS 和 I2C 摘要分行显示，只填充弹窗内容，不修改设备配置
+ */
+const renderProjectPreview=()=>{
+  const preset=PROJECTS.find(p=>p.id===$('project-select').value)
+  if(preset){
+    $('project-name').textContent=preset.name+' · 接线预览'
+    /**
+     * 格式化预览中的引脚编号
+     * @param {number} pin 固件提供的物理或扩展引脚编号
+     * @return {string} 可读引脚名称，255 显示为“无”
+     */
+    const pinLabel=pin=>pin===255?'无':(pin>=50?'扩展 IO':'IO')+pin
+    const summary=$('project-summary');summary.textContent=''
+    const details=[
+      ['RS485 模式',preset.rs485 ? '模式 1：只用 RXD / TXD' : '模式 2：RO / DI / RE / DE'],
+      ['总线接线','RX '+pinLabel(preset.rx)+' / TX '+pinLabel(preset.tx)+(preset.rs485===2?' / DE '+pinLabel(preset.de):'')],
+      ['AMS 数量',preset.ams+' 个'],
+      ['I2C 总线',preset.sda===255?'无':'SDA '+pinLabel(preset.sda)+' / SCL '+pinLabel(preset.scl)]
+    ]
+    for(const [label,value] of details){
+      const row=document.createElement('div'),name=document.createElement('span'),text=document.createElement('b')
+      row.className='kv';name.textContent=label;text.textContent=value
+      row.append(name,text);summary.appendChild(row)
+    }
+    const body=$('project-pins');body.textContent=''
+    preset.pins.forEach((pins,index)=>{
+      const tr=document.createElement('tr')
+      for(const value of [String(index+1),...pins.map(pinLabel)]){
+        const td=document.createElement('td');td.textContent=value;tr.appendChild(td)
+      }
+      body.appendChild(tr)
+    })
+  }
+  updateProjectControls()
+}
+/**
+ * 同步设备实际匹配的项目
+ * @param {string} id 后端按已保存接线匹配的项目 ID，空串代表自定义
+ * 状态轮询不覆盖弹窗中的预览选择，关闭后再恢复当前项目
+ */
+const syncProjectCurrent=(id)=>{
+  if(typeof id!=='string') return
+  PROJECT_CURRENT=id
+  if(!$('project-preview').open&&!PROJECT_SAVING){
+    const changed=$('project-select').value!==id
+    $('project-select').value=id
+    if(changed) renderProjectPreview()
+  }
+  updateProjectControls()
+}
+/**
+ * 关闭接线预览并取消待应用选择
+ * 保存期间保持弹窗打开；取消后恢复实际项目、页面滚动和下拉框焦点
+ */
+const closeProjectPreview=()=>{
+  if(PROJECT_SAVING) return
+  $('project-preview').close()
+  document.body.classList.remove('project-open')
+  PROJECT_DIRTY=false
+  $('project-select').value=PROJECT_CURRENT
+  updateProjectControls()
+  $('project-select').focus()
+}
+/**
+ * 选择项目并弹出接线预览
+ * 选择“自定义”时恢复当前选择；仅弹窗中的应用按钮提交配置
+ */
+const selectProject=()=>{
+  if(!PROJECTS.some(p=>p.id===$('project-select').value)){closeProjectPreview();return}
+  PROJECT_DIRTY=$('project-select').value!==PROJECT_CURRENT
+  renderProjectPreview()
+  if(!$('project-preview').open) $('project-preview').showModal()
+  document.body.classList.add('project-open')
+  $('project-preview').querySelector('.project-preview-body').scrollTop=0
+  updateProjectControls()
+}
+/**
+ * 读取固件提供的项目预设
+ * @return {Promise<void>} 项目加载完成的 Promise
+ * 列表和接线都来自固件，新增项目无需再修改网页
+ */
+const loadProjects=async()=>{
+  try{
+    const r=await fetch('/api/projects',{cache:'no-store'})
+    if(!r.ok) throw Error('读取项目配置失败')
+    const d=await r.json()
+    PROJECTS=d.projects||[]
+    const select=$('project-select');select.textContent=''
+    select.add(new Option(PROJECTS.length?'自定义':'自定义（暂无预设）',''))
+    for(const preset of PROJECTS){
+      const option=new Option(preset.name+(preset.available?'':'（不兼容）'),preset.id)
+      option.disabled=!preset.available;option.title=preset.reason||'';select.add(option)
+    }
+    PROJECT_LOADED=true
+    syncProjectCurrent(d.current||'')
+  }catch(e){
+    $('project-select').textContent='';$('project-select').add(new Option('读取失败，请刷新页面',''))
+    toast(e.message)
+  }
+}
+/**
+ * 提交所选项目并等待重启
+ * @return {Promise<void>} 保存请求完成的 Promise
+ * 一次请求只提交项目 ID，失败保留选择；成功后重新加载设备状态
+ */
+const applyProject=async()=>{
+  updateProjectControls()
+  if($('apply-project').disabled) return
+  PROJECT_SAVING=true;updateProjectControls()
+  $('project-state').textContent='正在保存项目配置…'
+  const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),12000)
+  try{
+    const r=await fetch('/api/projects',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({id:$('project-select').value}).toString(),signal:ac.signal})
+    const d=await r.json()
+    if(!r.ok||!d.ok) throw Error(d.msg||'项目保存失败')
+    $('apply-project').textContent='正在重启…'
+    $('project-state').textContent=d.msg
+    toast(d.msg)
+    setTimeout(()=>location.reload(),3500)
+  }catch(e){
+    PROJECT_SAVING=false;updateProjectControls()
+    const message=e.name==='AbortError'?'请求超时，请刷新确认设备配置':e.message||'项目保存失败'
+    $('project-state').textContent=message;toast(message,6000)
+  }finally{clearTimeout(timer)}
+}
+
 // 当前 RS485 模式：1=仅 RXD/TXD，2=使用 DE 方向控制
 let BUS_MODE=1
 // 总线引脚占用表：pin -> [使用该引脚的通道/功能标签]
@@ -804,7 +983,7 @@ const updateBusLabels=()=>{
 /**
  * 渲染 BambuBus 接线配置
  * @param {Object} d /api/settings 返回的完整配置
- * 建立引脚占用表，填充 RX、TX、DE 下拉框并刷新冲突提示
+ * 按当前 configured 状态建立 I2C 占用表，填充 RX、TX、DE 并刷新冲突提示
  */
 const renderBus=(d)=>{
   const b=d.bus||{};BUS_READY=!!d.bus;BUS_SAVING=false;BUS_MODE=d.rs485===2?2:1;BUS_USES={};BUS_APPLIED={}
@@ -820,7 +999,7 @@ const renderBus=(d)=>{
     const pins=[...(d.io?.motor[ch]||[]),d.io?.microswitch[ch]]
     pins.forEach((pin,role)=>add(BUS_USES,pin,'通道'+(ch+1)+['进料','退料','微动'][role]))
   }
-  if(d.pcf?.configured||d.pcf?.enabled){add(BUS_USES,d.pcf.sda,'I2C SDA');add(BUS_USES,d.pcf.scl,'I2C SCL')}
+  if(d.pcf?.configured){add(BUS_USES,d.pcf.sda,'I2C SDA');add(BUS_USES,d.pcf.scl,'I2C SCL')}
   for(const key of ['rx','tx','de']){
     const sel=$('bus-'+key);sel.textContent='';sel.disabled=!BUS_READY
     for(const pin of b.pins||[]){
@@ -906,11 +1085,11 @@ const updatePcfLabels=()=>{
 /**
  * 渲染 I2C 总线配置
  * @param {Object} d /api/settings 返回的完整配置
- * 载入 SDA/SCL 下拉框，建立通道及总线引脚占用表
+ * 按 configured 读取 I2C 状态，载入 SDA/SCL 下拉框及通道、总线引脚占用表
  */
 const renderPcf=(d)=>{
   const p=d.pcf||{}
-  PCF_DEV_ENABLED=!!(p.enabled||p.configured)
+  PCF_DEV_ENABLED=!!p.configured
   PCF_USES=JSON.parse(JSON.stringify(BUS_APPLIED))
   for(let ch=0;ch<d.channels;ch++){
     const pins=[...(d.io?.motor[ch]||[]),d.io?.microswitch[ch]]
@@ -1930,6 +2109,7 @@ initBusLogFilters()
 showTab(savedTab)
 refreshStatus()
 loadPara()
+loadProjects()
 setInterval(refreshStatus,1000)
 setInterval(renderMotorControls,200)
 setInterval(()=>pollLogChannel(activeLog),800)

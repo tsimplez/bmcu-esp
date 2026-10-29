@@ -28,7 +28,7 @@ const path = require('node:path');
       const req = route.request();
       const url = new URL(req.url());
       if (url.pathname === '/') {
-        return route.fulfill({ contentType: 'text/html', body: fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8') });
+        return route.fulfill({ contentType: 'text/html', body: fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8') });
       }
       let data = {};
       if (url.pathname === '/api/settings' && req.method() === 'POST') {

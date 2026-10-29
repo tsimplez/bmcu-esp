@@ -10,12 +10,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--zig', required=True, type=Path, help='Zig 0.15.2 或更新版本的可执行文件')
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     source = (root / 'src/web_config.cpp').read_text(encoding='utf-8')
     manifest = source[source.index('static String g_ota_url;'):source.index('/**\n * 生成 OTA 错误 JSON')]
     download = source[source.index('static bool ota_flash_attempt('):source.index('/**\n * 处理在线升级请求')]
-    unit = '\n'.join(((root / 'tools/ota_test_support.h').read_text(encoding='utf-8'),
-                      manifest, download, (root / 'tools/ota_test_cases.cpp').read_text(encoding='utf-8')))
+    unit = '\n'.join(((root / 'tools/tests/fixtures/ota_test_support.h').read_text(encoding='utf-8'),
+                      manifest, download, (root / 'tools/tests/fixtures/ota_test_cases.cpp').read_text(encoding='utf-8')))
     with tempfile.TemporaryDirectory(prefix='bmcu-ota-test-') as directory:
         folder = Path(directory)
         cpp, wasm = folder / 'test.cpp', folder / 'test.wasm'

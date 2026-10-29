@@ -10,7 +10,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--zig', required=True, type=Path, help='Zig 0.15.2 或更新版本')
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     source = (root / 'src/BMCU.cpp').read_text(encoding='utf-8')
     simulation = source[source.index('// 随机数生成器（用于模拟传感器数据）'):source.index('/**\n * 获取模拟的AS5600原始角度值')]
     support = r'''

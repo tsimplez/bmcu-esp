@@ -2,7 +2,7 @@
 #include "platform.h"
 #include "settings_storage.h"
 #include "PCF8575_PinMap.h"
-#include "i2c_bus.h"
+#include "project_presets.h"
 
 // 是否是预留引脚
 /**
@@ -62,21 +62,10 @@ static bool is_real_gpio(int pin) {
 /**
  * 生成平台默认引脚配置
  * @param config 待填充的 IO 配置
- * 按 platform.h 中的电机和微动默认映射初始化所有通道
+ * 由平台选择默认项目，C3 和网页复用同一份预设接线
  */
 void io_config_set_defaults(IoConfig &config) {
-    // 各通道 [进料, 退料] 的板级默认引脚
-    static const int default_motor[IO_CONFIG_MAX_CHANNELS][2] = {
-        MOTOR_PINS_1_4,MOTOR_PINS_5_8,MOTOR_PINS_9_12,MOTOR_PINS_13_16
-    };
-    // 各通道微动开关的板级默认引脚
-    static const int default_switch[IO_CONFIG_MAX_CHANNELS] = {MSW_PINS_1_4, MSW_PINS_5_8,MSW_PINS_9_12,MSW_PINS_13_16};
-
-    for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
-        config.motor[i][0] = default_motor[i][0];
-        config.motor[i][1] = default_motor[i][1];
-        config.microswitch[i] = default_switch[i];
-    }
+    project_preset_io(hal_default_project_preset(), config);
 }
 
 // 该引脚在 I2C 总线状态变化后是否还能用：配置后 SDA/SCL 不能再用作通道引脚，
@@ -129,10 +118,13 @@ int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda,
 /**
  * 判断引脚是否被 BambuBus 占用
  * @param pin 引脚号
+ * @param bus 可选候选接线，空指针使用当前配置
  * @return true 表示已被占用
  * RX/TX 始终占用；只有 DE 模式才占用 DE 引脚
  */
-static bool bus_uses_pin(int pin) {
+static bool bus_uses_pin(int pin, const IoBusConfig *bus = nullptr) {
+    if (pin == PIN_NONE) return false;
+    if (bus) return pin == bus->rx || pin == bus->tx || (bus->mode == RS485_MODE_DE && pin == bus->de);
     return pin == BUS_RX || pin == BUS_TX || (RS485_MODE == RS485_MODE_DE && pin == BUS_DE);
 }
 
@@ -141,15 +133,18 @@ static bool bus_uses_pin(int pin) {
  * 判断引脚能否出现在网页选择列表中
  * @param pin 引脚号
  * @param allow_none 是否允许 PIN_NONE
+ * @param bus 可选候选总线接线，空指针使用当前配置
  * @return true 表示可用
  * 综合检查虚拟引脚开关、I2C 占用、系统保留脚和总线占用
  */
-bool io_config_pin_available(int pin, bool allow_none) {
+bool io_config_pin_available(int pin, bool allow_none, const IoBusConfig *bus) {
     if (allow_none && pin == PIN_NONE) return true;
     // 虚拟引脚只在 I2C 总线已配置后可选；未配置时 I2C 引脚可作普通 IO
-    if (IS_PCF8575_VIRTUAL_PIN(pin)) return i2c_bus_configured();
-    if (i2c_bus_configured() && (pin == PCF_SDA || pin == PCF_SCL)) return false;
-    return is_real_gpio(pin) && !bus_uses_pin(pin);
+    const int sda = bus ? bus->sda : PCF_SDA, scl = bus ? bus->scl : PCF_SCL;
+    const bool configured = sda != PIN_NONE && scl != PIN_NONE && sda >= 0 && scl >= 0 && sda != scl;
+    if (IS_PCF8575_VIRTUAL_PIN(pin)) return configured;
+    if (configured && (pin == sda || pin == scl)) return false;
+    return is_real_gpio(pin) && !bus_uses_pin(pin, bus);
 }
 
 /**
@@ -175,15 +170,17 @@ static bool i2c_pin_available(int pin, bool sda) {
  * @param config 当前通道接线
  * @param active_channels 启用通道数
  * @param error 可选的错误文本输出
+ * @param bus 可选候选总线接线，空指针使用当前配置
  * @return true 表示配置合法
  * 检查通道数、与总线/通道引脚的冲突、SDA/SCL 是否不同以及平台复用限制
  */
-bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active_channels, String *error) {
+bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active_channels, String *error,
+                            const IoBusConfig *bus) {
     if (active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
         if (error) *error = "通道数量无效";
         return false;
     }
-    if (bus_uses_pin(sda) || bus_uses_pin(scl)) {
+    if (bus_uses_pin(sda, bus) || bus_uses_pin(scl, bus)) {
         if (error) *error = "所选 GPIO 已被 BambuBus 占用，请先修改并保存总线接线";
         return false;
     }
@@ -254,10 +251,11 @@ String io_config_pin_label(int pin) {
  * @param config 通道接线配置
  * @param active_channels 启用通道数
  * @param error 可选的错误文本输出
+ * @param bus 可选候选总线接线，空指针使用当前配置
  * @return true 表示配置合法
  * 检查电机和微动引脚是否可用、是否重复占用同一引脚
  */
-bool io_config_validate(const IoConfig &config, int active_channels, String *error) {
+bool io_config_validate(const IoConfig &config, int active_channels, String *error, const IoBusConfig *bus) {
     if (active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
         if (error) *error = "通道数量无效";
         return false;
@@ -270,7 +268,7 @@ bool io_config_validate(const IoConfig &config, int active_channels, String *err
             const int pin = role < 2 ? config.motor[ch][role] : config.microswitch[ch];
             // "无"(PIN_NONE) 合法：切换 I2C 配置会先清空不再可用的引脚，
             // 该通道等用户在网页里补配置
-            if (!io_config_pin_available(pin, true)) {
+            if (!io_config_pin_available(pin, true, bus)) {
                 if (error)
                     *error = String("通道 ") + String(ch + 1) + " 的" +
                              (role == 0 ? "进料" : role == 1 ? "退料" : "微动") +
@@ -325,7 +323,7 @@ void io_config_append_pin_options(String &json, bool i2c_only) {
  * @param active_channels 启用通道数
  * @param error 可选的错误文本输出
  * @return true 表示配置合法
- * 检查 RX/TX/DE 的合法性、重复占用、与 I2C/通道引脚的冲突以及 RP2040 UART 复用限制
+ * 按传入的候选 I2C 接线检查冲突，同时检查 RX/TX/DE 合法性、重复占用和平台复用限制
  */
 bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
                             const IoConfig &config, int active_channels, String *error) {
@@ -356,7 +354,8 @@ bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
             return false;
         }
         // 只有 SDA/SCL 同时配置后 I2C 才真正占用引脚
-        if (i2c_bus_configured() && (pin == sda || pin == scl)) {
+        if (sda != PIN_NONE && scl != PIN_NONE && sda >= 0 && scl >= 0 && sda != scl &&
+            (pin == sda || pin == scl)) {
             if (error) *error = io_config_pin_label(pin) + " 已被 I2C SDA/SCL 占用";
             return false;
         }

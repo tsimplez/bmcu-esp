@@ -160,7 +160,8 @@ src/
 ├── BambuBus.cpp/h      # BambuBus 协议实现
 ├── Motor.cpp/h         # 电机驱动封装
 ├── io_config.cpp/h     # 电机/微动引脚配置：默认值、校验、可选引脚与标签
-├── settings_storage.cpp/h  # 设置存储（V6 格式、CRC32、默认值与迁移）
+├── settings_storage.cpp/h  # 设置存储（当前格式、CRC32、默认值与加载）
+├── project_presets.cpp/h   # 项目接线预设、校验、应用和当前配置匹配
 ├── log_bus.cpp/h        # 日志总线：两路环形缓冲 + 增量读取
 ├── web_config.cpp/h    # 网页管理（仅 ESP32，其它平台为空实现）
 ├── PCF8575_PinMap.cpp/h# PCF8575 GPIO 扩展
@@ -170,9 +171,16 @@ src/
 web/index.html          # 管理页面，构建时作为二进制块编入固件
 tools/
 ├── make_ota.py         # 生成 OTA 发布目录与 manifest.json
+├── README.md           # 工具用途、依赖与运行命令
+└── tests/              # 固件逻辑主机测试、网页交互测试
+    └── fixtures/       # C++ 测试用例、硬件桩和期望数据
+docs/
 ├── OTA_SERVER.md       # OTA 服务器与发布流程说明
-└── test_web_config.cjs # 网页内联脚本语法检查
+├── TESTING.md          # 测试覆盖与验证边界
+└── PROJECT_PRESETS.md  # 项目预设扩展与保存规则
 ```
+
+工具使用见 [tools/README.md](tools/README.md)，测试覆盖见 [docs/TESTING.md](docs/TESTING.md)。
 
 ### 主循环
 
@@ -190,8 +198,8 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 
 ### 设置存储（`settings_storage`）
 
-- 运行期设置包括：退料超时、通道模式、AMS 数量、手动点动时长、微动辅助进料时长、电机并发上限、RS485 模式、报文日志开关、序列号后缀、AMS 版本、OTA 源与提示开关、IO 引脚配置、PCF8575 开关与 I2C 接线、总线接线
-- 记录带魔数（`0x53415429`）与 CRC32；校验失败即恢复默认值
+- 运行期设置包括：退料超时、通道模式、AMS 数量、手动点动时长、微动辅助进料时长、电机并发上限、RS485 模式、报文日志开关、序列号后缀、AMS 版本、OTA 源与提示开关、IO 引脚配置、I2C 接线、总线接线
+- 记录带格式标识（`SETTINGS_MAGIC_NUMBER`）与 CRC32；仅加载当前格式，格式不匹配或校验失败即恢复默认值，不迁移历史记录
 - 保存失败时用内存快照回退，避免读到不完整 Flash
 - 启动与保存后都会把生效设置打印到主板日志，便于排查
 
@@ -217,7 +225,7 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 | `/api/status` | GET | 运行状态、通道与电机状态、并发上限等 |
 | `/api/settings` | GET / POST | 读取 / 保存通道参数 |
 | `/api/bus` | POST | 保存 BambuBus 接线与 RS485 模式 |
-| `/api/pcf` | POST | 保存 PCF8575 开关与 I2C 接线 |
+| `/api/pcf` | POST | 保存 I2C 接线（SDA/SCL 同时有效才启用） |
 | `/api/motor` | POST | 手动进退料（`motor` / `dir` / 可选 `duration`） |
 | `/api/scan` | GET | 扫描 WiFi |
 | `/api/wifi` / `/api/mdns` / `/api/forget` | POST | 保存 WiFi / 保存 mDNS 名称 / 清除 WiFi |

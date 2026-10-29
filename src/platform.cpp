@@ -1,4 +1,52 @@
 #include "platform.h"
+#include "project_presets.h"
+
+/**
+ * 获取项目预设使用的芯片标识
+ * @return 与项目表 target 字段对应的标识
+ * 板型差异留在平台层，网页只消费兼容项目列表
+ */
+const char *hal_project_target() {
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+    return "esp32c3";
+#elif defined(ARDUINO_ARCH_ESP32)
+    return "esp32s3";
+#else
+    return "pico";
+#endif
+}
+
+/**
+ * 获取平台默认项目接线
+ * @return 生命周期覆盖整个固件运行期的默认预设
+ * C3 复用项目表；原生 USB 板保留 UART 适配，其他平台沿用现有默认值
+ */
+const ProjectPreset &hal_default_project_preset() {
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+#if C3_BOARD_USB_TTL && !ARDUINO_USB_CDC_ON_BOOT
+    return PROJECT_PRESETS[0];
+#else
+    static ProjectPreset native_usb = PROJECT_PRESETS[0];
+    native_usb.bus.rx = 20;
+    native_usb.bus.tx = 21;
+    return native_usb;
+#endif
+#else
+    static ProjectPreset preset = {"", "平台默认", hal_project_target(), DEFAULT_AMS_COUNT,
+        {PIN_BUS_RX, PIN_BUS_TX, PIN_BUS_DE, DEFAULT_RS485_MODE, PIN_NONE, PIN_NONE},
+        IO_CONFIG_MAX_CHANNELS, {}};
+    static const int motors[IO_CONFIG_MAX_CHANNELS][2] = {
+        MOTOR_PINS_1_4, MOTOR_PINS_5_8, MOTOR_PINS_9_12, MOTOR_PINS_13_16};
+    static const int switches[IO_CONFIG_MAX_CHANNELS] = {
+        MSW_PINS_1_4, MSW_PINS_5_8, MSW_PINS_9_12, MSW_PINS_13_16};
+    for (int ch = 0; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
+        preset.pins[ch][0] = motors[ch][0];
+        preset.pins[ch][1] = motors[ch][1];
+        preset.pins[ch][2] = switches[ch];
+    }
+    return preset;
+#endif
+}
 
 #if defined(ARDUINO_ARCH_RP2040)
 #include <hardware/flash.h>
@@ -48,17 +96,17 @@ static const char *region_ns(int region) {
  * @param region 存储区域
  * @param buf 输出缓冲区
  * @param len 期望读取的字节数
- * ESP32 实现：读取 blob；未写入过或长度不足的部分保持 0xFF，兼容旧记录
+ * ESP32 只读取长度完全匹配的 blob；缺失、长度错误或读取不完整时返回全 0xFF
  */
 void hal_storage_read(int region, void *buf, uint32_t len) {
     if (!buf || !len) return;
     memset(buf, 0xFF, len);
     Preferences nvs;
     if (nvs.begin(region_ns(region), true)) {
-        // 短于结构体的旧 blob 也能读进来，尾部保持 0xFF；
-        // 上层只用魔数 + CRC32 判断记录是否有效，对不上就恢复默认值
+        // 不拼接或截断记录；上层继续校验当前格式标识与完整 CRC32
         const size_t stored_len = nvs.getBytesLength("blob");
-        if (stored_len) nvs.getBytes("blob", buf, stored_len < len ? stored_len : len);
+        if (stored_len == len && nvs.getBytes("blob", buf, len) != len)
+            memset(buf, 0xFF, len);
         nvs.end();
     }
 }

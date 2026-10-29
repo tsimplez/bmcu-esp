@@ -2,6 +2,7 @@
 #include "platform.h"
 #include "log_bus.h"
 #include "i2c_bus.h"
+#include "project_presets.h"
 
 // ============================
 // 运行期设置变量（初值为默认值，启动时由 settings_storage_init() 覆盖）
@@ -12,7 +13,7 @@ int PULLBACK_TIMEOUT[16] = {7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
 // 各通道工作模式：0=离线，1=在线，2=自动（按微动开关触发辅助进料）
 int CHANNEL_MODE[16] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 // 启用的 AMS 数量（1-4），每个 AMS 固定对应 4 个耗材通道
-int AMS_COUNT = DEFAULT_AMS_COUNT;
+int AMS_COUNT = hal_default_project_preset().ams;
 // Web 手动进退料按钮的默认点动时长，单位毫秒
 int MANUAL_PULSE_MS = DEFAULT_MANUAL_PULSE_MS;
 // 微动由无料变有料后的辅助进料时长，单位毫秒；0 表示关闭
@@ -20,7 +21,7 @@ int AUTO_LOAD_MS = DEFAULT_AUTO_LOAD_MS;
 // 允许同时运行的电机数量上限，运行时由设置加载值限制到 active_channel_count()
 int MOTOR_LIMIT = 1;
 // BambuBus 的 RS485 收发模式：RS485_MODE_RXTX 或 RS485_MODE_DE
-int RS485_MODE = DEFAULT_RS485_MODE;
+int RS485_MODE = hal_default_project_preset().bus.mode;
 // 是否把 BambuBus 原始收发报文写入总线日志（0=关，1=开）
 int BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
 // BambuBus 自定义序列号；空串表示按芯片 ID 自动生成
@@ -35,28 +36,31 @@ int OTA_NOTIFY = DEFAULT_OTA_NOTIFY;
 // 各通道电机引脚和微动开关引脚的当前映射
 IoConfig IO_CONFIG = {};
 // BambuBus 串口 RX/TX 和 RS485 DE 引脚；启动时从设置加载
-int BUS_RX = PIN_BUS_RX, BUS_TX = PIN_BUS_TX, BUS_DE = PIN_BUS_DE;
+int BUS_RX = hal_default_project_preset().bus.rx;
+int BUS_TX = hal_default_project_preset().bus.tx;
+int BUS_DE = hal_default_project_preset().bus.de;
 
 /**
  * 恢复 BambuBus 引脚默认值
- * 把 RX、TX、DE 三个引脚恢复为当前平台的板级默认映射
+ * 从平台默认项目恢复 RX、TX、DE，和网页预设共用接线数据
  */
 static void bus_defaults() {
-    BUS_RX = PIN_BUS_RX; BUS_TX = PIN_BUS_TX; BUS_DE = PIN_BUS_DE;
+    const auto &bus = hal_default_project_preset().bus;
+    BUS_RX = bus.rx; BUS_TX = bus.tx; BUS_DE = bus.de;
 }
 
 // I2C 总线 SDA 引脚；默认未配置，需在网页中同时选择 SDA/SCL 后重启启用
-int PCF_SDA = PIN_NONE;
+int PCF_SDA = hal_default_project_preset().bus.sda;
 // I2C 总线 SCL 引脚；默认未配置，需在网页中同时选择 SDA/SCL 后重启启用
-int PCF_SCL = PIN_NONE;
+int PCF_SCL = hal_default_project_preset().bus.scl;
 
 /**
  * 恢复 I2C 引脚默认值
- * 默认不占用任何引脚；用户需在网页中同时选择 SDA、SCL 后才启用总线
+ * 复用平台默认项目的 SDA/SCL；默认 C3 直连项目不启用 I2C
  */
 static void pcf_defaults() {
-    PCF_SDA = PIN_NONE;
-    PCF_SCL = PIN_NONE;
+    PCF_SDA = hal_default_project_preset().bus.sda;
+    PCF_SCL = hal_default_project_preset().bus.scl;
 }
 
 // 当前设置记录使用 CRC32，计算时把 checksum 字段视为 0，避免校验值自引用
@@ -156,7 +160,7 @@ static bool write_settings_to_flash(const SettingsData* data) {
 /**
  * 校验并应用设置到运行期变量
  * @param data 从存储或快照得到的设置
- * 逐项检查范围后更新全局配置；接线配置无效时恢复平台默认映射并记录日志
+ * 逐项检查范围后更新全局配置；I2C 仅由 SDA/SCL 决定，接线无效时恢复平台默认映射
  */
 static void apply_settings_values(const SettingsData& data) {
     for (int i = 0; i < 16; i++) {
@@ -167,13 +171,13 @@ static void apply_settings_values(const SettingsData& data) {
     }
 
     AMS_COUNT = data.ams_count >= 1 && data.ams_count <= IO_CONFIG_MAX_CHANNELS / 4
-                    ? data.ams_count : DEFAULT_AMS_COUNT;
+                    ? data.ams_count : hal_default_project_preset().ams;
     MANUAL_PULSE_MS = data.manual_pulse_ms > 0 && data.manual_pulse_ms < MAX_PULSE_MS
                           ? data.manual_pulse_ms : DEFAULT_MANUAL_PULSE_MS;
     AUTO_LOAD_MS = data.auto_load_ms >= 0 && data.auto_load_ms < MAX_PULSE_MS
                        ? data.auto_load_ms : DEFAULT_AUTO_LOAD_MS;
     RS485_MODE = data.rs485_mode == RS485_MODE_RXTX || data.rs485_mode == RS485_MODE_DE
-                     ? data.rs485_mode : DEFAULT_RS485_MODE;
+                     ? data.rs485_mode : hal_default_project_preset().bus.mode;
     BUS_LOG_ENABLE = data.bus_log_enable == 0 || data.bus_log_enable == 1
                          ? data.bus_log_enable : DEFAULT_BUS_LOG;
 
@@ -202,21 +206,14 @@ static void apply_settings_values(const SettingsData& data) {
     // 先加载整组候选接线，再交叉校验，避免用旧总线引脚误判新配置
     const IoConfig loaded = data.io_config;
     BUS_RX = data.bus_rx; BUS_TX = data.bus_tx; BUS_DE = data.bus_de;
-    // I2C 总线由 SDA/SCL 是否同时配置决定，旧版 pcf_enable 字段只用于兼容旧记录
-    pcf_defaults();
+    // I2C 总线由 SDA/SCL 是否同时配置决定
     PCF_SDA = data.pcf_sda; PCF_SCL = data.pcf_scl;
-    // 旧版记录在关闭 PCF8575 时仍保存板级默认 4/5，迁移为“未配置”，
-    // 避免升级后被自动启用并和原有微动引脚冲突
-    if (data.pcf_enable == 0 && PCF_SDA == PIN_I2C_SDA && PCF_SCL == PIN_I2C_SCL) {
-        PCF_SDA = PIN_NONE;
-        PCF_SCL = PIN_NONE;
-    }
     // 只配置单个引脚属于非法状态，按未配置处理
     if ((PCF_SDA == PIN_NONE) != (PCF_SCL == PIN_NONE)) {
         PCF_SDA = PIN_NONE;
         PCF_SCL = PIN_NONE;
     }
-    // 两脚相同、越界或旧版脏数据都按“总线未配置”处理，避免网页锁死在无效组合
+    // 两脚相同或负值按“总线未配置”处理，其余不可用引脚由下方接线校验拒绝
     if (!i2c_bus_configured()) {
         PCF_SDA = PIN_NONE;
         PCF_SCL = PIN_NONE;
@@ -230,9 +227,9 @@ static void apply_settings_values(const SettingsData& data) {
     if (wiring_valid) {
         IO_CONFIG = loaded;
     } else {
-        AMS_COUNT = DEFAULT_AMS_COUNT;
+        AMS_COUNT = hal_default_project_preset().ams;
         MOTOR_LIMIT = min(MOTOR_LIMIT, active_channel_count());
-        RS485_MODE = DEFAULT_RS485_MODE;
+        RS485_MODE = hal_default_project_preset().bus.mode;
         bus_defaults();
         pcf_defaults();
         io_config_set_defaults(IO_CONFIG);
@@ -242,33 +239,17 @@ static void apply_settings_values(const SettingsData& data) {
 
 /**
  * 初始化设置存储
- * 读取设置并校验魔数与 CRC32；上一版记录仅迁移旧默认 AMS 版本，保留自定义参数
- * 迁移仍执行写入及回读校验，失败恢复旧运行值；无效或空片时恢复默认值并重新写入
+ * 只接受当前格式且 CRC32 正确的完整记录，不转换版本或字段
+ * 无效或空片时恢复默认值并写入、回读校验，有效记录直接加载且不重复写入
  */
 void settings_storage_init() {
     SettingsData data{};
 
     read_settings_from_flash(&data);
 
-    if ((data.magic == SETTINGS_MAGIC_NUMBER || data.magic == SETTINGS_MAGIC_PREVIOUS) &&
+    if (data.magic == SETTINGS_MAGIC_NUMBER &&
         calculate_crc32(&data) == data.checksum) {
         apply_settings_values(data);
-        if (data.magic == SETTINGS_MAGIC_PREVIOUS) {
-            if (data.ams_version[0] == 90 && data.ams_version[1] == 0 &&
-                data.ams_version[2] == 0 && data.ams_version[3] == 0) {
-                AMS_VERSION[0] = DEFAULT_AMS_VERSION_MAJOR;
-                AMS_VERSION[1] = DEFAULT_AMS_VERSION_MINOR;
-                AMS_VERSION[2] = DEFAULT_AMS_VERSION_PATCH;
-                AMS_VERSION[3] = DEFAULT_AMS_VERSION_BUILD;
-            }
-            if (settings_save_to_flash()) {
-                LOG_MAIN("[settings] 旧设置已迁移，AMS 版本=%d.%d.%d.%d", AMS_VERSION[0],
-                         AMS_VERSION[1], AMS_VERSION[2], AMS_VERSION[3]);
-            } else {
-                apply_settings_values(data);
-                LOG_MAIN("[settings] 设置迁移写入或回读失败，已恢复旧运行值");
-            }
-        }
         return;
     }
 
@@ -290,7 +271,7 @@ void settings_load_from_flash() {
 /**
  * 生成当前设置快照
  * @return 包含所有运行期设置及 CRC32 的 SettingsData
- * 收集当前生效参数和接线配置，计算 checksum 后返回副本
+ * 收集当前生效参数和接线配置；I2C 只存两根引脚，计算 checksum 后返回副本
  */
 SettingsData settings_snapshot() {
     SettingsData data = {};
@@ -315,7 +296,6 @@ SettingsData settings_snapshot() {
     data.pcf_sda = PCF_SDA;
     data.pcf_scl = PCF_SCL;
     data.bus_rx = BUS_RX; data.bus_tx = BUS_TX; data.bus_de = BUS_DE;
-    data.pcf_enable = i2c_bus_configured() ? 1 : 0;
     memcpy(data.ams_version, AMS_VERSION, sizeof(AMS_VERSION));
     data.checksum = calculate_crc32(&data);
     return data;
@@ -333,10 +313,22 @@ void settings_restore_snapshot(const SettingsData &data) {
 /**
  * 保存当前设置并校验
  * @return true 表示写入并回读一致
- * 生成快照、写入存储，再回读比较魔数和 CRC32
+ * 生成当前快照，复用候选设置保存接口进行 CRC 和回读检查
  */
 bool settings_save_to_flash() {
-    const SettingsData data = settings_snapshot();
+    return settings_save_snapshot(settings_snapshot());
+}
+
+/**
+ * 保存候选设置并完整回读校验
+ * @param candidate 已完成范围和接线校验的候选设置
+ * @return true 表示写入成功且回读完全一致
+ * 重算魔数和 CRC，不修改运行期设置，供项目切换在重启后统一生效
+ */
+bool settings_save_snapshot(const SettingsData &candidate) {
+    SettingsData data = candidate;
+    data.magic = SETTINGS_MAGIC_NUMBER;
+    data.checksum = calculate_crc32(&data);
     if (!write_settings_to_flash(&data)) return false;
     SettingsData saved{};
     read_settings_from_flash(&saved);
@@ -347,18 +339,18 @@ bool settings_save_to_flash() {
 
 /**
  * 恢复所有设置默认值
- * 重置参数、引脚映射和 I2C 总线；OTA 恢复默认发布目录，不直接写存储
+ * 接线和 AMS 数量复用平台默认项目；OTA 恢复默认发布目录，不直接写存储
  */
 void settings_reset_to_defaults() {
     for (int i = 0; i < 16; i++) {
         PULLBACK_TIMEOUT[i] = DEFAULT_PULLBACK_TIMEOUT;
         CHANNEL_MODE[i] = CHANNEL_MODE_AUTO;
     }
-    AMS_COUNT = DEFAULT_AMS_COUNT;
+    AMS_COUNT = hal_default_project_preset().ams;
     MANUAL_PULSE_MS = DEFAULT_MANUAL_PULSE_MS;
     AUTO_LOAD_MS = DEFAULT_AUTO_LOAD_MS;
     MOTOR_LIMIT = 1;
-    RS485_MODE = DEFAULT_RS485_MODE;
+    RS485_MODE = hal_default_project_preset().bus.mode;
     BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
     memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL));
     AMS_VERSION[0] = DEFAULT_AMS_VERSION_MAJOR;
@@ -376,12 +368,12 @@ void settings_reset_to_defaults() {
 /**
  * 检查存储中的设置是否有效
  * @return true 表示魔数和 CRC32 均有效
- * 当前记录和布局相同的上一版记录均校验完整 CRC32，上一版在加载时迁移
+ * 只接受当前魔数和完整 CRC32，不接受其他格式
  */
 bool settings_is_valid() {
     SettingsData data{};
     read_settings_from_flash(&data);
-    return (data.magic == SETTINGS_MAGIC_NUMBER || data.magic == SETTINGS_MAGIC_PREVIOUS) &&
+    return data.magic == SETTINGS_MAGIC_NUMBER &&
            calculate_crc32(&data) == data.checksum;
 }
 

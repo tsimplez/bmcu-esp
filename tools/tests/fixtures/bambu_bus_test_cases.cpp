@@ -142,7 +142,7 @@ static void test_receiver() {
     feed(short_request(0x20,33)); during_read = nullptr;
     assert(BambuBus_run() == 1);
 }
-/** 验证无通信启动、错误帧不续期、其它设备不解锁、长期回绕后仍保持超时 */
+/** 验证无通信启动、10 秒心跳边界、错误帧不续期、其它设备不解锁及回绕后超时锁存 */
 static void test_timeout() {
     fake_ms = 2000; assert(BambuBus_run() == 0 && BambuBus_printer_status() == 0);
     fake_ms = UINT32_MAX - 500u; feed(short_request(0x20,33)); assert(BambuBus_run() == 1);
@@ -152,7 +152,8 @@ static void test_timeout() {
     assert(BambuBus_run() == -1);
     auto other = long_request(0x21a,1); other[8] = 3; seal(other); feed(other);
     assert(BambuBus_run() == -1);
-    fake_ms += 5000; BambuBus_run(); assert(BambuBus_printer_status() == 2);
+    fake_ms += 8998; assert(BambuBus_run() == -1 && BambuBus_printer_status() == 1);
+    ++fake_ms; assert(BambuBus_run() == -1 && BambuBus_printer_status() == 2);
     fake_ms = UINT32_MAX - 499u;
     assert(BambuBus_run() == -1 && BambuBus_printer_status() == 2);
     feed(short_request(0x20,33)); assert(BambuBus_run() == 1 && BambuBus_printer_status() == 1);

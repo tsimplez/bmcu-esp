@@ -89,8 +89,9 @@ static void hal_atomic_increment_u32(volatile uint32_t *value) {
 // 该平台未实现的通道使用的占位引脚
 #define PIN_NONE 255
 
-// 每对引脚：前一个=正转(进料)，后一个=反转(退料)
-// #define MOTOR_PINS_1_4 {0, 1}, {12, 13}, {10, 6}, {7, 8}
+struct ProjectPreset;
+const char *hal_project_target();
+const ProjectPreset &hal_default_project_preset();
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
 
@@ -117,23 +118,7 @@ static void hal_atomic_increment_u32(volatile uint32_t *value) {
   // GPIO20  排针08 可用 U0RXD            -                UART0，接板载USB转TTL（日志口，921600）
   // GPIO21  排针09 可用 U0TXD            -                UART0，接板载USB转TTL（日志口，921600）
 
-  // ---------- 引脚方案：默认 4 通道直连 GPIO ----------
-  // 是否再挂 PCF8575/温湿度模块由 Web 的 I2C 总线配置决定，固件不预置扩展脚映射
-  // 18 个可引出 IO 里，14-17 给外置 Flash、11 不烧 eFuse 用不了，本方案实际用 15 个：
-  //   电机1  IO0  / IO1  微动1  IO2   (strapping：复位瞬间不能为低)
-  //   电机2  IO12 / IO13 微动2  IO3
-  //   电机3  IO10 / IO6  微动3  IO4
-  //   电机4  IO7  / IO5  微动4  IO8   (strapping：复位瞬间不能为低)
-  //   BambuBus RX/TX  IO18 / IO19
-  //   RS485 DE  IO9
-  //   控制台日志 IO20 / IO21（UART0，接板载 USB 转 TTL）
-  // 注意：
-  //   * IO2/IO8 是 strapping 脚：复位时该通道微动开关若闭合（有料）会把脚拉低，
-  //     芯片可能进下载模式或启动失败复位前先退料，或把这两路换到别的脚
-  //   * IO12/IO13 与板载 LED 共用，电机换向时 LED 会微亮；不想看到就焊掉 LED
-  //   * IO9 复位时必须为高（板载 BOOT 键按下即拉低），所以只做输出且平时为低，
-  //     正常运行时按 BOOT 顶多跟 DE 抢一下（DE 空闲为低，不会冲突）
-  //   * 不用 IO11：默认给 Flash 供电，要当 IO 得先一次性烧 eFuse(VDD_SPI_AS_GPIO)
+  // C3 项目接线统一定义在 project_presets.h；这里仅保留板型信息。
 
   // 板型：1 = 经典款（板载 CH343 转串口，UART0 接 Type-C）→ BambuBus 用 IO18/IO19
   //       0 = 新款/简约版（Type-C 直连芯片 USB）→ BambuBus 改用 IO20/IO21，
@@ -141,32 +126,12 @@ static void hal_atomic_increment_u32(volatile uint32_t *value) {
   // [合宙 airm2m_core_esp32c3](https://wiki-zh.luatos.org/chips/esp32c3/board.html)
   #define C3_BOARD_USB_TTL 1
 
-  #define MSW_PINS_5_8     PIN_NONE, PIN_NONE, PIN_NONE, PIN_NONE
-  #define MSW_PINS_9_12    PIN_NONE, PIN_NONE, PIN_NONE, PIN_NONE
-  #define MSW_PINS_13_16   PIN_NONE, PIN_NONE, PIN_NONE, PIN_NONE
   #define PIN_SWITCH       PIN_NONE  // C3 不接单路微动开关，接口保留
-  #define PIN_BUS_DE       9
-
-  // 4 通道直连 GPIO；扩展芯片的通道接线在 Web 里按 AMS 数量配置
-  #define PIN_I2C_SDA       4  // 旧版默认 I2C SDA；当前默认不启用，可在 Web 中配置
-  #define PIN_I2C_SCL       5
-  #define MOTOR_PINS_1_4    {0, 1}, {12, 13}, {10, 6}, {7, 8}
-  #define MSW_PINS_1_4      2, 3, 4, 5
-
-  #if C3_BOARD_USB_TTL
-    #define PIN_BUS_RX  18
-    #define PIN_BUS_TX  19
-  #else
-    #define PIN_BUS_RX  20
-    #define PIN_BUS_TX  21
-  #endif
 
 #else
 
   // ---------- RP2040 与 ESP32-S3 一致的引脚 ----------
   #define PIN_BUS_DE       6
-  #define PIN_I2C_SDA      4
-  #define PIN_I2C_SCL      5
   #define MOTOR_PINS_1_4   {11, 12}, {9, 10}, {7, 8}, {13, 14}
   #define MSW_PINS_5_8     57, 56, 55, 54  // PCF8575 虚拟引脚
 
@@ -265,7 +230,7 @@ static void hal_console_begin() { Serial.begin(115200); }
 static inline void hal_console_begin() {}
 #endif
 
-// 从持久化设置加载，PIN_BUS_* 仅作为默认值
+// 从持久化设置加载，首次使用 hal_default_project_preset() 的默认接线
 // BambuBus 串口 RX、TX 引脚号；RS485_MODE_RXTX 模式下 DE 不驱动
 extern int BUS_RX, BUS_TX, BUS_DE;
 

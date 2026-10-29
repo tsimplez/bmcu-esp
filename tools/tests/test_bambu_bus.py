@@ -34,24 +34,24 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--zig', type=Path, help='可选的 zig 可执行文件，用其 c++ 子命令编译')
     parser.add_argument('--wasi', action='store_true', help='用 Zig 编译为 WebAssembly 并由 Node WASI 沙箱执行（不运行线程压测）')
-    parser.add_argument('--settings', action='store_true', help='改为测试真实设置存储代码的旧记录迁移与失败回滚')
+    parser.add_argument('--settings', action='store_true', help='改为测试真实设置存储代码的当前格式加载与失败回滚')
     args = parser.parse_args()
     if args.wasi and not args.zig:
         parser.error('--wasi 需要 --zig')
     compiler = [str(args.zig), 'c++'] if args.zig else [os.environ.get('CXX', 'g++')]
     if not args.zig and not shutil.which(compiler[0]):
         parser.error('找不到 C++ 编译器，请设置 CXX 或使用 --zig 指定已有编译器')
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     bus = strip_includes((root / 'src/BambuBus.cpp').read_text(encoding='utf-8'))
     reference = strip_includes((root / 'src/bambu_motion_reference.h').read_text(encoding='utf-8')).replace('#pragma once\n', '')
     header = strip_includes((root / 'src/BambuBus.h').read_text(encoding='utf-8')).replace('#pragma once\n', '')
     platform = (root / 'src/platform.h').read_text(encoding='utf-8')
     atomics = platform[platform.index('/**\n * 原子读取共享的 32 位值'):]
     atomics = atomics[:atomics.index('// ============================================================')]
-    support = (root / 'tools/bambu_bus_test_support.h').read_text(encoding='utf-8')
-    cases = (root / 'tools/bambu_bus_test_cases.cpp').read_text(encoding='utf-8')
+    support = (root / 'tools/tests/fixtures/bambu_bus_test_support.h').read_text(encoding='utf-8')
+    cases = (root / 'tools/tests/fixtures/bambu_bus_test_cases.cpp').read_text(encoding='utf-8')
     motor_source = (root / 'src/BMCU.cpp').read_text(encoding='utf-8')
-    motor_support = (root / 'tools/bambu_motor_test_support.h').read_text(encoding='utf-8')
+    motor_support = (root / 'tools/tests/fixtures/bambu_motor_test_support.h').read_text(encoding='utf-8')
     motor_functions = '\n'.join(extract_function(motor_source, signature) for signature in (
         'static void clear_feed_stop_delay(', 'static bool arm_feed_stop_delay(', 'void BMCU_motion() {'))
     translation_unit = '\n'.join((support, header, atomics, reference, bus, motor_support, motor_functions, cases))
@@ -64,10 +64,10 @@ def main():
         io_header = strip_includes((root / 'src/io_config.h').read_text(encoding='utf-8')).replace('#pragma once\n', '')
         settings_header = strip_includes((root / 'src/settings_storage.h').read_text(encoding='utf-8')).replace('#pragma once\n', '')
         settings_source = strip_includes((root / 'src/settings_storage.cpp').read_text(encoding='utf-8'))
-        settings_support = (root / 'tools/settings_test_support.h').read_text(encoding='utf-8')
-        settings_cases = (root / 'tools/settings_test_cases.cpp').read_text(encoding='utf-8')
+        settings_support = (root / 'tools/tests/fixtures/settings_test_support.h').read_text(encoding='utf-8')
+        settings_cases = (root / 'tools/tests/fixtures/settings_test_cases.cpp').read_text(encoding='utf-8')
         translation_unit = '\n'.join((preamble, io_header, settings_header, settings_support, settings_source, settings_cases))
-        scenarios = ('legacy_default', 'legacy_custom', 'current_custom', 'bad_crc', 'write_failure', 'readback_failure')
+        scenarios = ('current_custom', 'bad_magic', 'bad_crc', 'empty', 'write_failure', 'readback_failure', 'default_write_failure')
     with tempfile.TemporaryDirectory(prefix='bmcu-bus-test-') as directory:
         folder = Path(directory)
         source = folder / 'test.cpp'
@@ -75,7 +75,7 @@ def main():
         source.write_text(translation_unit, encoding='utf-8')
         target_flags = ['-target', 'wasm32-wasi', '-DBMCU_TEST_WASI=1', '-fno-exceptions'] if args.wasi else ['-pthread']
         subprocess.run(compiler + target_flags + ['-std=c++17', '-O0', '-g', '-I', str(root / 'src'),
-                                   '-I', str(root / 'tools'), str(source), '-x', 'c++', str(root / 'src/crc_bus.c'),
+                                   '-I', str(root / 'tools/tests/fixtures'), str(source), '-x', 'c++', str(root / 'src/crc_bus.c'),
                                    '-o', str(binary)], check=True)
         for case in scenarios:
             if args.wasi:

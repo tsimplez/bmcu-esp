@@ -14,6 +14,7 @@
 #include "log_bus.h"
 #include "platform.h"
 #include "settings_storage.h"
+#include "project_presets.h"
 #include "BMCU.h"
 #include "BambuBus.h"
 #include "version.h"
@@ -301,6 +302,71 @@ static bool maintenance_required() {
 }
 
 /**
+ * 读取当前平台的项目列表与整套接线预览
+ * 根据候选接线校验兼容性，不受当前项目的引脚占用影响
+ */
+static void handle_projects_get() {
+    String j = "{\"current\":\"" + String(project_preset_match(settings_snapshot())) + "\",\"projects\":[";
+    bool first = true;
+    for (const auto &preset : PROJECT_PRESETS) {
+        if (strcmp(preset.target, hal_project_target()) != 0) continue;
+        String error;
+        const bool available = project_preset_validate(preset, &error);
+        if (!first) j += ',';
+        first = false;
+        j += "{\"id\":\"" + json_escape(preset.id) + "\",\"name\":\"" + json_escape(preset.name) +
+             "\",\"available\":" + String(available ? "true" : "false") +
+             ",\"reason\":\"" + json_escape(error.c_str()) + "\",\"ams\":" + String(preset.ams) +
+             ",\"rs485\":" + String(preset.bus.mode) + ",\"rx\":" + String(preset.bus.rx) +
+             ",\"tx\":" + String(preset.bus.tx) + ",\"de\":" + String(preset.bus.de) +
+             ",\"sda\":" + String(preset.bus.sda) + ",\"scl\":" + String(preset.bus.scl) + ",\"pins\":[";
+        IoConfig io;
+        project_preset_io(preset, io);
+        const int channels = preset.ams >= 1 && preset.ams <= IO_CONFIG_MAX_CHANNELS / 4 ? preset.ams * 4 : 0;
+        for (int ch = 0; ch < channels; ++ch) {
+            if (ch) j += ',';
+            j += "[" + String(io.motor[ch][0]) + "," + String(io.motor[ch][1]) +
+                 "," + String(io.microswitch[ch]) + "]";
+        }
+        j += "]}";
+    }
+    j += "]}";
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", j);
+}
+
+/**
+ * 保存整套项目配置并重启
+ * 只接收项目 ID，统一验证后保存候选快照；回调不改变当前接线或驱动电机
+ */
+static void handle_project_save() {
+    const ProjectPreset *preset = server.hasArg("id") && server.args() == 1
+        ? project_preset_find(server.arg("id").c_str()) : nullptr;
+    if (!preset) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请选择有效的项目\"}");
+        return;
+    }
+    String error;
+    if (!project_preset_validate(*preset, &error)) {
+        server.send(400, "application/json",
+                    String("{\"ok\":false,\"msg\":\"") + json_escape(error.c_str()) + "\"}");
+        return;
+    }
+    if (!maintenance_required()) return;
+    SettingsData candidate = settings_snapshot();
+    project_preset_apply(*preset, candidate);
+    if (!settings_save_snapshot(candidate)) {
+        server.send(500, "application/json",
+                    "{\"ok\":false,\"msg\":\"保存或回读校验失败，当前接线未切换，请重试\"}");
+        return;
+    }
+    LOG_MAIN("[web] 项目配置已保存：%s，AMS=%d，重启生效", preset->name, preset->ams);
+    server.send(200, "application/json", "{\"ok\":true,\"msg\":\"项目已保存，设备正在重启\"}");
+    delay(300);
+    ESP.restart();
+}
+
+/**
  * 处理首页请求
  * 禁用浏览器缓存并发送嵌入固件的 HTML 管理页面
  */
@@ -324,7 +390,7 @@ static String sensor_json_value(bool valid, float value, int digits) {
 
 /**
  * 处理运行状态查询
- * 汇总 WiFi、IP、堆内存、总线、电机、耗材、I2C/温湿度、维护状态和版本信息为 JSON
+ * 汇总 WiFi、IP、项目匹配、总线、电机、耗材、传感器、维护状态和版本信息为 JSON
  */
 static void handle_status() {
     IPAddress ip = ap_mode ? WiFi.softAPIP() : WiFi.localIP();
@@ -341,6 +407,7 @@ static void handle_status() {
     j += ",\"heap\":" + String(ESP.getFreeHeap());
     j += ",\"heap_total\":" + String(ESP.getHeapSize());
     j += ",\"chip\":\"" + String(ESP.getChipModel()) + "\"";
+    j += ",\"project\":\"" + String(project_preset_match(settings_snapshot())) + "\"";
     j += ",\"rs485\":" + String(RS485_MODE);
     j += ",\"buslog\":" + String(BUS_LOG_ENABLE);
     j += ",\"ams\":" + String(AMS_COUNT);
@@ -396,7 +463,7 @@ static void handle_status() {
 
 /**
  * 处理设置读取请求
- * 输出参数、通道模式、退料超时、IO/PCF/总线接线和可选引脚 JSON
+ * 输出参数、通道模式、退料超时、接线和可选引脚；I2C 状态统一使用 configured
  */
 static void handle_settings_get() {
     String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
@@ -424,8 +491,7 @@ static void handle_settings_get() {
     }
     j += "],\"pins\":";
     io_config_append_pin_options(j);
-    j += "},\"pcf\":{\"enabled\":" + String(i2c_bus_configured() ? "true" : "false") +
-         ",\"configured\":" + String(i2c_bus_configured() ? "true" : "false") +
+    j += "},\"pcf\":{\"configured\":" + String(i2c_bus_configured() ? "true" : "false") +
          ",\"sda\":" + String(PCF_SDA) + ",\"scl\":" + String(PCF_SCL) + ",\"pins\":";
     io_config_append_pin_options(j, true);
     j += "},\"bus\":{\"rx\":" + String(BUS_RX) + ",\"tx\":" + String(BUS_TX) +
@@ -1717,6 +1783,8 @@ static void setup_routes() {
     server.on("/api/status", HTTP_GET, handle_status);
     server.on("/api/settings", HTTP_GET, handle_settings_get);
     server.on("/api/settings", HTTP_POST, handle_settings_save);
+    server.on("/api/projects", HTTP_GET, handle_projects_get);
+    server.on("/api/projects", HTTP_POST, handle_project_save);
     server.on("/api/bus", HTTP_POST, handle_bus_save);
     server.on("/api/pcf", HTTP_POST, handle_pcf_save);
     server.on("/api/motor", HTTP_POST, handle_manual_motor);
