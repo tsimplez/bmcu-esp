@@ -383,7 +383,7 @@ static void handle_root() {
  * @param value 读数值
  * @param digits 小数位数
  * @return JSON 数字文本；无效时返回 null
- * 网页据此区分“未检测/读取失败”和真实的 0 值
+ * 网页据此区分“未检测到/读取失败”和真实的 0 值
  */
 static String sensor_json_value(bool valid, float value, int digits) {
     return valid ? String(value, digits) : String("null");

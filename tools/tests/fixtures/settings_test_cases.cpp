@@ -30,7 +30,7 @@ static SettingsData custom_record() {
  * @param argc 必须包含场景名
  * @param argv 测试程序及场景名
  * @return 0 表示通过
- * 对完整快照逐字节比较，覆盖当前格式、不匹配魔数、空片、坏 CRC 和保存失败回滚
+ * 对完整快照逐字节比较，覆盖当前格式、旧引脚编号格式、不匹配魔数、坏 CRC 和保存失败回滚
  */
 int main(int argc, char **argv) {
     assert(argc == 2);
@@ -39,11 +39,19 @@ int main(int argc, char **argv) {
     settings_reset_to_defaults();
     const auto defaults = settings_snapshot();
     flash_record = original;
-    const bool invalid = scenario == "bad_magic" || scenario == "bad_crc" || scenario == "empty" ||
+    const bool old_pcf = scenario == "old_pcf_numbering" || scenario == "old_pcf_numbering_2a";
+    const bool invalid = scenario == "bad_magic" || old_pcf || scenario == "bad_crc" || scenario == "empty" ||
                          scenario == "default_write_failure";
     if (scenario == "bad_magic") {
         flash_record.magic = SETTINGS_MAGIC_NUMBER ^ 1u;
         flash_record.checksum = calculate_crc32(&flash_record); // CRC 正确也不能加载不同格式
+    }
+    if (old_pcf) {
+        flash_record.magic = scenario == "old_pcf_numbering" ? 0x53415429u : 0x5341542Au;
+        flash_record.io_config.motor[0][0] = 50;
+        flash_record.io_config.motor[0][1] = 54;
+        flash_record.io_config.microswitch[0] = 60;
+        flash_record.checksum = calculate_crc32(&flash_record);
     }
     if (scenario == "bad_crc") flash_record.checksum ^= 1;
     if (scenario == "empty" || scenario == "default_write_failure")

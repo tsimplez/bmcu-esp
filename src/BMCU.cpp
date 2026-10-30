@@ -811,7 +811,7 @@ void BMCU_init() {
         PCF8575_init();
         for (uint8_t device = 0; device < PCF8575_DEVICE_COUNT; ++device)
             LOG_MAIN("[i2c] PCF8575 0x%02X=%s", PCF8575_ADDR + device,
-                     PCF8575_is_online(device) ? "已检测" : "未检测");
+                     PCF8575_is_online(device) ? "已检测到" : "未检测到");
     }
 
     if (switchPin != PIN_NONE) pinMode(switchPin, INPUT_PULLUP);

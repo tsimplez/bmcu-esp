@@ -4,7 +4,6 @@
 #include "PCF8575_PinMap.h"
 #include "project_presets.h"
 
-// 是否是预留引脚
 /**
  * 判断引脚是否为系统保留脚
  * @param pin 引脚号
@@ -34,15 +33,14 @@ static bool is_reserved_pin(int pin) {
     return false;
 }
 
-// 是否是真正的io引脚
 /**
  * 判断引脚是否为可用真实 GPIO
  * @param pin 引脚号
  * @return true 表示真实且未保留
- * 结合平台引脚范围与保留脚列表，过滤不存在的编号
+ * 结合平台引脚范围与保留脚列表，过滤扩展编号及其空隙和不存在的 GPIO
  */
 static bool is_real_gpio(int pin) {
-    if (pin < 0 || pin >= 255 || is_reserved_pin(pin)) return false;
+    if (pin < 0 || pin >= PCF8575_VIRTUAL_PIN_BASE || is_reserved_pin(pin)) return false;
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
     // C3 的可选范围只保留实际引出的 GPIO；保留 2/8 是为了兼容现有默认映射，
@@ -58,7 +56,6 @@ static bool is_real_gpio(int pin) {
 #endif
 }
 
-// io配置设置默认值
 /**
  * 生成平台默认引脚配置
  * @param config 待填充的 IO 配置
@@ -68,8 +65,6 @@ void io_config_set_defaults(IoConfig &config) {
     project_preset_io(hal_default_project_preset(), config);
 }
 
-// 该引脚在 I2C 总线状态变化后是否还能用：配置后 SDA/SCL 不能再用作通道引脚，
-// 未配置时扩展虚拟引脚不再存在
 /**
  * 判断引脚在 I2C 总线状态切换后是否失效
  * @param pin 引脚号
@@ -85,17 +80,14 @@ static bool pin_invalid_after_switch(int pin, bool i2c_configured, int sda, int 
     return pin == sda || pin == scl;
 }
 
-// 切换 I2C 总线配置时只清掉不再合法的引脚，其余接线原样保留，避免覆盖用户已接线
-// 电机是一对，任一脚被占用就整对清掉；清成 PIN_NONE(无) 表示该通道待配置
-// 返回清掉的引脚数量，供日志使用
 /**
  * 清理切换后失效的通道引脚
  * @param config 待清理的 IO 配置
  * @param i2c_configured I2C 总线是否启用
  * @param sda I2C SDA 引脚
  * @param scl I2C SCL 引脚
- * @return 被清空的引脚数量
- * 电机任一脚失效就整对清成 PIN_NONE，微动脚单独清理，其余接线保持不变
+ * @return 被清空的引脚数量，供日志使用
+ * 电机任一脚失效就整对清成 PIN_NONE，表示通道待配置；微动脚单独清理，其余接线保持不变
  */
 int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda, int scl) {
     int cleared = 0;
@@ -128,7 +120,6 @@ static bool bus_uses_pin(int pin, const IoBusConfig *bus = nullptr) {
     return pin == BUS_RX || pin == BUS_TX || (RS485_MODE == RS485_MODE_DE && pin == BUS_DE);
 }
 
-// io配置是否引脚可用
 /**
  * 判断引脚能否出现在网页选择列表中
  * @param pin 引脚号
@@ -201,7 +192,6 @@ bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active
     return true;
 }
 
-// pin警告文本
 /**
  * 获取引脚风险提示文本
  * @param pin 引脚号
@@ -221,7 +211,6 @@ static const char *pin_warning_text(int pin) {
     return "";
 }
 
-// io配置引脚有警告
 /**
  * 判断引脚是否需要风险提示
  * @param pin 引脚号
@@ -232,25 +221,23 @@ bool io_config_pin_has_warning(int pin) {
     return pin_warning_text(pin)[0] != '\0';
 }
 
-// io配置引脚标签
 /**
  * 生成引脚可读名称
  * @param pin 引脚号
- * @return “无”、IOx 或带芯片地址的 PCF8575 Px
- * 网页和日志按地址区分四片扩展器；面板名称与寄存器位序分开转换
+ * @return “无”、IOx 或带虚拟编号、扩展器序号和 Px 的名称
+ * 网页和日志按扩展器序号区分四片芯片；面板名称与寄存器位序分开转换
  */
 String io_config_pin_label(int pin) {
     if (pin == PIN_NONE) return "无";
     if (IS_PCF8575_VIRTUAL_PIN(pin)) {
-        char label[24];
-        snprintf(label, sizeof(label), "PCF8575 0x%02X P%d",
-                 PCF8575_ADDR + VIRTUAL_TO_PCF8575_DEVICE(pin), VIRTUAL_TO_PCF8575_PIN(pin));
-        return String(label);
+        char label[40];
+        snprintf(label, sizeof(label), "%d（io扩展%d P%d）", pin,
+                 VIRTUAL_TO_PCF8575_DEVICE(pin) + 1, VIRTUAL_TO_PCF8575_PIN(pin));
+        return {label};
     }
     return String("IO") + String(pin);
 }
 
-// io配置验证
 /**
  * 校验整组通道接线
  * @param config 通道接线配置
@@ -293,7 +280,6 @@ bool io_config_validate(const IoConfig &config, int active_channels, String *err
     return true;
 }
 
-// io配置附加引脚选项
 /**
  * 生成网页可选引脚 JSON 数组
  * @param json 待追加的 JSON 字符串

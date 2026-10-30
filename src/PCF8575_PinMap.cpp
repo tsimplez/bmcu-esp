@@ -138,13 +138,14 @@ int PCF8575_digitalRead(const uint8_t pin) {
  * 用软件计数模拟 PCF8575 输出
  * @param pin 虚拟引脚号
  * @param value PWM 占空比，0～255
- * 每个虚拟引脚独立计时；0 和 255 立即输出低或高，其余值由调用频率决定精度
+ * 用连续的 0～63 缓存索引为每个有效引脚独立计时，跳过虚拟编号空隙
+ * 0 和 255 立即输出低或高，其余值由调用频率决定精度
  */
 void PCF8575_analogWrite(const uint8_t pin, const uint8_t value) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) return;
     static uint32_t last_pwm_time[PCF8575_VIRTUAL_PIN_COUNT] = {};
     static uint8_t pwm_counter[PCF8575_VIRTUAL_PIN_COUNT] = {};
-    const uint8_t index = pin - PCF8575_VIRTUAL_PIN_BASE;
+    const uint8_t index = VIRTUAL_TO_PCF8575_INDEX(pin);
     if (value == 0 || value == 255) {
         PCF8575_digitalWrite(pin, value == 255 ? HIGH : LOW);
         return;
@@ -163,10 +164,10 @@ void PCF8575_analogWrite(const uint8_t pin, const uint8_t value) {
  * 判断引脚是否为当前平台的真实 GPIO
  * @param pin 引脚号
  * @return true 表示合法 GPIO
- * 过滤 PIN_NONE 和平台不存在的编号，避免向 Arduino core 传入非法引脚
+ * 过滤 PIN_NONE、扩展编号及其空隙和平台不存在的编号，避免访问非法 GPIO
  */
 static bool is_real_gpio(const uint8_t pin) {
-    if (pin == 255) return false;
+    if (pin >= PCF8575_VIRTUAL_PIN_BASE) return false;
 #if defined(ARDUINO_ARCH_ESP32)
     return digitalPinIsValid(pin);
 #elif defined(NUM_DIGITAL_PINS)

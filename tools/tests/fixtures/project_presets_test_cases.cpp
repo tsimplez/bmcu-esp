@@ -9,7 +9,7 @@ static void same_settings(const SettingsData &expected, const SettingsData &actu
 }
 
 /**
- * 验证项目切换、NVS 长度、存储失败和当前格式配置保留
+ * 验证项目切换、新引脚编号、NVS 长度、旧格式拒绝及当前格式配置保留
  * @param argc 参数个数
  * @param argv 可选 --json 导出真实项目 API 响应
  * @return 0 表示全部通过
@@ -99,7 +99,9 @@ int main(int argc, char **argv) {
     settings_storage_init(); // 模拟重启读取整套新配置
     same_settings(expected, settings_snapshot());
     assert(AMS_COUNT == 2 && BUS_RX == 10 && BUS_TX == 7 && PCF_SDA == 4 && PCF_SCL == 5);
-    assert(IO_CONFIG.motor[0][0] == 50 && IO_CONFIG.motor[3][1] == 57 && IO_CONFIG.microswitch[3] == 63);
+    assert(IO_CONFIG.motor[0][0] == 50 && IO_CONFIG.motor[3][1] == 57 && IO_CONFIG.microswitch[3] == 65);
+    for (int ch = 0; ch < 4; ++ch)
+        assert(VIRTUAL_TO_PCF8575_PIN(IO_CONFIG.microswitch[ch]) == 12 + ch);
     for (int ch = 4; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
         assert(IO_CONFIG.motor[ch][0] == PIN_NONE && IO_CONFIG.motor[ch][1] == PIN_NONE);
         assert(IO_CONFIG.microswitch[ch] == PIN_NONE && !BMCU_channel_motor_ready(ch));
@@ -112,34 +114,50 @@ int main(int argc, char **argv) {
     // 四片引脚可独立使用；同一片同一脚仍拒绝重复，关闭 I2C 必须清掉所有扩展接线。
     const auto pcb_settings = settings_snapshot();
     AMS_COUNT = 4;
+    const int channel_offsets[4][3] = {{0, 1, 2}, {3, 4, 5}, {6, 7, 10}, {11, 12, 13}};
     for (int ch = 0; ch < 16; ++ch) {
-        const int base = 50 + (ch / 4) * 16 + (ch % 4) * 3;
-        IO_CONFIG.motor[ch][0] = base;
-        IO_CONFIG.motor[ch][1] = base + 1;
-        IO_CONFIG.microswitch[ch] = base + 2;
+        const int base = 50 + (ch / 4) * 20;
+        IO_CONFIG.motor[ch][0] = base + channel_offsets[ch % 4][0];
+        IO_CONFIG.motor[ch][1] = base + channel_offsets[ch % 4][1];
+        IO_CONFIG.microswitch[ch] = base + channel_offsets[ch % 4][2];
     }
-    IO_CONFIG.microswitch[15] = 113; // 最后一片 P17
+    IO_CONFIG.microswitch[15] = 127; // 最后一片 P17
     assert(io_config_validate(IO_CONFIG, active_channel_count()));
-    assert(io_config_pin_label(50) == "PCF8575 0x20 P0");
-    assert(io_config_pin_label(58) == "PCF8575 0x20 P10");
-    assert(io_config_pin_label(113) == "PCF8575 0x23 P17");
+    assert(io_config_pin_label(50) == "50（io扩展1 P0）");
+    assert(io_config_pin_label(60) == "60（io扩展1 P10）");
+    assert(io_config_pin_label(70) == "70（io扩展2 P0）");
+    assert(io_config_pin_label(127) == "127（io扩展4 P17）");
     String options;
     io_config_append_pin_options(options);
-    for (int pin = 50; pin <= 113; ++pin)
-        assert(options.find("\"id\":" + std::to_string(pin) + ",") != std::string::npos);
-    assert(!io_config_pin_available(49) && !io_config_pin_available(114));
+    int virtual_count = 0;
+    for (int pin = 50; pin < 130; ++pin) {
+        const bool valid = pin % 10 < 8;
+        assert(io_config_pin_available(pin) == valid);
+        assert((options.find("\"id\":" + std::to_string(pin) + ",") != std::string::npos) == valid);
+        virtual_count += valid;
+        if (valid) continue;
+        for (int field = 0; field < 3; ++field) {
+            auto gap = IO_CONFIG;
+            if (field < 2) gap.motor[0][field] = pin;
+            else gap.microswitch[0] = pin;
+            assert(!io_config_validate(gap, active_channel_count()));
+        }
+    }
+    assert(virtual_count == 64);
+    for (int pin : {-1, 49, 130, 254, 255, 256}) assert(!io_config_pin_available(pin));
+    assert(io_config_pin_available(PIN_NONE, true));
     auto invalid = IO_CONFIG;
     invalid.motor[4][0] = 50;
     assert(!io_config_validate(invalid, active_channel_count()));
     invalid = IO_CONFIG;
-    invalid.microswitch[15] = 114;
+    invalid.microswitch[15] = 128;
     assert(!io_config_validate(invalid, active_channel_count()));
     for (int device = 0; device < 4; ++device) pcf_online[device] = device % 2 == 0;
     for (int ch = 0; ch < 16; ++ch)
         assert(BMCU_channel_motor_ready(ch) == (ch / 4 % 2 == 0));
     // 电机两脚跨片时必须两片都在线，真实 GPIO 不依赖其他 PCF 芯片。
     const auto complete_io = IO_CONFIG;
-    IO_CONFIG.motor[0][1] = 66;
+    IO_CONFIG.motor[0][1] = 70;
     assert(!BMCU_channel_motor_ready(0));
     pcf_online[1] = true;
     assert(BMCU_channel_motor_ready(0));
@@ -161,7 +179,7 @@ int main(int argc, char **argv) {
         assert(invalid.motor[ch][0] == PIN_NONE && invalid.motor[ch][1] == PIN_NONE &&
                invalid.microswitch[ch] == PIN_NONE);
     PCF_SDA = PCF_SCL = PIN_NONE;
-    for (int pin = 50; pin <= 113; ++pin) assert(!io_config_pin_available(pin));
+    for (int pin = 50; pin < 130; ++pin) assert(!io_config_pin_available(pin));
     settings_restore_snapshot(pcb_settings);
 
     // 反向切换时一次清掉扩展接线，已有非接线参数保留，并发上限收敛。
@@ -176,9 +194,27 @@ int main(int argc, char **argv) {
     assert(std::string(project_preset_match(settings_snapshot())) == direct->id);
     for (int ch = 4; ch < IO_CONFIG_MAX_CHANNELS; ++ch)
         assert(IO_CONFIG.motor[ch][0] == PIN_NONE && IO_CONFIG.microswitch[ch] == PIN_NONE);
-    // 空片与坏 CRC 都恢复 C3 默认项目。
+    // 旧编号中 60～63 仍是新编号的有效值，但语义不同，CRC 正确也必须拒绝旧格式。
+    for (uint32_t old_magic : {0x53415429u, 0x5341542Au}) {
+        flash_record = pcb_settings;
+        flash_record.magic = old_magic;
+        for (int ch = 0; ch < 4; ++ch) flash_record.io_config.microswitch[ch] = 60 + ch;
+        flash_record.checksum = calculate_crc32(&flash_record);
+        assert(!settings_is_valid());
+        before = writes;
+        const int reads_before = reads;
+        settings_storage_init();
+        assert(writes == before + 1 && reads == reads_before + 2);
+        assert(flash_record.magic == SETTINGS_MAGIC_NUMBER && settings_is_valid());
+        same_settings(settings_snapshot(), flash_record);
+        assert(std::string(project_preset_match(settings_snapshot())) == direct->id);
+        assert(MANUAL_PULSE_MS == DEFAULT_MANUAL_PULSE_MS && !*CUSTOM_SERIAL);
+        settings_storage_init();
+        assert(writes == before + 1);
+    }
+    // 坏 CRC 同样恢复 C3 默认项目。
     flash_record.checksum ^= 1;
     settings_storage_init();
     assert(std::string(project_preset_match(settings_snapshot())) == direct->id);
-    std::puts("PASS: project defaults, candidate validation, NVS exact length, current settings, two-way switch, empty channels, HTTP busy/failure, CRC readback");
+    std::puts("PASS: project defaults, sparse pin numbering/gaps, NVS exact length, old format reset, current settings, two-way switch, empty channels, HTTP busy/failure, CRC readback");
 }

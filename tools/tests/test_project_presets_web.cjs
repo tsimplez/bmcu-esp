@@ -16,16 +16,29 @@ const path = require('node:path');
     const errors = [], posts = [];
     page.on('pageerror', error => errors.push(error.message));
     let current = data.current, maintenance = true, failSave = false;
-    const pins = Array.from({ length: 66 }, (_, id) => ({ id, label: `IO${id}` }));
+    const gpioPins = Array.from({ length: 22 }, (_, id) => ({ id, label: `IO${id}` }));
+    const pins = gpioPins.slice();
+    for (const [device, banks] of [[50, 60], [70, 80], [90, 100], [110, 120]].entries()) {
+      for (const [bank, base] of banks.entries()) {
+        for (let bit = 0; bit < 8; ++bit) {
+          const id = base + bit;
+          pins.push({ id, label: `${id}（io扩展${device + 1} P${bank * 10 + bit}）` });
+        }
+      }
+    }
     const settings = { maxams: 4, motor_limit: 1, manual_ms: 300, auto_ms: 1000,
       cm: Array(16).fill(2), to: Array(16).fill(7), otaurl: '', otanotify: 0 };
-    /** 将后端预览数据用作模拟设备重启后的设置，不在测试里重写项目接线表。 */
+    /**
+     * 将后端预览数据用作模拟设备重启后的设置，I2C 和总线仅提供物理引脚选项
+     * @param {Object} preset 真实后端导出的项目预设
+     */
     const rebootWith = preset => {
       current = preset.id;
       Object.assign(settings, { ams: preset.ams, channels: preset.ams * 4, rs485: preset.rs485,
-        bus: { rx: preset.rx, tx: preset.tx, de: preset.de, pins },
-        pcf: { sda: preset.sda, scl: preset.scl, configured: preset.sda !== 255, pins },
-        io: { pins, motor: Array.from({ length: 16 }, (_, i) => preset.pins[i]?.slice(0, 2) || [255, 255]),
+        bus: { rx: preset.rx, tx: preset.tx, de: preset.de, pins: gpioPins },
+        pcf: { sda: preset.sda, scl: preset.scl, configured: preset.sda !== 255, pins: gpioPins },
+        io: { pins: preset.sda !== 255 ? pins : gpioPins,
+          motor: Array.from({ length: 16 }, (_, i) => preset.pins[i]?.slice(0, 2) || [255, 255]),
           microswitch: Array.from({ length: 16 }, (_, i) => preset.pins[i]?.[2] ?? 255) } });
     };
     rebootWith(direct);
@@ -73,10 +86,26 @@ const path = require('node:path');
     assert.equal(posts.length, 0, '选择项目只预览，不写入');
     assert.equal(await page.locator('#project-pins tr').count(), 8);
     assert.deepEqual(await page.locator('#project-pins tr').first().locator('td').allTextContents(),
-      ['1', 'PCF8575 0x20 P0', 'PCF8575 0x20 P4', 'PCF8575 0x20 P12']);
+      ['1', '50（io扩展1 P0）', '54（io扩展1 P4）', '62（io扩展1 P12）']);
     for (let row = 4; row < 8; ++row)
       assert.deepEqual(await page.locator('#project-pins tr').nth(row).locator('td').allTextContents(),
         [String(row + 1), '无', '无', '无']);
+    // 临时预览四片高低字节的边界编号，随后恢复真实项目，继续验证保存与重启。
+    const previewPins = [[50, 57, 60], [67, 255, 255], [70, 77, 80], [87, 255, 255],
+      [90, 97, 100], [107, 255, 255], [110, 117, 120], [127, 255, 255]];
+    await page.evaluate(({ id, previewPins }) => {
+      PROJECTS.find(preset => preset.id === id).pins = previewPins;
+      renderProjectPreview();
+    }, { id: pcb.id, previewPins });
+    for (const [row, values] of previewPins.entries()) {
+      const expected = values.map(id => id === 255 ? '无' : pins.find(pin => pin.id === id).label);
+      assert.deepEqual(await page.locator('#project-pins tr').nth(row).locator('td').allTextContents(),
+        [String(row + 1), ...expected]);
+    }
+    await page.evaluate(({ id, pins }) => {
+      PROJECTS.find(preset => preset.id === id).pins = pins;
+      renderProjectPreview();
+    }, pcb);
     assert.match(await page.locator('#project-summary').innerText(), /SDA IO4 \/ SCL IO5/);
     await page.evaluate(() => refreshStatus());
     assert.equal(await page.inputValue('#project-select'), pcb.id, '轮询保留待应用选择');

@@ -1393,7 +1393,7 @@ static void send_for_Dxx(const unsigned char *buf, const int length) {
     Dxx_res[13] = filament_flag_NFC;
     set_motion_response(Dxx_res + 17, AMS_num);
 
-    // AHT20 有效时把温湿度写入 AMS 长包回复；无效或未检测时恢复固定默认值，
+    // AHT20 有效时把温湿度写入 AMS 长包回复；无效或未检测到时恢复固定默认值，
     // 避免把上一次的旧读数继续发给打印机
     Dxx_res[6] = 0x75;
     Dxx_res[7] = 0x01;

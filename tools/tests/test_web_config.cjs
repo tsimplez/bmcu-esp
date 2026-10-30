@@ -12,9 +12,15 @@ const path = require('node:path');
     page.on('pageerror', e => errors.push(e.message));
     const pins = Array.from({ length: 48 }, (_, id) => ({ id, label: `IO${id}` }));
     const gpioPins = pins.slice();
-    for (let id = 50; id <= 113; ++id) {
-      const offset = id - 50, bit = offset % 16;
-      pins.push({ id, label: `PCF8575 0x${(0x20 + Math.floor(offset / 16)).toString(16)} P${bit < 8 ? bit : bit + 2}` });
+    const pcfIds = [];
+    for (const [device, banks] of [[50, 60], [70, 80], [90, 100], [110, 120]].entries()) {
+      for (const [bank, base] of banks.entries()) {
+        for (let bit = 0; bit < 8; ++bit) {
+          const id = base + bit;
+          pcfIds.push(id);
+          pins.push({ id, label: `${id}（io扩展${device + 1} P${bank * 10 + bit}）` });
+        }
+      }
     }
     const i2cStatus = { configured: false, pcf: false, pcf_devices: [
       { address: 0x23, online: true }, { address: 0x20, online: false },
@@ -186,32 +192,34 @@ const path = require('node:path');
       assert.equal(await page.locator('#' + id).textContent(), '未配置');
     i2cStatus.configured = true;
     await page.evaluate(() => refreshStatus());
-    for (const [id, expected] of [['s-pcf', '未检测'], ['s-pcf-1', '已检测'], ['s-pcf-2', '未检测'], ['s-pcf-3', '已检测']])
+    for (const [id, expected] of [['s-pcf', '未检测到'], ['s-pcf-1', '已检测到'], ['s-pcf-2', '未检测到'], ['s-pcf-3', '已检测到']])
       assert.equal(await page.locator('#' + id).textContent(), expected);
 
     await page.reload();
     await page.waitForFunction(() => document.querySelectorAll('#iobody tr').length === 4);
     await page.click('[data-tab="settings"]');
     await page.evaluate(() => loadPara());
-    assert.equal(await page.locator('#io-mf0 option').evaluateAll(options =>
-      options.filter(option => Number(option.value) >= 50 && Number(option.value) <= 113).length), 64);
-    assert.match(await page.locator('#io-mf0 option[value="113"]').textContent(), /0x23 P17/);
+    assert.deepEqual(await page.locator('#io-mf0 option').evaluateAll(options =>
+      options.map(option => Number(option.value)).filter(pin => pin >= 50 && pin !== 255)), pcfIds);
+    assert.equal(pcfIds.length, 64);
+    assert.match(await page.locator('#io-mf0 option[value="60"]').textContent(), /60（io扩展1 P10）/);
+    assert.match(await page.locator('#io-mf0 option[value="127"]').textContent(), /127（io扩展4 P17）/);
     for (let ch = 0; ch < 4; ++ch) {
-      await page.selectOption('#io-mf' + ch, String(50 + ch * 16));
-      await page.selectOption('#io-mb' + ch, String(51 + ch * 16));
-      await page.selectOption('#io-sw' + ch, String(65 + ch * 16));
+      await page.selectOption('#io-mf' + ch, String(50 + ch * 20));
+      await page.selectOption('#io-mb' + ch, String(51 + ch * 20));
+      await page.selectOption('#io-sw' + ch, String(67 + ch * 20));
     }
     const beforePcfSave = posts.length;
     await page.selectOption('#io-mf1', '50');
     await page.evaluate(() => saveIoConfig());
     assert.equal(posts.length, beforePcfSave, '同一扩展脚重复使用仍须拒绝');
-    await page.selectOption('#io-mf1', '66');
+    await page.selectOption('#io-mf1', '70');
     await page.evaluate(() => saveIoConfig());
-    assert.equal(posts.at(-1).get('io_sw3'), '113');
+    assert.equal(posts.at(-1).get('io_sw3'), '127');
     await page.evaluate(() => loadPara());
     for (let ch = 0; ch < 4; ++ch) {
-      assert.equal(await page.inputValue('#io-mf' + ch), String(50 + ch * 16));
-      assert.equal(await page.inputValue('#io-sw' + ch), String(65 + ch * 16));
+      assert.equal(await page.inputValue('#io-mf' + ch), String(50 + ch * 20));
+      assert.equal(await page.inputValue('#io-sw' + ch), String(67 + ch * 20));
     }
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'mobile layout must fit');

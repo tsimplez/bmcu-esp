@@ -292,8 +292,8 @@ void env_sensor_init() {
     bmp280_next_sample_ms = now;
 
     LOG_MAIN("[i2c] AHT20=%s，BMP280=%s（地址 0x%02X）",
-             env_status.aht20_online ? "已检测" : "未检测",
-             env_status.bmp280_online ? "已检测" : "未检测", bmp280_address);
+             env_status.aht20_online ? "已检测到" : "未检测到",
+             env_status.bmp280_online ? "已检测到" : "未检测到", bmp280_address);
 }
 
 /**

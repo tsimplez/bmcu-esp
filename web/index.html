@@ -72,6 +72,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#262b36;border:1px solid #3a4250;border-radius:8px;padding:10px 18px;font-size:13px;opacity:0;visibility:hidden;transition:opacity .25s,visibility .25s;pointer-events:none;max-width:86vw;text-align:center;cursor:pointer}
 .toast.on{opacity:1;visibility:visible;pointer-events:auto}
 .tbl{width:100%;border-collapse:collapse}
+.tbl th{text-align: center}
 .tbl details summary{cursor:pointer;color:var(--acc);padding:8px 0}
 .io-config{margin-top:12px;border-top:1px solid var(--line);padding-top:4px}
 .io-config .tbl{margin-top:8px}
@@ -85,8 +86,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .tbl input,.tbl select{padding:6px 8px;font-size:13px}
 .tbl td:first-child{color:var(--dim);width:35px}
 .tbl button{padding:4px 10px;font-size:13px}
-.channel-table th:last-child,.channel-table td:last-child{width:1%;white-space:nowrap}
-.acts{display:flex;align-items:center;gap:6px;min-width:110px}
+.channel-table th{text-align: center}
+.channel-table th:last-child,.channel-table td:last-child{width:20%;white-space:nowrap}
+.acts{display:flex;align-items:center;justify-content: space-around;gap:6px;min-width:110px}
 .acts button{flex-shrink:0}
 .motor-state{width:0;min-width:100%;margin-top:4px;white-space:nowrap;overflow-x:auto;scrollbar-width:none}
 .motor-state:empty{display:none}
@@ -104,9 +106,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
   <div id="printer" class="hint" role="status">正在读取打印机状态…</div>
   <nav>
     <button data-tab="status" class="on">状态</button>
-    <button data-tab="wifi">配网</button>
     <button data-tab="settings">设置</button>
-    <button data-tab="update">固件更新</button>
+    <button data-tab="update">更新</button>
+    <button data-tab="wifi">配网</button>
     <button data-tab="logs">日志</button>
   </nav>
   <div id="upbar" class="upbar hide">
@@ -193,7 +195,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="kv"><span>AHT20 湿度</span><b id="s-aht-hum">-</b></div>
     <div class="kv"><span>BMP280 温度</span><b id="s-bmp-temp">-</b></div>
     <div class="kv"><span>大气压</span><b id="s-bmp-press">-</b></div>
-    <div class="hint">未检测到的传感器会自动停用并定期重试；网页显示“未检测”时不会使用旧读数</div>
+    <div class="hint">未检测到的传感器会自动停用并定期重试；网页显示“未检测到”时不会使用旧读数</div>
   </div>
 </div>
 
@@ -263,7 +265,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
         <button id="save-pcf" class="primary" onclick="savePcf()" disabled>保存并重启</button>
       </div>
       <div class="hint">PCF8575、AHT20 和 BMP280 共用这一条 I2C 总线，只需要 SDA、SCL 两根线
-        SDA 和 SCL 必须同时选择或同时选“无”；只配置其中一个不能保存。最多支持 4 个 PCF8575，地址分别设为 0x20、0x21、0x22、0x23，共 64 个扩展脚；下拉选项按地址和 Px 区分，
+        SDA 和 SCL 必须同时选择或同时选“无”；只配置其中一个不能保存。最多支持 4 个 PCF8575，地址分别设为 0x20、0x21、0x22、0x23，共 64 个扩展脚；编号分别为 50～57 / 60～67、70～77 / 80～87、90～97 / 100～107、110～117 / 120～127，尾数 8、9 留空；下拉选项显示编号、扩展器序号和 Px，
         扫描不到的设备会自动停用并在状态页提示保存后重启，请先断电换线</div>
       <div class="hint" id="pcf-state" role="status">正在读取接线配置…</div>
     </div>
@@ -493,11 +495,11 @@ let gOtaLatest;
  * @param {string} id 页面元素 ID
  * @param {boolean} configured I2C 总线是否已配置
  * @param {boolean} online 设备是否检测到
- * 未配置总线时显示“未配置”，已配置但扫描不到时显示“未检测”
+ * 未配置总线时显示“未配置”，已配置但扫描不到时显示“未检测到”
  */
 const showI2cDevice=(id,configured,online)=>{
   const el=$(id)
-  el.textContent=!configured?'未配置':online?'已检测':'未检测'
+  el.textContent=!configured?'未配置':online?'已检测到':'未检测到'
   el.style.color=!configured?'var(--dim)':online?'var(--ok)':'var(--err)'
 }
 /**
@@ -830,20 +832,16 @@ const renderProjectPreview=()=>{
   if(preset){
     $('project-name').textContent=preset.name+' · 接线预览'
     /**
-     * 格式化预览中的引脚编号
-     * @param {number} pin 固件提供的物理或扩展引脚编号
-     * @return {string} 可读引脚名称，255 显示为“无”
-     */
-    /**
-     * 格式化项目预览引脚，按芯片地址和面板名称区分四片扩展器
+     * 格式化项目预览引脚，显示虚拟编号、扩展器序号和面板名称
      * @param {number} pin 配置中的引脚编号
-     * @return {string} 无、主控 IO 或带地址的扩展引脚名称
+     * @return {string} 255 显示为“无”，其余显示主控 IO、扩展引脚名称或无效提示
      */
     const pinLabel=pin=>{
       if(pin===255) return '无'
-      if(pin<50||pin>=114) return 'IO'+pin
-      const offset=pin-50,bit=offset%16
-      return 'PCF8575 0x'+(0x20+Math.floor(offset/16)).toString(16)+' P'+(bit<8?bit:bit+2)
+      if(pin<50) return 'IO'+pin
+      if(pin>=130||pin%10>=8) return '无效引脚（'+pin+'）'
+      const offset=pin-50
+      return pin+'（io扩展'+(1+Math.floor(offset/20))+' P'+(offset%20)+'）'
     }
     const summary=$('project-summary');summary.textContent=''
     const details=[

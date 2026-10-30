@@ -55,8 +55,8 @@ struct SettingsData {
     int32_t ams_version[4];          // 返回给打印机的 AMS 版本（A.B.C.D，每段 0..255）
 };
 
-// 只接受当前布局的记录；结构改变时更新此标识，不匹配则恢复默认值
-#define SETTINGS_MAGIC_NUMBER    0x53415429
+// 只接受当前布局及引脚编号语义；每片间隔 20，旧 0x29/0x2A 记录均恢复默认值
+#define SETTINGS_MAGIC_NUMBER    0x5341542B
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**

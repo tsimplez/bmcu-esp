@@ -30,7 +30,7 @@ def extract_function(source, signature):
 
 
 def main():
-    """在临时目录生成测试翻译单元，编译真实协议与 CRC 源码并逐个执行隔离场景"""
+    """在临时目录编译真实协议或设置存储代码，逐个验证协议、记录格式及失败场景。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--zig', type=Path, help='可选的 zig 可执行文件，用其 c++ 子命令编译')
     parser.add_argument('--wasi', action='store_true', help='用 Zig 编译为 WebAssembly 并由 Node WASI 沙箱执行（不运行线程压测）')
@@ -67,7 +67,8 @@ def main():
         settings_support = (root / 'tools/tests/fixtures/settings_test_support.h').read_text(encoding='utf-8')
         settings_cases = (root / 'tools/tests/fixtures/settings_test_cases.cpp').read_text(encoding='utf-8')
         translation_unit = '\n'.join((preamble, io_header, settings_header, settings_support, settings_source, settings_cases))
-        scenarios = ('current_custom', 'bad_magic', 'bad_crc', 'empty', 'write_failure', 'readback_failure', 'default_write_failure')
+        scenarios = ('current_custom', 'bad_magic', 'old_pcf_numbering', 'old_pcf_numbering_2a',
+                     'bad_crc', 'empty', 'write_failure', 'readback_failure', 'default_write_failure')
     with tempfile.TemporaryDirectory(prefix='bmcu-bus-test-') as directory:
         folder = Path(directory)
         source = folder / 'test.cpp'

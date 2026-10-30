@@ -1,11 +1,12 @@
 /**
  * PCF8575引脚映射头文件
  * 
- * 将地址 0x20～0x23 的四个芯片映射为 50～113 号虚拟引脚，每片占 16 个编号
+ * 地址 0x20～0x23 每片有 16 个有效虚拟引脚，起始编号依次为 50、70、90、110
+ * 每片使用起始编号加 0～7、10～17，尾数 8、9 留空；四片共 64 个引脚
  * 位序使用 0～15；面板名称为 P0～P7、P10～P17，名称不能直接用于位移
  * 
  * 使用方法：
- * 1. 在配置中使用虚拟引脚号（50～113），首片仍为 50～65
+ * 1. 在配置中使用虚拟引脚号，首片为 50～57、60～67，末片为 110～117、120～127
  * 2. 调用PCF8575_init()初始化PCF8575
  * 3. 调用PCF8575_update()更新引脚状态
  */
@@ -19,21 +20,18 @@
 #define PCF8575_ADDR 0x20           // 首片地址，后续芯片依次加 1
 #define PCF8575_DEVICE_COUNT 4
 #define PCF8575_PIN_COUNT 16        // 每片的寄存器位数
+#define PCF8575_VIRTUAL_PIN_STRIDE 20 // 相邻芯片起始编号的间隔，含空缺编号
 #define PCF8575_VIRTUAL_PIN_COUNT (PCF8575_DEVICE_COUNT * PCF8575_PIN_COUNT)
+#define PCF8575_VIRTUAL_PIN_LIMIT (PCF8575_VIRTUAL_PIN_BASE + PCF8575_DEVICE_COUNT * PCF8575_VIRTUAL_PIN_STRIDE)
 
-// 虚拟引脚到面板名称的映射表；仅用于显示，不用于寄存器位移
-static const uint8_t VIRTUAL_TO_PCF8575_MAP[16] = {
-    0, 1, 2, 3, 4, 5, 6, 7,          // 寄存器低字节：P0～P7
-    10, 11, 12, 13, 14, 15, 16, 17   // 寄存器高字节：P10～P17
-};
+// 虚拟引脚范围检查；每十个编号只使用前八个
+#define IS_PCF8575_VIRTUAL_PIN(pin) ((pin) >= PCF8575_VIRTUAL_PIN_BASE && (pin) < PCF8575_VIRTUAL_PIN_LIMIT && ((pin) - PCF8575_VIRTUAL_PIN_BASE) % 10 < 8)
 
-// 虚拟引脚范围检查
-#define IS_PCF8575_VIRTUAL_PIN(pin) ((pin) >= PCF8575_VIRTUAL_PIN_BASE && (pin) < PCF8575_VIRTUAL_PIN_BASE + PCF8575_VIRTUAL_PIN_COUNT)
-
-// 调用前必须检查虚拟引脚范围；芯片索引 0～3，寄存器位序 0～15
-#define VIRTUAL_TO_PCF8575_DEVICE(pin) (((pin) - PCF8575_VIRTUAL_PIN_BASE) / PCF8575_PIN_COUNT)
-#define VIRTUAL_TO_PCF8575_BIT(pin) (((pin) - PCF8575_VIRTUAL_PIN_BASE) % PCF8575_PIN_COUNT)
-#define VIRTUAL_TO_PCF8575_PIN(pin) (VIRTUAL_TO_PCF8575_MAP[VIRTUAL_TO_PCF8575_BIT(pin)])
+// 调用前必须检查有效性；面板名称 0～7、10～17，寄存器位序 0～15，缓存索引 0～63
+#define VIRTUAL_TO_PCF8575_DEVICE(pin) (((pin) - PCF8575_VIRTUAL_PIN_BASE) / PCF8575_VIRTUAL_PIN_STRIDE)
+#define VIRTUAL_TO_PCF8575_PIN(pin) (((pin) - PCF8575_VIRTUAL_PIN_BASE) % PCF8575_VIRTUAL_PIN_STRIDE)
+#define VIRTUAL_TO_PCF8575_BIT(pin) (VIRTUAL_TO_PCF8575_PIN(pin) / 10 * 8 + VIRTUAL_TO_PCF8575_PIN(pin) % 10)
+#define VIRTUAL_TO_PCF8575_INDEX(pin) (VIRTUAL_TO_PCF8575_DEVICE(pin) * PCF8575_PIN_COUNT + VIRTUAL_TO_PCF8575_BIT(pin))
 
 /**
  * 初始化PCF8575 的四个地址槽
@@ -52,7 +50,7 @@ bool PCF8575_is_online(uint8_t device = 0);
 
 /**
  * 查询虚拟引脚所属芯片是否在线
- * @param pin 虚拟引脚号（50～113）
+ * @param pin 虚拟引脚号（50～127，尾数 8、9 无效）
  * @return true 表示引脚有效且所属芯片已经初始化
  * 电机及微动按各自接线判断，其他芯片在线不能代替当前芯片
  */
@@ -72,28 +70,28 @@ void PCF8575_update();
 
 /**
  * 设置PCF8575虚拟引脚模式（模拟pinMode）
- * @param pin 虚拟引脚号（50～113）
+ * @param pin 虚拟引脚号（50～127，尾数 8、9 无效）
  * @param mode 模式（OUTPUT/INPUT）
  */
 void PCF8575_pinMode(uint8_t pin, uint8_t mode);
 
 /**
  * 设置PCF8575虚拟引脚电平（模拟digitalWrite）
- * @param pin 虚拟引脚号（50～113）
+ * @param pin 虚拟引脚号（50～127，尾数 8、9 无效）
  * @param value 电平（HIGH/LOW）
  */
 void PCF8575_digitalWrite(uint8_t pin, uint8_t value);
 
 /**
  * 读取PCF8575虚拟引脚电平（模拟digitalRead）
- * @param pin 虚拟引脚号（50～113）
+ * @param pin 虚拟引脚号（50～127，尾数 8、9 无效）
  * @return 引脚电平（HIGH/LOW）
  */
 int PCF8575_digitalRead(uint8_t pin);
 
 /**
  * 设置PCF8575虚拟引脚PWM（模拟analogWrite）
- * @param pin 虚拟引脚号（50～113）
+ * @param pin 虚拟引脚号（50～127，尾数 8、9 无效）
  * @param value PWM值（0-255）
  */
 void PCF8575_analogWrite(uint8_t pin, uint8_t value);
