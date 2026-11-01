@@ -79,10 +79,9 @@ constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设�
 // 点动/辅助进料时长上限（毫秒）：只需小于 30 秒
 #define MAX_PULSE_MS                30000
 
-// RS485 收发模式
 #define RS485_MODE_RXTX             1   // 只用 RXD/TXD，不驱动 DE（模块自动收发方向）
 #define RS485_MODE_DE               2   // RO/DI/RE/DE 四线，由配置的 BUS_DE 控制方向
-#define DEFAULT_RS485_MODE          RS485_MODE_RXTX
+#define DEFAULT_RS485_MODE          RS485_MODE_RXTX // RS485 默认收发模式
 #define DEFAULT_BUS_LOG             1   // 默认开启 BambuBus 原始报文日志
 
 // OTA 更新源

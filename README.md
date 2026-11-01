@@ -141,11 +141,11 @@ BambuBus 通信协议，支持多通道耗材管理、电机控制、编码器�
 > 本固件基于社区逆向工程实现，与 Bambu Lab 官方无关，仅供学习研究，非官方支持版本
 
 ## 烧录教程
-在 [Releases](https://github.com/tsimplez/bmcu-esp/releases) 处下载适合的esp32固件
-电脑使用typec连接好esp32
-打开 [在线烧录网站](https://web.esphome.io)
-点击连接 -> 左上角选择串行端口 -> 点击安装（在 准备首次使用 旁边） -> 选择下载好的固件安装就可以了
-最后连接esp32 的 wifi（BMCU_xxxxxx）访问 [192.168.4.1](http://192.168.4.1)
+1. 在 [Releases](https://github.com/tsimplez/bmcu-esp/releases) 处下载适合的esp32固件
+2. 电脑使用typec连接好esp32
+3. 打开 [在线烧录网站](https://web.esphome.io)
+4. 点击连接 -> 左上角选择串行端口 -> 点击安装（在 准备首次使用 旁边） -> 选择下载好的固件安装就可以了
+5. 最后连接esp32 的 wifi（BMCU_xxxxxx）访问 [192.168.4.1](http://192.168.4.1)
 
 ## 支持的平台
 
