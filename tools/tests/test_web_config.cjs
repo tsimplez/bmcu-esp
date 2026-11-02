@@ -94,6 +94,7 @@ const path = require('node:path');
     // Wait for the tab's settings read before editing.
     await page.evaluate(() => loadPara());
     assert.equal(await page.locator('.ams-identity').count(), 4);
+    assert.equal(await page.locator('.ams-identity:visible').count(), 1, '首次只显示已启用的一台 AMS');
     for (let index = 0; index < 4; ++index) {
       assert.equal(await page.locator('#p-effective-serial-' + index).textContent(), `0EA${index}123456789AB${index}`);
       assert.match(await page.locator('#ams-identity-' + index + ' h3').textContent(), new RegExp(`编号 ${index}`));
@@ -122,6 +123,10 @@ const path = require('node:path');
     assert.equal(settings.ams_identity[0].serial, '');
     assert.equal(await page.locator('#p-effective-serial-0').textContent(), '0EA0123456789AB0');
     assert.equal(posts.at(-1).get('ams_version'), '90.1.2.3');
+    settings.ams = 4; settings.channels = 16;
+    settings.ams_identity.forEach(entry => { entry.enabled = true; });
+    await page.evaluate(() => loadPara());
+    assert.equal(await page.locator('.ams-identity:visible').count(), 4, '后端启用四台后才能编辑四台');
     const firstIdentity = { ...settings.ams_identity[0] };
     await page.fill('#p-serial-1', '7bf9e5a60a48');
     assert.equal(await page.inputValue('#p-serial-1'), '7BF9E5A60A48');
@@ -147,15 +152,33 @@ const path = require('node:path');
     await page.click('[data-tab="settings"]');
     await page.evaluate(() => loadPara());
     assert.equal(await page.inputValue('#p-serial-3'), 'FEDCBA987654', '切页和重读应保留身份草稿');
+    const fourthIdentityCard = await page.locator('#ams-identity-3').elementHandle();
+    settings.ams = 1; settings.channels = 4;
+    settings.ams_identity.forEach(entry => { entry.enabled = entry.index === 0; });
+    await page.evaluate(() => loadPara());
+    assert.equal(await page.locator('.ams-identity:visible').count(), 1);
+    assert.equal(await page.inputValue('#p-serial-3'), 'FEDCBA987654', '隐藏的卡片仍保留草稿');
+    assert.equal(settings.ams_identity[3].serial, '', '隐藏卡片不得自动保存草稿');
+    settings.ams = 4; settings.channels = 16;
+    settings.ams_identity.forEach(entry => { entry.enabled = true; });
+    await page.evaluate(() => loadPara());
+    assert.equal(await page.locator('#ams-identity-3').isVisible(), true);
+    assert.equal(await page.evaluate(card => card === document.querySelector('#ams-identity-3'), fourthIdentityCard), true,
+      '重新启用必须复用原卡片 DOM');
+    assert.equal(await page.inputValue('#p-serial-3'), 'FEDCBA987654', '重新启用后恢复原有草稿');
+    assert.equal(await page.inputValue('#p-ams-version-3'), '4.3.2.1');
     const once = posts.length;
     await page.evaluate(() => Promise.all([saveAmsIdentity(3), saveAmsIdentity(3)]));
     assert.equal(posts.length, once + 1, '同台重复点击只能提交一次');
     assert.deepEqual(settings.ams_identity.map(entry => entry.ams_version), ['90.1.2.3', '1.2.3.4', '2.4.6.8', '4.3.2.1']);
     const identitiesBeforeCounts = settings.ams_identity.map(({ serial, ams_version, effective_serial }) => ({ serial, ams_version, effective_serial }));
-    for (const count of [4, 1, 4, 1]) {
+    for (const count of [1, 2, 3, 4, 1]) {
       settings.ams = count; settings.channels = count * 4;
       settings.ams_identity.forEach(entry => { entry.enabled = entry.index < count; });
       await page.evaluate(() => loadPara());
+      assert.deepEqual(await page.locator('.ams-identity:visible').evaluateAll(cards => cards.map(card => card.id)),
+        Array.from({ length: count }, (_, index) => 'ams-identity-' + index), '只显示已保存启用的卡片');
+      assert.equal(await page.locator('.ams-identity').count(), 4, '隐藏卡片保留 DOM');
       assert.equal(await page.locator('#ams-identity-enabled-3').textContent(), count === 4 ? '已启用' : '未启用 · 配置保留');
     }
     assert.deepEqual(settings.ams_identity.map(({ serial, ams_version, effective_serial }) => ({ serial, ams_version, effective_serial })), identitiesBeforeCounts);
@@ -165,6 +188,7 @@ const path = require('node:path');
     for (const count of [2, 3, 4, 1, 2]) {
       await page.selectOption('#p-ams', String(count));
       assert.equal(await page.locator('#iobody tr').count(), count * 4);
+      assert.equal(await page.locator('.ams-identity:visible').count(), 1, '数量草稿不改变身份卡片可见数量');
       assert.equal(await page.locator('#ams-identity-enabled-1').textContent(), '未启用 · 配置保留', '数量预览不得宣称已启用');
     }
     assert.equal(await page.locator('#chbody tr').count(), 4, 'preview must not enable manual controls');
@@ -187,20 +211,37 @@ const path = require('node:path');
     await page.click('#save-io');
     await page.waitForFunction(() => !document.querySelector('#save-io').disabled);
     assert.equal(settings.ams, 1);
+    assert.equal(await page.locator('.ams-identity:visible').count(), 1, '数量保存失败仍只显示实际启用的一台');
     assert.equal(await page.inputValue('#io-mf4'), '8', 'save failure must preserve edits');
     failSave = false;
     await page.click('#save-io');
     await page.waitForFunction(() => document.querySelectorAll('#chbody tr').length === 8);
     assert.equal(settings.ams, 2);
+    assert.equal(await page.locator('.ams-identity:visible').count(), 2, '数量保存成功后显示两台');
     assert.equal(posts.at(-1).get('io_mb7'), '15');
     assert.equal(posts.at(-1).get('ams'), '2');
     assert.equal(await page.locator('#motor-limit option').count(), 8);
+    await page.fill('#p-serial-1', 'ABCDEF123456');
+    await page.fill('#p-ams-version-1', '5.4.3.2');
     await page.selectOption('#p-ams', '1');
+    assert.equal(await page.locator('.ams-identity:visible').count(), 2, '减少数量的草稿也不提前隐藏卡片');
     await page.click('#save-io');
     await page.waitForFunction(() => document.querySelectorAll('#chbody tr').length === 4);
+    assert.equal(await page.locator('.ams-identity:visible').count(), 1, '减少数量保存后隐藏第二台');
+    assert.equal(await page.inputValue('#p-serial-1'), 'ABCDEF123456', '数量保存不清除隐藏卡片草稿');
     assert.equal(posts.at(-1).has('io_mf4'), false, 'disabled channels must not be submitted');
     await page.selectOption('#p-ams', '2');
     assert.equal(await page.inputValue('#io-mf4'), '8', 'disabled channel mappings must survive save/reload');
+    assert.equal(await page.locator('.ams-identity:visible').count(), 1, '再次增加的草稿仍不提前显示卡片');
+    await page.evaluate(() => saveIoConfig());
+    assert.equal(await page.locator('.ams-identity:visible').count(), 2);
+    assert.equal(await page.inputValue('#p-serial-1'), 'ABCDEF123456', '重新启用后仍可继续编辑原草稿');
+    assert.equal(await page.inputValue('#p-ams-version-1'), '5.4.3.2');
+    assert.equal(settings.ams_identity[1].serial, '7BF9E5A60A48', '数量增减不得覆盖已保存身份');
+    assert.equal(settings.ams_identity[1].ams_version, '1.2.3.4');
+    await page.selectOption('#p-ams', '1');
+    await page.evaluate(() => saveIoConfig());
+    assert.equal(await page.locator('.ams-identity:visible').count(), 1);
     // OTA 渠道复用地址设置；保存后重新加载应保持选择，失败保留服务器原设置。
     await page.click('[data-tab="update"]');
     await page.evaluate(() => loadPara());

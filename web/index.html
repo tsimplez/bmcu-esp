@@ -1336,9 +1336,9 @@ const updateAmsIdentityState=(index)=>{
   state.textContent=saving?'正在保存…':dirty?'有未保存修改':serial.value?'已保存 · 自定义后缀':'已保存 · 自动生成'
 }
 /**
- * 显示四台 AMS 已保存的身份及启用状态
+ * 按已保存的启用数量显示各 AMS 身份
  * @param {Object} d 含 ams_identity 数组的设置响应
- * 仅从固件读取完整序列号；重新加载时保留各卡片未保存的草稿和正在提交的输入
+ * 仅从固件读取完整序列号；隐藏未启用卡片，保留各卡片未保存的草稿和正在提交的输入
  */
 const renderAmsIdentities=(d)=>{
   if(!Array.isArray(d.ams_identity)) return
@@ -1363,6 +1363,7 @@ const renderAmsIdentities=(d)=>{
       $('p-ams-version-'+index).oninput=()=>updateAmsIdentityState(index)
       $('save-ams-identity-'+index).onclick=()=>saveAmsIdentity(index)
     }
+    card.hidden=!entry.enabled
     const serial=$('p-serial-'+index),version=$('p-ams-version-'+index)
     const dirty=serial.dataset.saved!==undefined&&
       (serial.value!==serial.dataset.saved||version.value!==version.dataset.saved)
