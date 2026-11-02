@@ -37,6 +37,22 @@ public:
     void trim() { auto a=find_first_not_of(" \t\r\n"), b=find_last_not_of(" \t\r\n"); *this=a==npos ? "" : substr(a,b-a+1); }
     /** 统一摘要字符大小写 */
     void toLowerCase() { for (char &c : *this) c=char(std::tolower(static_cast<unsigned char>(c))); }
+    /**
+     * 模拟 Arduino 十进制整数读取
+     * @return 字符串开头的整数，格式校验由生产 handler 执行
+     */
+    long toInt() const { return std::strtol(c_str(), nullptr, 10); }
+    /**
+     * 模拟带结尾 NUL 的定长字符复制
+     * @param out 目标字符缓冲
+     * @param capacity 缓冲总容量
+     */
+    void toCharArray(char *out, size_t capacity) const {
+        if (!capacity) return;
+        const size_t count = std::min(size(), capacity - 1);
+        memcpy(out, data(), count);
+        out[count] = 0;
+    }
 };
 
 struct Response { int status=-1; String body; int length=-2; int mode=0; String location; };

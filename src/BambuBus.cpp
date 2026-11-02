@@ -94,7 +94,7 @@ static bool have_registered[4] = {false, false, false, false};
 // 发现阶段：0 为首次报名，1 为后续报名；注册确认固定使用 0x0A 前缀
 static uint8_t online_detect_phase[4] = {};
 // 注册和序列号查询共用每个 AMS 的身份，固定为协议的 66 字节载荷
-static uint8_t serial_identity[4][66] = {};
+static uint8_t serial_identity[AMS_IDENTITY_COUNT][66] = {};
 
 static void refresh_serial_identities();
 
@@ -1678,33 +1678,23 @@ static uint8_t serial_hex_nibble(const char c) {
 
 /**
  * 更新各 AMS 的统一注册身份与序列号
- * 固定生成 0EA + AMS 编号 + 12 位后缀，注册包直接复制序列号载荷的 [33..48]
- * 自定义值只替换末 12 位；留空时后缀取设备 ID 低 48 位，首字节保持协议固定 0x0F
- * 可见序列号会同步编码到注册身份块 [33..40]；身份变更后各 AMS 从首次 0C 报名重新开始
+ * 从设置层读取各台完整 16 位序列号，首字节保持协议固定 0x0F，注册包复制载荷 [33..48]
+ * 可见序列号同步编码到注册身份块 [33..40]；仅实际身份变化的 AMS 从首次 0C 报名重新开始
+ * 四个槽位分别缓存，切换自动/自定义但有效序列号不变或临时减少 AMS 数量时保留既有身份
  */
 static void refresh_serial_identities() {
-    static bool ready = false;
-    static char previous_custom[CUSTOM_SERIAL_LENGTH + 1] = {};
-    char current_custom[CUSTOM_SERIAL_LENGTH + 1] = {};
-    for (int i = 0; i < CUSTOM_SERIAL_LENGTH && CUSTOM_SERIAL[i]; ++i)
-        current_custom[i] = CUSTOM_SERIAL[i];
-    if (ready && memcmp(previous_custom, current_custom, sizeof(current_custom)) == 0) return;
+    static bool ready[AMS_IDENTITY_COUNT] = {};
+    static char previous_serial[AMS_IDENTITY_COUNT][AMS_SERIAL_LENGTH + 1] = {};
+    for (uint8_t ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
+        char current_serial[AMS_SERIAL_LENGTH + 1] = {};
+        if (!settings_get_ams_serial(ams, current_serial)) continue;
+        if (ready[ams] && memcmp(previous_serial[ams], current_serial, sizeof(current_serial)) == 0)
+            continue;
 
-    static constexpr char hex[] = "0123456789ABCDEF";
-    const uint64_t id = hal_get_device_id();
-    for (uint8_t ams = 0; ams < 4; ++ams) {
+        const uint64_t id = hal_get_device_id();
         auto *serial = serial_identity[ams];
         memcpy(serial, serial_identity_template, sizeof(serial_identity_template));
-        serial[1] = '0';
-        serial[2] = 'E';
-        serial[3] = 'A';
-        serial[4] = '0' + ams;
-        if (current_custom[0]) {
-            memcpy(serial + 5, current_custom, CUSTOM_SERIAL_LENGTH);
-        } else {
-            for (int i = 0; i < CUSTOM_SERIAL_LENGTH; ++i)
-                serial[5 + i] = hex[(id >> ((11 - i) * 4)) & 0x0Fu];
-        }
+        memcpy(serial + 1, current_serial, AMS_SERIAL_LENGTH);
         serial[34] = 0xA0 + ams;
         for (int i = 0; i < 8; ++i)
             serial[35 + i] = static_cast<unsigned char>(id >> (56 - i * 8));
@@ -1720,9 +1710,9 @@ static void refresh_serial_identities() {
         have_registered[ams] = false;
         online_detect_phase[ams] = 0;
         F00_res[ams][7] = 0x0C;
+        memcpy(previous_serial[ams], current_serial, sizeof(current_serial));
+        ready[ams] = true;
     }
-    memcpy(previous_custom, current_custom, sizeof(current_custom));
-    ready = true;
 }
 
 /**
@@ -1744,7 +1734,7 @@ static bool registration_identity_matches(const uint8_t *buf, const int length) 
  * 回复序列号或版本查询
  * @param buf 收到的长包
  * @param length 报文长度
- * type=0x402 回复该 AMS 的统一身份载荷，0x103 回复版本；序列号和注册包来自同一份数据
+ * type=0x402 回复该 AMS 的统一身份载荷，0x103 回复该台独立版本；序列号和注册包来自同一份数据
  */
 static void send_for_long_packge_version(unsigned char *buf, int length) {
     long_packge_data data{};
@@ -1775,7 +1765,7 @@ static void send_for_long_packge_version(unsigned char *buf, int length) {
         payload_len = sizeof(long_packge_version_version_and_name_AMS08);
         // 网页显示 A.B.C.D，线上按 D.C.B.A 写入；末字节保留 AMS 编号
         for (int i = 0; i < 4; ++i)
-            payload[i] = static_cast<unsigned char>(AMS_VERSION[3 - i]);
+            payload[i] = static_cast<unsigned char>(AMS_VERSION[AMS_num][3 - i]);
         payload[payload_len - 1] = AMS_num;
     }
 

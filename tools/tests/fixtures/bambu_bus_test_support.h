@@ -24,8 +24,12 @@ static constexpr int BUS_DE = 255;
 static constexpr int LOW = 0, OUTPUT = 1;
 static constexpr int HAL_REGION_FILAMENT = 0;
 static constexpr int CUSTOM_SERIAL_LENGTH = 12;
-static char CUSTOM_SERIAL[CUSTOM_SERIAL_LENGTH + 1] = {};
-static int AMS_VERSION[4] = {1, 0, 6, 87};
+static constexpr int AMS_IDENTITY_COUNT = 4;
+static constexpr int AMS_SERIAL_LENGTH = 16;
+static char CUSTOM_SERIAL[AMS_IDENTITY_COUNT][CUSTOM_SERIAL_LENGTH + 1] = {};
+static int AMS_VERSION[AMS_IDENTITY_COUNT][4] = {
+    {1, 0, 6, 87}, {1, 0, 6, 87}, {1, 0, 6, 87}, {1, 0, 6, 87}
+};
 static std::deque<uint8_t> uart_rx;
 static std::vector<std::vector<uint8_t>> uart_tx;
 static std::vector<uint8_t> flash_data;

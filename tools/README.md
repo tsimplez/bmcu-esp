@@ -25,7 +25,7 @@ tools/
 | `tests/test_bambu_bus.py` | 协议收发、状态机、电机调度；加 `--settings` 检查设置加载、默认值和失败回滚 | Python、GCC/Clang 或 Zig；WASI 模式另需 Node.js |
 | `tests/test_as5600.py` | 模拟采样、时间边界、重置及统计特征 | Python、Zig、Node.js |
 | `tests/test_ota.py` | OTA 清单、下载回退和写入失败路径 | Python、Zig、Node.js |
-| `tests/test_project_presets.py` | 项目预设、接线校验、存储和 HTTP 接口 | Python、GCC/Clang |
+| `tests/test_project_presets.py` | 项目预设、接线校验、存储、逐台 AMS 身份 GET/POST 和失败回滚 | Python、GCC/Clang |
 | `tests/test_pcf8575.py` | 四片扩展器的 64 个有效编号与空隙、完整 PWM 周期、独立重试、输入输出及通道状态 | Python、GCC/Clang |
 | `tests/test_web_config.cjs` | 设置、OTA 交互和移动端布局 | Node.js、Playwright、Edge |
 | `tests/test_web_logs.cjs` | 双日志环形缓存、单请求轮询、虚拟滚动、下载/抓取及持续写满测试 | Node.js、Playwright、Edge |

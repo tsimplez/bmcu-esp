@@ -27,13 +27,16 @@ const path = require('node:path');
       }
     }
     const settings = { maxams: 4, motor_limit: 1, manual_ms: 300, auto_ms: 1000,
-      cm: Array(16).fill(2), to: Array(16).fill(7), otaurl: '', otanotify: 0 };
+      cm: Array(16).fill(2), to: Array(16).fill(7), otaurl: '', otanotify: 0,
+      ams_identity: Array.from({ length: 4 }, (_, index) => ({ index, serial: '', ams_version: '1.0.6.87',
+        effective_serial: `0EA${index}123456789AB${index}`, enabled: false })) };
     /**
      * 将后端预览数据用作模拟设备重启后的设置，I2C 和总线仅提供物理引脚选项
      * @param {Object} preset 真实后端导出的项目预设
      */
     const rebootWith = preset => {
       current = preset.id;
+      settings.ams_identity.forEach(entry => { entry.enabled = entry.index < preset.ams; });
       Object.assign(settings, { ams: preset.ams, channels: preset.ams * 4, rs485: preset.rs485,
         bus: { rx: preset.rx, tx: preset.tx, de: preset.de, pins: gpioPins },
         pcf: { sda: preset.sda, scl: preset.scl, configured: preset.sda !== 255, pins: gpioPins },
@@ -86,10 +89,16 @@ const path = require('node:path');
     assert.equal(posts.length, 0, '选择项目只预览，不写入');
     assert.equal(await page.locator('#project-pins tr').count(), 8);
     assert.deepEqual(await page.locator('#project-pins tr').first().locator('td').allTextContents(),
-      ['1', '50（io扩展1 P0）', '54（io扩展1 P4）', '62（io扩展1 P12）']);
+      ['1', '55（io扩展1 P5）', '54（io扩展1 P4）', '50（io扩展1 P0）']);
+    const secondAmsPins = [
+      ['75（io扩展2 P5）', '74（io扩展2 P4）', '70（io扩展2 P0）'],
+      ['76（io扩展2 P6）', '77（io扩展2 P7）', '72（io扩展2 P2）'],
+      ['80（io扩展2 P10）', '81（io扩展2 P11）', '87（io扩展2 P17）'],
+      ['83（io扩展2 P13）', '82（io扩展2 P12）', '85（io扩展2 P15）'],
+    ];
     for (let row = 4; row < 8; ++row)
       assert.deepEqual(await page.locator('#project-pins tr').nth(row).locator('td').allTextContents(),
-        [String(row + 1), '无', '无', '无']);
+        [String(row + 1), ...secondAmsPins[row - 4]]);
     // 临时预览四片高低字节的边界编号，随后恢复真实项目，继续验证保存与重启。
     const previewPins = [[50, 57, 60], [67, 255, 255], [70, 77, 80], [87, 255, 255],
       [90, 97, 100], [107, 255, 255], [110, 117, 120], [127, 255, 255]];

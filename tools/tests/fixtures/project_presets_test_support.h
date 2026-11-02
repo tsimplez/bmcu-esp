@@ -8,6 +8,12 @@ static String response_body;
 static size_t stored_size = sizeof(flash_record);
 static bool nvs_open = true, short_read = false;
 
+/**
+ * 提供项目切换测试使用的固定芯片 ID
+ * @return 测试芯片 ID
+ */
+static uint64_t hal_get_device_id() { return 0x7BF9E5A60A48ull; }
+
 // NVS 桩只提供字节读取边界，长度检查和损坏填充使用生产 hal_storage_read。
 struct Preferences {
     /** 模拟 NVS 可打开或缺失 */
@@ -52,14 +58,62 @@ struct TestEsp {
 } ESP;
 struct TestServer {
     std::map<String, String> params;
-    /** 读取参数存在性 */
-    bool hasArg(const char *key) { return params.count(key) != 0; }
+    /**
+     * 读取参数存在性
+     * @param key 请求参数名
+     * @return 参数存在时返回 true
+     */
+    bool hasArg(const String &key) { return params.count(key) != 0; }
     /** 返回请求参数总数 */
     int args() { return int(params.size()); }
-    /** 返回对应参数值 */
-    String arg(const char *key) { return params[key]; }
+    /**
+     * 返回对应参数值
+     * @param key 请求参数名
+     * @return 请求参数值
+     */
+    String arg(const String &key) { return params[key]; }
+    /**
+     * 按索引读取请求参数名
+     * @param index 参数索引
+     * @return 对应参数名
+     */
+    String argName(int index) {
+        auto entry = params.begin();
+        std::advance(entry, index);
+        return entry->first;
+    }
     /** 捕获 HTTP 响应 */
     void send(int code, const char *, const String &body) { response_code = code; response_body = body; }
     /** 本测试不缓存响应 */
     void sendHeader(const char *, const char *) {}
 } server;
+
+/**
+ * 返回测试配置启用的电机数量
+ * @return 当前 AMS 数量乘以四
+ */
+static int BMCU_motor_count() { return active_channel_count(); }
+/**
+ * 返回硬件配置可容纳的 AMS 数量
+ * @return 四个固定身份槽位
+ */
+static int BMCU_max_ams_count() { return AMS_IDENTITY_COUNT; }
+struct TestMotorStatus { int direction = 0; };
+/**
+ * 为身份设置回归提供空闲电机状态
+ * @param channel 通道编号
+ * @return 空闲状态
+ */
+static TestMotorStatus BMCU_motor_status(int channel) { (void)channel; return {}; }
+/** 测试身份保存时不连接 GPIO */
+static void BMCU_apply_io_config() {}
+/** 测试只验证设置和响应，不运行运动调度 */
+static void BMCU_apply_channel_modes() {}
+/**
+ * 提供退料超时应用边界，不调度电机
+ * @param channel 通道编号
+ * @param previous_ms 原超时毫秒值
+ */
+static void BMCU_apply_pullback_timeout(int channel, uint32_t previous_ms) {
+    (void)channel; (void)previous_ms;
+}

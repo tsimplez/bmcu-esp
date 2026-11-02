@@ -469,7 +469,7 @@ static void handle_status() {
 
 /**
  * 处理设置读取请求
- * 输出参数、通道模式、退料超时、接线和可选引脚；I2C 状态统一使用 configured
+ * 输出参数、四份 AMS 身份、通道模式、退料超时、接线和可选引脚；完整序列号与协议共用生成函数
  */
 static void handle_settings_get() {
     String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
@@ -477,10 +477,18 @@ static void handle_settings_get() {
                ",\"auto_ms\":" + String(AUTO_LOAD_MS) +
                ",\"motor_limit\":" + String(MOTOR_LIMIT) +
                ",\"channels\":" + String(BMCU_motor_count()) +
-               ",\"maxams\":" + String(BMCU_max_ams_count()) +
-               ",\"serial\":\"" + json_escape(CUSTOM_SERIAL) +
-               "\",\"ams_version\":\"" + String(AMS_VERSION[0]) + "." + String(AMS_VERSION[1]) +
-               "." + String(AMS_VERSION[2]) + "." + String(AMS_VERSION[3]) + "\",\"to\":[";
+               ",\"maxams\":" + String(BMCU_max_ams_count()) + ",\"ams_identity\":[";
+    for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
+        if (ams) j += ',';
+        char serial[AMS_SERIAL_LENGTH + 1] = {};
+        settings_get_ams_serial(ams, serial);
+        j += "{\"index\":" + String(ams) + ",\"serial\":\"" + json_escape(CUSTOM_SERIAL[ams]) +
+             "\",\"effective_serial\":\"" + String(serial) + "\",\"ams_version\":\"" +
+             String(AMS_VERSION[ams][0]) + "." + String(AMS_VERSION[ams][1]) + "." +
+             String(AMS_VERSION[ams][2]) + "." + String(AMS_VERSION[ams][3]) +
+             "\",\"enabled\":" + String(ams < AMS_COUNT ? "true" : "false") + "}";
+    }
+    j += "],\"to\":[";
     for (int i = 0; i < BMCU_motor_count(); i++) { if (i) j += ','; j += String(PULLBACK_TIMEOUT[i]); }
     j += "],\"cm\":[";
     for (int i = 0; i < BMCU_motor_count(); i++) { if (i) j += ','; j += String(CHANNEL_MODE[i]); }
@@ -662,13 +670,21 @@ static void handle_bus_save() {
 
 /**
  * 处理常规设置保存
- * 统一校验 AMS 数量、时长、并发上限、序列号、AMS 版本、通道参数、IO 接线和 OTA 配置；保存失败时回滚内存快照
+ * 身份字段必须指定 AMS 编号；统一校验数量、时长、并发上限、逐台身份、通道和接线，保存失败时回滚完整快照
  */
 static void handle_settings_save() {
     if (server.hasArg("rs485")) {
         server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请刷新页面，在 BambuBus 接线中同时保存模式与引脚并重启\"}");
         return;
     }
+    const bool identity_requested = server.hasArg("serial") || server.hasArg("ams_version");
+    if (identity_requested != server.hasArg("ams_index") ||
+        !valid_number("ams_index", 0, AMS_IDENTITY_COUNT - 1)) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"msg\":\"请刷新页面；序列号或版本须同时指定 AMS 编号 0..3，编号不能单独提交\"}");
+        return;
+    }
+    const int identity_index = identity_requested ? server.arg("ams_index").toInt() : 0;
     int buslog_before = BUS_LOG_ENABLE;
     const SettingsData previous = settings_snapshot();
     bool timeout_changed[IO_CONFIG_MAX_CHANNELS] = {};
@@ -684,7 +700,7 @@ static void handle_settings_save() {
     bool serial_valid = true;
     bool version_valid = true;
     int candidate_version[4] = {};
-    memcpy(candidate_version, AMS_VERSION, sizeof(candidate_version));
+    memcpy(candidate_version, AMS_VERSION[identity_index], sizeof(candidate_version));
     if (server.hasArg("serial"))
         serial_valid = settings_custom_serial_valid(server.arg("serial").c_str());
     if (server.hasArg("ams_version"))
@@ -759,10 +775,10 @@ static void handle_settings_save() {
     if (server.hasArg("buslog")) BUS_LOG_ENABLE = server.arg("buslog").toInt() ? 1 : 0;
     if (server.hasArg("serial")) {
         String serial = server.arg("serial");
-        serial.toCharArray(CUSTOM_SERIAL, sizeof(CUSTOM_SERIAL));
+        serial.toCharArray(CUSTOM_SERIAL[identity_index], sizeof(CUSTOM_SERIAL[identity_index]));
     }
     if (server.hasArg("ams_version"))
-        memcpy(AMS_VERSION, candidate_version, sizeof(AMS_VERSION));
+        memcpy(AMS_VERSION[identity_index], candidate_version, sizeof(candidate_version));
     AMS_COUNT = candidate_ams;
     MOTOR_LIMIT = min(MOTOR_LIMIT, candidate_channels);
     if (server.hasArg("manual_ms")) MANUAL_PULSE_MS = server.arg("manual_ms").toInt();

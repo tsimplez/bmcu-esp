@@ -18,7 +18,9 @@ const path = require('node:path');
     let buffers = [Buffer.alloc(0), Buffer.alloc(0)], floors = [0, 0], inFlight = 0, maxInFlight = 0;
     const settings = { ams: 1, channels: 4, maxams: 4, maintenance: true, printer: 0, mode: 'STA',
       cm: Array(16).fill(2), to: Array(16).fill(7), motor_limit: 1, manual_ms: 300, auto_ms: 1000,
-      serial: '', ams_version: '90.0.0.0', otaurl: '', otanotify: 0, motors: [], fl: [], uptime: 10,
+      ams_identity: Array.from({ length: 4 }, (_, index) => ({ index, serial: '', ams_version: '1.0.6.87',
+        effective_serial: `0EA${index}123456789AB${index}`, enabled: index === 0 })),
+      otaurl: '', otanotify: 0, motors: [], fl: [], uptime: 10,
       heap: 100000, heap_total: 200000, pcf: { sda: 255, scl: 255, pins: [] },
       io: { motor: Array.from({ length: 16 }, () => [255, 255]), microswitch: Array(16).fill(255), pins: [] } };
     await page.route('http://bmcu.test/**', async route => {

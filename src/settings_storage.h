@@ -8,6 +8,8 @@
 
 // BambuBus 序列号中可自定义的后缀长度；完整序列号为 0EA + AMS 编号 + 12 位后缀
 #define CUSTOM_SERIAL_LENGTH 12
+constexpr int AMS_IDENTITY_COUNT = IO_CONFIG_MAX_CHANNELS / 4;
+constexpr int AMS_SERIAL_LENGTH = 16;
 
 // 通道状态模式定义
 typedef enum {
@@ -25,8 +27,8 @@ extern int AUTO_LOAD_MS;           // 微动辅助进料时长（毫秒，0=关�
 extern int MOTOR_LIMIT;            // 同时运行的电机数（1..active_channel_count()）
 extern int RS485_MODE;             // RS485 收发模式（见下方 RS485_MODE_*）
 extern int BUS_LOG_ENABLE;         // BambuBus 原始报文日志开关（0=关 1=开）
-extern char CUSTOM_SERIAL[CUSTOM_SERIAL_LENGTH + 1]; // BambuBus 自定义序列号后缀（空=按芯片 ID 自动生成）
-extern int AMS_VERSION[4];         // 返回给打印机的 AMS 版本，依次为 A.B.C.D，每段 0..255
+extern char CUSTOM_SERIAL[AMS_IDENTITY_COUNT][CUSTOM_SERIAL_LENGTH + 1]; // 各 AMS 自定义后缀；空时按芯片 ID 和编号生成
+extern int AMS_VERSION[AMS_IDENTITY_COUNT][4]; // 各 AMS 返回给打印机的版本，依次为 A.B.C.D，每段 0..255
 extern char OTA_URL[128];          // OTA 更新源目录（设备会去取 <目录>/manifest.json）
 extern int OTA_NOTIFY;             // 进页面时自动检查更新并提示（0=关 1=开）
 extern IoConfig IO_CONFIG;          // 电机进退料与微动开关引脚
@@ -45,18 +47,18 @@ struct SettingsData {
     char ota_url[128];               // OTA 更新源目录
     int32_t ota_notify;              // 自动检查更新并提示
     int32_t motor_limit;             // 当前格式的同时运行电机上限
-    char custom_serial[CUSTOM_SERIAL_LENGTH]; // 自定义序列号后缀（恰好 12 位）
+    char custom_serial[AMS_IDENTITY_COUNT][CUSTOM_SERIAL_LENGTH]; // 各 AMS 自定义后缀，空表示自动生成
     IoConfig io_config;              // 当前平台的电机/微动引脚配置
     int32_t pcf_sda;                 // I2C SDA 引脚（PCF8575/温湿度模块共用），PIN_NONE 表示未配置
     int32_t pcf_scl;                 // I2C SCL 引脚（PCF8575/温湿度模块共用），PIN_NONE 表示未配置
     int32_t bus_rx;                  // BambuBus 串口 RX 引脚
     int32_t bus_tx;                  // BambuBus 串口 TX 引脚
     int32_t bus_de;                  // RS485 DE 方向控制引脚；RXTX 模式下不使用
-    int32_t ams_version[4];          // 返回给打印机的 AMS 版本（A.B.C.D，每段 0..255）
+    int32_t ams_version[AMS_IDENTITY_COUNT][4]; // 各 AMS 版本（A.B.C.D，每段 0..255）
 };
 
-// 只接受当前布局及引脚编号语义；每片间隔 20，旧 0x29/0x2A 记录均恢复默认值
-#define SETTINGS_MAGIC_NUMBER    0x5341542B
+// 只接受当前四份 AMS 身份布局；旧布局（含 0x2B 单份身份）均恢复整份默认设置
+#define SETTINGS_MAGIC_NUMBER    0x5341542C
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**
@@ -114,8 +116,18 @@ bool settings_is_valid();
 // 把当前生效的设置打印到主板日志（启动时、保存设置时各调一次）
 void settings_log_all();
 
-// 空字符串表示使用固件自动生成的 12 位后缀；非空时必须为 12 位大写字母/数字
+// 空字符串表示自动生成后缀；非空时必须为 12 位大写十六进制字符
 bool settings_custom_serial_valid(const char *serial);
+
+/**
+ * 读取指定 AMS 实际发送的完整序列号
+ * @param ams 协议 AMS 编号，范围 0..3，与当前启用数量无关
+ * @param out 输出 16 位序列号和结尾 NUL，至少容纳 AMS_SERIAL_LENGTH + 1 字节
+ * @return 编号及输出缓冲有效时返回 true，否则返回 false 并清空非空输出缓冲
+ * 自动后缀取芯片 ID 的低 48 位十六进制值，并把末位替换为 AMS 编号；自定义后缀原样保留
+ * 本函数只读取配置，不刷新注册状态
+ */
+bool settings_get_ams_serial(uint8_t ams, char out[AMS_SERIAL_LENGTH + 1]);
 
 /**
  * 解析 A.B.C.D 格式的 AMS 版本

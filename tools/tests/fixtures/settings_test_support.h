@@ -20,6 +20,12 @@ static unsigned read_count = 0, write_count = 0, validation_count = 0;
 static bool fail_write = false, corrupt_readback = false;
 #define LOG_MAIN(...) do {} while (0)
 
+/**
+ * 提供包含高 16 位的固定芯片 ID，验证序列号只使用低 48 位
+ * @return 测试芯片 ID
+ */
+static uint64_t hal_get_device_id() { return 0x98767BF9E5A60A48ull; }
+
 /** 模拟读取完整记录，仅对写入后的回读注入损坏 */
 static void hal_storage_read(int region, void *out, uint32_t size) {
     assert(region == HAL_REGION_SETTINGS && size == sizeof(flash_record));

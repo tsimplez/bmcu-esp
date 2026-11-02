@@ -67,7 +67,12 @@ int main(int argc, char **argv) {
     // 当前格式的有效记录即使为自定义，也应保留，不强制改为默认项目。
     IO_CONFIG.microswitch[0] = PIN_NONE;
     MANUAL_PULSE_MS = 432; AUTO_LOAD_MS = 765; MOTOR_LIMIT = 3;
-    strcpy(CUSTOM_SERIAL, "123456ABCDEF"); strcpy(OTA_URL, "https://example.test/ota");
+    for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
+        strcpy(CUSTOM_SERIAL[ams], "123456ABCDEF");
+        CUSTOM_SERIAL[ams][CUSTOM_SERIAL_LENGTH - 1] = static_cast<char>('A' + ams);
+        AMS_VERSION[ams][0] = 90 + ams;
+    }
+    strcpy(OTA_URL, "https://example.test/ota");
     CHANNEL_MODE[0] = CHANNEL_MODE_OFFLINE; PULLBACK_TIMEOUT[0] = 9;
     assert(settings_save_to_flash());
     original = settings_snapshot();
@@ -99,16 +104,26 @@ int main(int argc, char **argv) {
     settings_storage_init(); // 模拟重启读取整套新配置
     same_settings(expected, settings_snapshot());
     assert(AMS_COUNT == 2 && BUS_RX == 10 && BUS_TX == 7 && PCF_SDA == 4 && PCF_SCL == 5);
-    assert(IO_CONFIG.motor[0][0] == 50 && IO_CONFIG.motor[3][1] == 57 && IO_CONFIG.microswitch[3] == 65);
-    for (int ch = 0; ch < 4; ++ch)
-        assert(VIRTUAL_TO_PCF8575_PIN(IO_CONFIG.microswitch[ch]) == 12 + ch);
-    for (int ch = 4; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
+    const int pcb_pins[8][3] = {
+        {55, 54, 50}, {56, 57, 52}, {60, 61, 67}, {63, 62, 65},
+        {75, 74, 70}, {76, 77, 72}, {80, 81, 87}, {83, 82, 85}
+    };
+    const int switch_panel_pins[4] = {0, 2, 17, 15};
+    for (int ch = 0; ch < 8; ++ch) {
+        assert(IO_CONFIG.motor[ch][0] == pcb_pins[ch][0] && IO_CONFIG.motor[ch][1] == pcb_pins[ch][1]);
+        assert(IO_CONFIG.microswitch[ch] == pcb_pins[ch][2]);
+        assert(VIRTUAL_TO_PCF8575_PIN(IO_CONFIG.microswitch[ch]) == switch_panel_pins[ch % 4]);
+    }
+    for (int ch = 8; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
         assert(IO_CONFIG.motor[ch][0] == PIN_NONE && IO_CONFIG.motor[ch][1] == PIN_NONE);
         assert(IO_CONFIG.microswitch[ch] == PIN_NONE && !BMCU_channel_motor_ready(ch));
     }
     assert(!BMCU_channel_motor_ready(0));
     pcf_online[0] = true;
     assert(BMCU_channel_motor_ready(0));
+    assert(!BMCU_channel_motor_ready(4));
+    pcf_online[1] = true;
+    assert(BMCU_channel_motor_ready(4));
     assert(std::string(project_preset_match(settings_snapshot())) == pcb->id);
 
     // 四片引脚可独立使用；同一片同一脚仍拒绝重复，关闭 I2C 必须清掉所有扩展接线。
@@ -190,12 +205,16 @@ int main(int argc, char **argv) {
     settings_storage_init();
     assert(MOTOR_LIMIT == 4 && AMS_COUNT == 1 && !i2c_bus_configured());
     assert(MANUAL_PULSE_MS == 432 && AUTO_LOAD_MS == 765 && PULLBACK_TIMEOUT[0] == 9);
-    assert(std::string(CUSTOM_SERIAL) == "123456ABCDEF" && CHANNEL_MODE[0] == CHANNEL_MODE_OFFLINE);
+    for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
+        assert(memcmp(CUSTOM_SERIAL[ams], original.custom_serial[ams], CUSTOM_SERIAL_LENGTH) == 0);
+        assert(memcmp(AMS_VERSION[ams], original.ams_version[ams], sizeof(AMS_VERSION[ams])) == 0);
+    }
+    assert(CHANNEL_MODE[0] == CHANNEL_MODE_OFFLINE);
     assert(std::string(project_preset_match(settings_snapshot())) == direct->id);
     for (int ch = 4; ch < IO_CONFIG_MAX_CHANNELS; ++ch)
         assert(IO_CONFIG.motor[ch][0] == PIN_NONE && IO_CONFIG.microswitch[ch] == PIN_NONE);
-    // 旧编号中 60～63 仍是新编号的有效值，但语义不同，CRC 正确也必须拒绝旧格式。
-    for (uint32_t old_magic : {0x53415429u, 0x5341542Au}) {
+    // 旧编号或单份身份布局即使引脚值仍合法、CRC 正确，也必须拒绝旧格式。
+    for (uint32_t old_magic : {0x53415429u, 0x5341542Au, 0x5341542Bu}) {
         flash_record = pcb_settings;
         flash_record.magic = old_magic;
         for (int ch = 0; ch < 4; ++ch) flash_record.io_config.microswitch[ch] = 60 + ch;
@@ -208,7 +227,8 @@ int main(int argc, char **argv) {
         assert(flash_record.magic == SETTINGS_MAGIC_NUMBER && settings_is_valid());
         same_settings(settings_snapshot(), flash_record);
         assert(std::string(project_preset_match(settings_snapshot())) == direct->id);
-        assert(MANUAL_PULSE_MS == DEFAULT_MANUAL_PULSE_MS && !*CUSTOM_SERIAL);
+        assert(MANUAL_PULSE_MS == DEFAULT_MANUAL_PULSE_MS);
+        for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) assert(!CUSTOM_SERIAL[ams][0]);
         settings_storage_init();
         assert(writes == before + 1);
     }
@@ -216,5 +236,6 @@ int main(int argc, char **argv) {
     flash_record.checksum ^= 1;
     settings_storage_init();
     assert(std::string(project_preset_match(settings_snapshot())) == direct->id);
-    std::puts("PASS: project defaults, sparse pin numbering/gaps, NVS exact length, old format reset, current settings, two-way switch, empty channels, HTTP busy/failure, CRC readback");
+    test_ams_identity_http();
+    std::puts("PASS: project defaults, sparse pin numbering/gaps, NVS exact length, old format reset, current settings, two-way switch, empty channels, HTTP busy/failure, CRC readback, per-AMS identity HTTP");
 }

@@ -24,11 +24,15 @@ int MOTOR_LIMIT = 1;
 int RS485_MODE = hal_default_project_preset().bus.mode;
 // 是否把 BambuBus 原始收发报文写入总线日志（0=关，1=开）
 int BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
-// BambuBus 自定义序列号；空串表示按芯片 ID 自动生成
-char CUSTOM_SERIAL[CUSTOM_SERIAL_LENGTH + 1] = {};
-// 返回给打印机的 AMS 版本，网页按 A.B.C.D 显示，总线载荷按 D.C.B.A 写入
-int AMS_VERSION[4] = {DEFAULT_AMS_VERSION_MAJOR, DEFAULT_AMS_VERSION_MINOR,
-                      DEFAULT_AMS_VERSION_PATCH, DEFAULT_AMS_VERSION_BUILD};
+// 各 AMS 自定义序列号后缀；空串表示按芯片 ID 和 AMS 编号自动生成
+char CUSTOM_SERIAL[AMS_IDENTITY_COUNT][CUSTOM_SERIAL_LENGTH + 1] = {};
+// 各 AMS 返回给打印机的版本，网页按 A.B.C.D 显示，总线载荷按 D.C.B.A 写入
+int AMS_VERSION[AMS_IDENTITY_COUNT][4] = {
+    {DEFAULT_AMS_VERSION_MAJOR, DEFAULT_AMS_VERSION_MINOR, DEFAULT_AMS_VERSION_PATCH, DEFAULT_AMS_VERSION_BUILD},
+    {DEFAULT_AMS_VERSION_MAJOR, DEFAULT_AMS_VERSION_MINOR, DEFAULT_AMS_VERSION_PATCH, DEFAULT_AMS_VERSION_BUILD},
+    {DEFAULT_AMS_VERSION_MAJOR, DEFAULT_AMS_VERSION_MINOR, DEFAULT_AMS_VERSION_PATCH, DEFAULT_AMS_VERSION_BUILD},
+    {DEFAULT_AMS_VERSION_MAJOR, DEFAULT_AMS_VERSION_MINOR, DEFAULT_AMS_VERSION_PATCH, DEFAULT_AMS_VERSION_BUILD}
+};
 // OTA 固件发布目录，设备会读取该目录下的 manifest.json
 char OTA_URL[OTA_URL_MAX] = DEFAULT_OTA_URL;
 // 打开网页时是否自动检查 OTA 更新（0=关，1=开）
@@ -103,6 +107,33 @@ bool settings_custom_serial_valid(const char *serial) {
 }
 
 /**
+ * 读取指定 AMS 实际发送的完整序列号
+ * @param ams 协议 AMS 编号，范围 0..3，与当前启用数量无关
+ * @param out 输出 16 位序列号和结尾 NUL，至少容纳 AMS_SERIAL_LENGTH + 1 字节
+ * @return 编号及输出缓冲有效时返回 true，否则返回 false 并清空非空输出缓冲
+ * 自动后缀取芯片 ID 的低 48 位十六进制值，并把末位替换为 AMS 编号；自定义后缀原样保留
+ * 本函数只读取配置，不刷新注册状态
+ */
+bool settings_get_ams_serial(uint8_t ams, char out[AMS_SERIAL_LENGTH + 1]) {
+    if (!out) return false;
+    out[0] = 0;
+    if (ams >= AMS_IDENTITY_COUNT) return false;
+    memcpy(out, "0EA0", 4);
+    out[3] = static_cast<char>('0' + ams);
+    if (CUSTOM_SERIAL[ams][0]) {
+        memcpy(out + 4, CUSTOM_SERIAL[ams], CUSTOM_SERIAL_LENGTH);
+    } else {
+        static const char hex[] = "0123456789ABCDEF";
+        const uint64_t id = hal_get_device_id();
+        for (int i = 0; i < CUSTOM_SERIAL_LENGTH; ++i)
+            out[4 + i] = hex[(id >> ((CUSTOM_SERIAL_LENGTH - 1 - i) * 4)) & 0x0Fu];
+        out[AMS_SERIAL_LENGTH - 1] = static_cast<char>('0' + ams);
+    }
+    out[AMS_SERIAL_LENGTH] = 0;
+    return true;
+}
+
+/**
  * 解析 A.B.C.D 格式的 AMS 版本
  * @param text 待解析文本，例如 "1.0.6.87"
  * @param out 输出四个版本分量
@@ -160,7 +191,8 @@ static bool write_settings_to_flash(const SettingsData* data) {
 /**
  * 校验并应用设置到运行期变量
  * @param data 从存储或快照得到的设置
- * 逐项检查范围后更新全局配置；I2C 仅由 SDA/SCL 决定，接线无效时恢复平台默认映射
+ * 逐项检查范围后更新全局配置；各 AMS 身份独立校验，保留未启用 AMS 的配置
+ * I2C 仅由 SDA/SCL 决定，接线无效时恢复平台默认映射
  */
 static void apply_settings_values(const SettingsData& data) {
     for (int i = 0; i < 16; i++) {
@@ -181,20 +213,23 @@ static void apply_settings_values(const SettingsData& data) {
     BUS_LOG_ENABLE = data.bus_log_enable == 0 || data.bus_log_enable == 1
                          ? data.bus_log_enable : DEFAULT_BUS_LOG;
 
-    memcpy(CUSTOM_SERIAL, data.custom_serial, sizeof(data.custom_serial));
-    CUSTOM_SERIAL[CUSTOM_SERIAL_LENGTH] = 0;
-    if (!settings_custom_serial_valid(CUSTOM_SERIAL)) CUSTOM_SERIAL[0] = 0;
+    for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
+        memcpy(CUSTOM_SERIAL[ams], data.custom_serial[ams], CUSTOM_SERIAL_LENGTH);
+        CUSTOM_SERIAL[ams][CUSTOM_SERIAL_LENGTH] = 0;
+        if (!settings_custom_serial_valid(CUSTOM_SERIAL[ams]))
+            memset(CUSTOM_SERIAL[ams], 0, sizeof(CUSTOM_SERIAL[ams]));
 
-    bool version_valid = true;
-    for (int i = 0; i < 4; ++i)
-        if (data.ams_version[i] < 0 || data.ams_version[i] > 255) version_valid = false;
-    if (version_valid) {
-        memcpy(AMS_VERSION, data.ams_version, sizeof(AMS_VERSION));
-    } else {
-        AMS_VERSION[0] = DEFAULT_AMS_VERSION_MAJOR;
-        AMS_VERSION[1] = DEFAULT_AMS_VERSION_MINOR;
-        AMS_VERSION[2] = DEFAULT_AMS_VERSION_PATCH;
-        AMS_VERSION[3] = DEFAULT_AMS_VERSION_BUILD;
+        bool version_valid = true;
+        for (int i = 0; i < 4; ++i)
+            if (data.ams_version[ams][i] < 0 || data.ams_version[ams][i] > 255) version_valid = false;
+        if (version_valid) {
+            memcpy(AMS_VERSION[ams], data.ams_version[ams], sizeof(AMS_VERSION[ams]));
+        } else {
+            AMS_VERSION[ams][0] = DEFAULT_AMS_VERSION_MAJOR;
+            AMS_VERSION[ams][1] = DEFAULT_AMS_VERSION_MINOR;
+            AMS_VERSION[ams][2] = DEFAULT_AMS_VERSION_PATCH;
+            AMS_VERSION[ams][3] = DEFAULT_AMS_VERSION_BUILD;
+        }
     }
 
     OTA_NOTIFY = data.ota_notify == 0 || data.ota_notify == 1 ? data.ota_notify : DEFAULT_OTA_NOTIFY;
@@ -271,7 +306,7 @@ void settings_load_from_flash() {
 /**
  * 生成当前设置快照
  * @return 包含所有运行期设置及 CRC32 的 SettingsData
- * 收集当前生效参数和接线配置；I2C 只存两根引脚，计算 checksum 后返回副本
+ * 收集当前生效参数、全部 AMS 身份和接线配置；I2C 只存两根引脚，计算 checksum 后返回副本
  */
 SettingsData settings_snapshot() {
     SettingsData data = {};
@@ -287,7 +322,8 @@ SettingsData settings_snapshot() {
     data.bus_log_enable = BUS_LOG_ENABLE;
     data.ota_notify = OTA_NOTIFY;
     memset(data.custom_serial, 0, sizeof(data.custom_serial));
-    memcpy(data.custom_serial, CUSTOM_SERIAL, sizeof(data.custom_serial));
+    for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams)
+        memcpy(data.custom_serial[ams], CUSTOM_SERIAL[ams], CUSTOM_SERIAL_LENGTH);
     memset(data.ota_url, 0, sizeof(data.ota_url));
     memcpy(data.ota_url, OTA_URL, OTA_URL_MAX - 1);
     data.magic = SETTINGS_MAGIC_NUMBER;
@@ -339,7 +375,8 @@ bool settings_save_snapshot(const SettingsData &candidate) {
 
 /**
  * 恢复所有设置默认值
- * 接线和 AMS 数量复用平台默认项目；OTA 恢复默认发布目录，不直接写存储
+ * 接线和 AMS 数量复用平台默认项目；全部 AMS 使用自动序列号和默认版本，OTA 恢复默认发布目录
+ * 本函数不直接写存储
  */
 void settings_reset_to_defaults() {
     for (int i = 0; i < 16; i++) {
@@ -353,10 +390,12 @@ void settings_reset_to_defaults() {
     RS485_MODE = hal_default_project_preset().bus.mode;
     BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
     memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL));
-    AMS_VERSION[0] = DEFAULT_AMS_VERSION_MAJOR;
-    AMS_VERSION[1] = DEFAULT_AMS_VERSION_MINOR;
-    AMS_VERSION[2] = DEFAULT_AMS_VERSION_PATCH;
-    AMS_VERSION[3] = DEFAULT_AMS_VERSION_BUILD;
+    for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
+        AMS_VERSION[ams][0] = DEFAULT_AMS_VERSION_MAJOR;
+        AMS_VERSION[ams][1] = DEFAULT_AMS_VERSION_MINOR;
+        AMS_VERSION[ams][2] = DEFAULT_AMS_VERSION_PATCH;
+        AMS_VERSION[ams][3] = DEFAULT_AMS_VERSION_BUILD;
+    }
     memset(OTA_URL, 0, sizeof(OTA_URL));
     memcpy(OTA_URL, DEFAULT_OTA_URL, sizeof(DEFAULT_OTA_URL));
     OTA_NOTIFY = DEFAULT_OTA_NOTIFY;
@@ -392,19 +431,23 @@ static const char *channel_mode_name(const int mode) {
     }
 }
 
-// 把当前生效的设置打印到主板日志：启动时打印一次，之后每次保存设置再打印一次
 /**
  * 打印当前全部设置
- * 把总线、序列号、通道、引脚、OTA 等参数分行写入主板日志，便于启动排查
+ * 启动和保存设置时，把总线、各 AMS 实际序列号及版本、通道、引脚、OTA 等参数分行写入主板日志
  */
 void settings_log_all() {
     LOG_MAIN("[settings] RS485 收发模式=%d，BambuBus 原始报文日志=%s",
              RS485_MODE, BUS_LOG_ENABLE ? "已启用" : "已关闭");
     LOG_MAIN("[settings] BambuBus RX=IO%d，TX=IO%d，DE=IO%d（%s）", BUS_RX, BUS_TX, BUS_DE,
              RS485_MODE == RS485_MODE_DE ? "占用" : "不占用");
-    LOG_MAIN("[settings] BambuBus 序列号后缀=%s，AMS 版本=%d.%d.%d.%d",
-             CUSTOM_SERIAL[0] ? CUSTOM_SERIAL : "设备 ID 自动生成",
-             AMS_VERSION[0], AMS_VERSION[1], AMS_VERSION[2], AMS_VERSION[3]);
+    for (uint8_t ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
+        char serial[AMS_SERIAL_LENGTH + 1];
+        settings_get_ams_serial(ams, serial);
+        LOG_MAIN("[settings] AMS %d（%s）序列号=%s（%s），版本=%d.%d.%d.%d", ams + 1,
+                 ams < AMS_COUNT ? "已启用" : "未启用", serial,
+                 CUSTOM_SERIAL[ams][0] ? "自定义" : "自动",
+                 AMS_VERSION[ams][0], AMS_VERSION[ams][1], AMS_VERSION[ams][2], AMS_VERSION[ams][3]);
+    }
     LOG_MAIN("[settings] AMS 数量=%d，手动进退料点动时长=%dms", AMS_COUNT, MANUAL_PULSE_MS);
     LOG_MAIN("[settings] 同时运行电机上限=%d", MOTOR_LIMIT);
     if (i2c_bus_configured())

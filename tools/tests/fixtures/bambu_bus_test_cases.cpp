@@ -223,6 +223,7 @@ static std::vector<uint8_t> registration_query(const std::vector<uint8_t> &adver
 /**
  * 读取指定 AMS 的完整序列号载荷
  * @param ams AMS 编号
+ * @param payload_length 请求载荷长度；不超过 33 时验证旧式查询回退
  * @return 66 字节身份载荷
  * 经真实收发检查载荷位置、地址、长度与 CRC，首字节故意与 AMS 不同以防误用字段
  */
@@ -238,7 +239,7 @@ static std::vector<uint8_t> query_serial(uint8_t ams, size_t payload_length = 34
     assert(reply[7] == 0 && reply[8] == 3 && reply[9] == 0 && reply[10] == 7);
     assert(reply[6] == bus_crc8(reply.data(), 6) && package_check_crc16(reply.data(), reply.size()));
     assert(reply[13] == 15u);
-    assert(reply[13 + 65] == ams);
+    assert(reply[13 + 65] == (payload_length > 33 ? ams : 0));
     return {reply.begin() + 13, reply.end() - 2};
 }
 
@@ -307,8 +308,8 @@ static void test_registration() {
 }
 
 /**
- * 验证序列号优先查询、自定义序列号后缀及恢复自动身份
- * 查询顺序不影响身份，普通查询保留注册，配置变化才触发重新注册，AMS 身份始终独立
+ * 验证四台自动身份、自定义序列号和数量切换时的槽位隔离
+ * 自动后缀末位分别为 0..3；完整 16 位文本与注册身份一致，只有实际身份变化才重新注册
  */
 static void test_serial_identity() {
     AMS_COUNT = 4;
@@ -316,43 +317,70 @@ static void test_serial_identity() {
     for (uint8_t ams = 0; ams < 4; ++ams) {
         automatic[ams] = query_serial(ams);
         char expected[17] = {};
-        snprintf(expected, sizeof(expected), "0EA%u56789ABCDEF0", ams);
+        snprintf(expected, sizeof(expected), "0EA%u56789ABCDEF%u", ams, ams);
         assert(automatic[ams][0] == 15 && memcmp(automatic[ams].data() + 1, expected, 16) == 0);
+        assert(automatic[ams][16] == '0' + ams && automatic[ams][17] == 0);
         assert(memcmp(automatic[ams].data() + 33, F00_res[ams] + 8, 16) == 0);
-        have_registered[ams] = true;
+        auto confirm = registration_query(std::vector<uint8_t>(F00_res[ams], F00_res[ams] + 29));
+        feed(confirm); assert(BambuBus_run() == 1 && have_registered[ams]);
+        for (uint8_t other = 0; other < ams; ++other)
+            assert(memcmp(automatic[ams].data() + 33, automatic[other].data() + 33, 16) != 0);
     }
+    for (const uint8_t ams : {3, 1, 0, 2})
+        assert(query_serial(ams) == automatic[ams] && have_registered[ams]);
+
+    // 用户已验证的完整 SN，末位 8 必须按自定义输入保留，不能替换为槽位编号 1。
+    static const char suffix[] = "7BF9E5A60A48";
+    static const char verified_serial[] = "0EA17BF9E5A60A48";
+    static const uint8_t verified_identity[16] = {
+        0x0E, 0xA1, 0x7B, 0xF9, 0xE5, 0xA6, 0x0A, 0x48,
+        0xDE, 0xF0, 0x37, 0x33, 0xFF, 0xFF, 0xFF, 0xFF
+    };
+    memcpy(CUSTOM_SERIAL[1], suffix, sizeof(suffix));
+    assert(query_serial(3) == automatic[3]); // 查询别台也刷新变化槽位，但不能让别台掉注册。
+    assert(!have_registered[1] && online_detect_phase[1] == 0 && F00_res[1][7] == 0x0C);
+    const auto custom = query_serial(1);
+    assert(custom[0] == 15 && memcmp(custom.data() + 1, verified_serial, 16) == 0);
+    assert(memcmp(custom.data() + 33, verified_identity, sizeof(verified_identity)) == 0);
+    assert(memcmp(F00_res[1] + 8, verified_identity, sizeof(verified_identity)) == 0);
     for (uint8_t ams = 0; ams < 4; ++ams) {
+        if (ams == 1) continue;
         assert(query_serial(ams) == automatic[ams] && have_registered[ams]);
     }
-    static const char suffix[] = "123456789ABC";
-    memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL));
-    memcpy(CUSTOM_SERIAL, suffix, sizeof(suffix));
-    for (uint8_t ams = 0; ams < 4; ++ams) {
-        const auto custom = query_serial(ams);
-        char expected[17] = {};
-        snprintf(expected, sizeof(expected), "0EA%u%s", ams, suffix);
-        assert(custom[0] == 15 && memcmp(custom.data() + 1, expected, 16) == 0);
-        uint8_t expected_identity[8] = {};
-        for (int i = 0; i < 8; ++i) {
-            const auto nibble = [](char c) -> uint8_t {
-                return c <= '9' ? static_cast<uint8_t>(c - '0')
-                                : static_cast<uint8_t>(c - 'A' + 10);
-            };
-            expected_identity[i] = static_cast<uint8_t>(
-                (nibble(expected[i * 2]) << 4) | nibble(expected[i * 2 + 1]));
-        }
-        assert(memcmp(custom.data() + 33, expected_identity, sizeof(expected_identity)) == 0);
-        assert(memcmp(custom.data() + 33, F00_res[ams] + 8, 16) == 0);
-        assert(!have_registered[ams]);
-        assert(online_detect_phase[ams] == 0 && F00_res[ams][7] == 0x0C);
-        assert(custom[34] == 0xa0 + ams);
-    }
-    memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL)); // 恢复自动值时尾部旧字符不应干扰缓存判断
-    assert(query_serial(0, 33) == automatic[0]); // 无 [33] 选择字段的旧式查询回退 AMS 0
-    for (uint8_t ams = 0; ams < 4; ++ams) assert(query_serial(ams) == automatic[ams]);
-    auto query = registration_query(std::vector<uint8_t>(F00_res[2], F00_res[2] + 29));
-    feed(query); assert(BambuBus_run() == 1 && have_registered[2]);
-    assert(query_serial(2) == automatic[2] && have_registered[2]);
+    auto confirm = registration_query(std::vector<uint8_t>(F00_res[1], F00_res[1] + 29));
+    feed(confirm); assert(BambuBus_run() == 1 && have_registered[1]);
+    assert(query_serial(1) == custom && have_registered[1]);
+
+    AMS_COUNT = 1;
+    assert(query_serial(0) == automatic[0] && have_registered[0]);
+    auto disabled = long_request(0x402, 34);
+    disabled[13 + 33] = 1; seal(disabled);
+    const auto before = uart_tx.size();
+    feed(disabled); assert(BambuBus_run() == 0 && uart_tx.size() == before);
+    AMS_COUNT = 4;
+    assert(query_serial(1) == custom && have_registered[1]);
+    for (const uint8_t ams : {0, 2, 3})
+        assert(query_serial(ams) == automatic[ams] && have_registered[ams]);
+
+    CUSTOM_SERIAL[1][0] = 0; // 留下旧尾部字符，清空输入仍必须恢复自动身份。
+    assert(query_serial(1) == automatic[1] && !have_registered[1]);
+    for (const uint8_t ams : {0, 2, 3})
+        assert(query_serial(ams) == automatic[ams] && have_registered[ams]);
+    confirm = registration_query(std::vector<uint8_t>(F00_res[1], F00_res[1] + 29));
+    feed(confirm); assert(BambuBus_run() == 1 && have_registered[1]);
+
+    // 自定义值等于自动结果时，以及再恢复自动时，均不能重置已有注册。
+    memcpy(CUSTOM_SERIAL[1], "56789ABCDEF1", CUSTOM_SERIAL_LENGTH + 1);
+    assert(query_serial(1) == automatic[1] && have_registered[1]);
+    CUSTOM_SERIAL[1][0] = 0;
+    assert(query_serial(1) == automatic[1] && have_registered[1]);
+    assert(query_serial(3, 33) == automatic[0]); // 旧式查询不把载荷尾部或 CRC 当 AMS 字段。
+    assert(query_serial(3, 1) == automatic[0]);
+    auto invalid = long_request(0x402, 34);
+    invalid[13 + 33] = 4; seal(invalid);
+    assert(get_package_type(invalid.data(), invalid.size()) == BambuBus_package_ERROR);
+    invalid[13 + 33] = 3; seal(invalid); invalid.back() ^= 1;
+    assert(get_package_type(invalid.data(), invalid.size()) == BambuBus_package_ERROR);
 }
 
 /**
@@ -374,22 +402,42 @@ static std::vector<uint8_t> query_version(uint8_t ams) {
     return {reply.begin() + 13, reply.end() - 2};
 }
 
-/** 验证默认与自定义 AMS 版本按 D.C.B.A 上线，并保持型号和 AMS 编号不变 */
+/** 验证四台独立版本按 D.C.B.A 上线，单台修改和数量切换保留其余版本及注册身份 */
 static void test_ams_version() {
     AMS_COUNT = 4;
     const int defaults[4] = {1, 0, 6, 87};
-    memcpy(AMS_VERSION, defaults, sizeof(defaults));
-    const auto factory = query_version(0);
-    assert(factory.size() == 21);
-    assert(factory[0] == 87 && factory[1] == 6 && factory[2] == 0 && factory[3] == 1);
-    assert(memcmp(factory.data() + 4, "AMS08", 5) == 0 && factory[20] == 0);
+    for (uint8_t ams = 0; ams < 4; ++ams) {
+        const auto factory = query_version(ams);
+        assert(factory.size() == 21);
+        assert(factory[0] == 87 && factory[1] == 6 && factory[2] == 0 && factory[3] == 1);
+        assert(memcmp(factory.data() + 4, "AMS08", 5) == 0 && factory[20] == ams);
+        query_serial(ams);
+        have_registered[ams] = true;
+    }
 
-    const int custom[4] = {90, 1, 2, 3};
+    const int custom[4][4] = {{90, 1, 2, 3}, {1, 2, 3, 4}, {10, 50, 0, 0}, {255, 0, 128, 7}};
     memcpy(AMS_VERSION, custom, sizeof(custom));
+    std::vector<uint8_t> versions[4];
+    for (uint8_t ams = 0; ams < 4; ++ams) {
+        versions[ams] = query_version(ams);
+        for (int part = 0; part < 4; ++part)
+            assert(versions[ams][part] == custom[ams][3 - part]);
+        assert(memcmp(versions[ams].data() + 4, "AMS08", 5) == 0 && versions[ams][20] == ams);
+        query_serial(ams);
+        assert(have_registered[ams]);
+    }
+    memcpy(AMS_VERSION[2], defaults, sizeof(defaults));
     const auto changed = query_version(2);
-    assert(changed[0] == 3 && changed[1] == 2 && changed[2] == 1 && changed[3] == 90);
-    assert(memcmp(changed.data() + 4, "AMS08", 5) == 0 && changed[20] == 2);
-    memcpy(AMS_VERSION, defaults, sizeof(defaults));
+    assert(changed[0] == 87 && changed[1] == 6 && changed[2] == 0 && changed[3] == 1);
+    for (const uint8_t ams : {0, 1, 3}) assert(query_version(ams) == versions[ams]);
+    AMS_COUNT = 1;
+    assert(query_version(0) == versions[0]);
+    auto disabled = long_request(0x103, 1);
+    disabled[13] = 3; seal(disabled);
+    const auto before = uart_tx.size();
+    feed(disabled); assert(BambuBus_run() == 0 && uart_tx.size() == before);
+    AMS_COUNT = 4;
+    assert(query_version(3) == versions[3]);
 }
 
 /** 验证发送端边界、真实 Cxx/Dxx/长包回复，以及回复时接收不覆盖队首 */

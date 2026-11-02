@@ -58,9 +58,14 @@ const ProjectPreset &hal_default_project_preset();
         strip_includes(read('src/settings_storage.cpp')),
         extract_function(web, 'static String json_escape('),
         extract_function(web, 'static bool maintenance_required()'),
+        extract_function(web, 'static bool valid_number('),
+        extract_function(web, 'static bool parse_io_pin('),
+        extract_function(web, 'static void handle_settings_get()'),
+        extract_function(web, 'static void handle_settings_save()'),
         extract_function(web, 'static void handle_projects_get()'),
         extract_function(web, 'static void handle_project_save()'),
         extract_function(read('src/BMCU.cpp'), 'bool BMCU_channel_motor_ready('),
+        read('tools/tests/fixtures/ams_identity_http_test_cases.cpp'),
         read('tools/tests/fixtures/project_presets_test_cases.cpp')))
     with tempfile.TemporaryDirectory(prefix='bmcu-project-test-') as directory:
         source = Path(directory) / 'test.cpp'

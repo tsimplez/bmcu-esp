@@ -28,7 +28,11 @@ const path = require('node:path');
     ] };
     const settings = {
       ams: 1, channels: 4, maxams: 4, motor_limit: 1, manual_ms: 300, auto_ms: 1000,
-      cm: Array(16).fill(2), to: Array(16).fill(7), serial: '', ams_version: '90.0.0.0',
+      cm: Array(16).fill(2), to: Array(16).fill(7),
+      ams_identity: Array.from({ length: 4 }, (_, index) => ({
+        index, serial: '', ams_version: '90.0.0.0', enabled: index === 0,
+        effective_serial: `0EA${index}123456789AB${index}`,
+      })),
       otaurl: '', otanotify: 0,
       io: {
         motor: Array.from({ length: 16 }, (_, i) => i < 4 ? [i * 2, i * 2 + 1] : [255, 255]),
@@ -53,13 +57,20 @@ const path = require('node:path');
         if (body.has('ams')) {
           settings.ams = Number(body.get('ams'));
           settings.channels = settings.ams * 4;
+          settings.ams_identity.forEach(entry => { entry.enabled = entry.index < settings.ams; });
           for (let i = 0; i < settings.channels; i++) {
             settings.io.motor[i] = [Number(body.get('io_mf' + i)), Number(body.get('io_mb' + i))];
             settings.io.microswitch[i] = Number(body.get('io_sw' + i));
           }
         }
-        if (body.has('serial')) settings.serial = body.get('serial');
-        if (body.has('ams_version')) settings.ams_version = body.get('ams_version');
+        if (body.has('serial') || body.has('ams_version')) {
+          assert(body.has('ams_index'), '身份修改必须带明确 AMS 编号');
+          const index = Number(body.get('ams_index')), entry = settings.ams_identity[index];
+          assert(entry, '身份修改不得越界');
+          if (body.has('serial')) entry.serial = body.get('serial');
+          if (body.has('ams_version')) entry.ams_version = body.get('ams_version');
+          entry.effective_serial = `0EA${index}${entry.serial || `123456789AB${index}`}`;
+        }
         if (body.has('otaurl')) settings.otaurl = body.get('otaurl');
         data = { ok: true, msg: '参数已保存' };
       } else if (url.pathname === '/api/settings') data = settings;
@@ -82,34 +93,79 @@ const path = require('node:path');
     await page.waitForFunction(() => document.querySelector('#p-ams').value === '1');
     // Wait for the tab's settings read before editing.
     await page.evaluate(() => loadPara());
-    await page.fill('#p-serial', '123456789ABC');
-    assert.equal(await page.evaluate(() => document.querySelector('#p-serial').checkValidity()), true);
-    await page.fill('#p-serial', '123456789AB');
-    assert.equal(await page.evaluate(() => document.querySelector('#p-serial').checkValidity()), false);
-    await page.fill('#p-serial', '123456789ABG');
-    assert.equal(await page.evaluate(() => document.querySelector('#p-serial').checkValidity()), false);
-    await page.fill('#p-serial', '123456789ABC');
-    await page.evaluate(() => saveSerial());
-    await page.waitForFunction(() => !document.querySelector('#p-serial').disabled);
-    assert.equal(settings.serial, '123456789ABC');
+    assert.equal(await page.locator('.ams-identity').count(), 4);
+    for (let index = 0; index < 4; ++index) {
+      assert.equal(await page.locator('#p-effective-serial-' + index).textContent(), `0EA${index}123456789AB${index}`);
+      assert.match(await page.locator('#ams-identity-' + index + ' h3').textContent(), new RegExp(`编号 ${index}`));
+    }
+    await page.fill('#p-serial-0', '123456789ABC');
+    assert.equal(await page.evaluate(() => document.querySelector('#p-serial-0').checkValidity()), true);
+    await page.fill('#p-serial-0', '123456789AB');
+    assert.equal(await page.evaluate(() => document.querySelector('#p-serial-0').checkValidity()), false);
+    await page.fill('#p-serial-0', '123456789ABG');
+    assert.equal(await page.evaluate(() => document.querySelector('#p-serial-0').checkValidity()), false);
+    await page.fill('#p-serial-0', '123456789ABC');
+    await page.evaluate(() => saveAmsIdentity(0));
+    assert.equal(settings.ams_identity[0].serial, '123456789ABC');
+    assert.equal(posts.at(-1).get('ams_index'), '0');
     assert.equal(posts.at(-1).get('serial'), '123456789ABC');
-    await page.fill('#p-serial', '');
+    assert.equal(posts.at(-1).has('ams'), false, '逐台身份保存不修改启用数量');
+    await page.fill('#p-serial-0', '');
     const versionPosts = posts.length;
-    await page.fill('#p-ams-version', '90.1.256.0');
-    await page.click('#save-ams-version');
+    await page.fill('#p-ams-version-0', '90.1.256.0');
+    await page.click('#save-ams-identity-0');
     await page.waitForTimeout(50);
     assert.equal(posts.length, versionPosts, 'invalid AMS version must not be submitted');
-    await page.fill('#p-ams-version', '90.1.2.3');
-    await page.click('#save-ams-version');
-    await page.waitForFunction(() => !document.querySelector('#p-ams-version').disabled);
-    assert.equal(settings.ams_version, '90.1.2.3');
+    await page.fill('#p-ams-version-0', '90.1.2.3');
+    await page.evaluate(() => saveAmsIdentity(0));
+    assert.equal(settings.ams_identity[0].ams_version, '90.1.2.3');
+    assert.equal(settings.ams_identity[0].serial, '');
+    assert.equal(await page.locator('#p-effective-serial-0').textContent(), '0EA0123456789AB0');
     assert.equal(posts.at(-1).get('ams_version'), '90.1.2.3');
+    const firstIdentity = { ...settings.ams_identity[0] };
+    await page.fill('#p-serial-1', '7bf9e5a60a48');
+    assert.equal(await page.inputValue('#p-serial-1'), '7BF9E5A60A48');
+    await page.fill('#p-ams-version-1', '1.2.3.4');
+    await page.evaluate(() => saveAmsIdentity(1));
+    assert.equal(await page.locator('#p-effective-serial-1').textContent(), '0EA17BF9E5A60A48');
+    assert.equal(posts.at(-1).get('ams_index'), '1');
+    assert.deepEqual(settings.ams_identity[0], firstIdentity, '第二台保存不得覆盖第一台');
+    await page.fill('#p-serial-3', 'FEDCBA987654');
+    await page.fill('#p-ams-version-3', '4.3.2.1');
+    await page.fill('#p-serial-2', 'AABBCCDDEEFF');
+    await page.fill('#p-ams-version-2', '2.4.6.8');
+    failSave = true;
+    await page.evaluate(() => saveAmsIdentity(2));
+    assert.equal(settings.ams_identity[2].serial, '');
+    assert.equal(await page.inputValue('#p-serial-2'), 'AABBCCDDEEFF', '保存失败保留该台草稿');
+    assert.equal(await page.locator('#p-effective-serial-2').textContent(), '0EA2123456789AB2');
+    failSave = false;
+    await page.evaluate(() => saveAmsIdentity(2));
+    assert.equal(await page.inputValue('#p-serial-3'), 'FEDCBA987654', '保存其他台不能覆盖草稿');
+    assert.equal(await page.locator('#p-effective-serial-3').textContent(), '0EA3123456789AB3', '草稿不得当成有效身份');
+    await page.click('[data-tab="status"]');
+    await page.click('[data-tab="settings"]');
+    await page.evaluate(() => loadPara());
+    assert.equal(await page.inputValue('#p-serial-3'), 'FEDCBA987654', '切页和重读应保留身份草稿');
+    const once = posts.length;
+    await page.evaluate(() => Promise.all([saveAmsIdentity(3), saveAmsIdentity(3)]));
+    assert.equal(posts.length, once + 1, '同台重复点击只能提交一次');
+    assert.deepEqual(settings.ams_identity.map(entry => entry.ams_version), ['90.1.2.3', '1.2.3.4', '2.4.6.8', '4.3.2.1']);
+    const identitiesBeforeCounts = settings.ams_identity.map(({ serial, ams_version, effective_serial }) => ({ serial, ams_version, effective_serial }));
+    for (const count of [4, 1, 4, 1]) {
+      settings.ams = count; settings.channels = count * 4;
+      settings.ams_identity.forEach(entry => { entry.enabled = entry.index < count; });
+      await page.evaluate(() => loadPara());
+      assert.equal(await page.locator('#ams-identity-enabled-3').textContent(), count === 4 ? '已启用' : '未启用 · 配置保留');
+    }
+    assert.deepEqual(settings.ams_identity.map(({ serial, ams_version, effective_serial }) => ({ serial, ams_version, effective_serial })), identitiesBeforeCounts);
     assert.equal(await page.locator('#t-settings #iobody').count(), 1);
     assert.equal(await page.locator('#t-status #iobody').count(), 0);
     assert.equal(await page.locator('#t-settings #card-pcf').count(), 1);
     for (const count of [2, 3, 4, 1, 2]) {
       await page.selectOption('#p-ams', String(count));
       assert.equal(await page.locator('#iobody tr').count(), count * 4);
+      assert.equal(await page.locator('#ams-identity-enabled-1').textContent(), '未启用 · 配置保留', '数量预览不得宣称已启用');
     }
     assert.equal(await page.locator('#chbody tr').count(), 4, 'preview must not enable manual controls');
     for (let i = 4; i < 8; i++) {
@@ -223,11 +279,14 @@ const path = require('node:path');
     }
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'mobile layout must fit');
+    if (process.env.WEB_TEST_IDENTITY_SCREENSHOT)
+      await page.locator('#ams-identities').screenshot({ path: process.env.WEB_TEST_IDENTITY_SCREENSHOT,
+        style: 'header,.toast{visibility:hidden!important;opacity:0!important;transition:none!important}' });
     await page.click('[data-tab="status"]');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '四片状态必须适配手机宽度');
     if (process.env.WEB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.WEB_TEST_SCREENSHOT, fullPage: true });
     assert.deepEqual(errors, []);
-    console.log('PASS: settings, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
+    console.log('PASS: per-AMS serial/version/save/isolation/drafts/counts, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
   } finally {
     await browser.close();
   }

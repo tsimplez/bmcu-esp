@@ -50,11 +50,14 @@ def main():
     atomics = atomics[:atomics.index('// ============================================================')]
     support = (root / 'tools/tests/fixtures/bambu_bus_test_support.h').read_text(encoding='utf-8')
     cases = (root / 'tools/tests/fixtures/bambu_bus_test_cases.cpp').read_text(encoding='utf-8')
+    settings_source = (root / 'src/settings_storage.cpp').read_text(encoding='utf-8')
+    serial_function = extract_function(settings_source, 'bool settings_get_ams_serial(')
     motor_source = (root / 'src/BMCU.cpp').read_text(encoding='utf-8')
     motor_support = (root / 'tools/tests/fixtures/bambu_motor_test_support.h').read_text(encoding='utf-8')
     motor_functions = '\n'.join(extract_function(motor_source, signature) for signature in (
         'static void clear_feed_stop_delay(', 'static bool arm_feed_stop_delay(', 'void BMCU_motion() {'))
-    translation_unit = '\n'.join((support, header, atomics, reference, bus, motor_support, motor_functions, cases))
+    translation_unit = '\n'.join((support, serial_function, header, atomics, reference, bus,
+                                 motor_support, motor_functions, cases))
     scenarios = ('parser', 'queue', 'queue_threads', 'receiver', 'timeout', 'save',
                  'zero_time', 'registration', 'responses', 'motion_sequences',
                  'motion_isolation', 'motion_timing', 'serial_identity',
