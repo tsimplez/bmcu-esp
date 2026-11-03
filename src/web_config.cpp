@@ -320,7 +320,8 @@ static void handle_projects_get() {
              ",\"reason\":\"" + json_escape(error.c_str()) + "\",\"ams\":" + String(preset.ams) +
              ",\"rs485\":" + String(preset.bus.mode) + ",\"rx\":" + String(preset.bus.rx) +
              ",\"tx\":" + String(preset.bus.tx) + ",\"de\":" + String(preset.bus.de) +
-             ",\"sda\":" + String(preset.bus.sda) + ",\"scl\":" + String(preset.bus.scl) + ",\"pins\":[";
+             ",\"sda\":" + String(preset.bus.sda) + ",\"scl\":" + String(preset.bus.scl) +
+             ",\"switch_pin\":" + String(preset.switch_pin) + ",\"pins\":[";
         IoConfig io;
         project_preset_io(preset, io);
         const int channels = preset.ams >= 1 && preset.ams <= IO_CONFIG_MAX_CHANNELS / 4 ? preset.ams * 4 : 0;
@@ -468,12 +469,13 @@ static void handle_status() {
 
 /**
  * 处理设置读取请求
- * 输出参数、四份 AMS 身份、通道模式、退料超时、接线和可选引脚；完整序列号与协议共用生成函数
+ * 输出时长、四份 AMS 身份、通道模式、通道与总微动接线和可选引脚；完整序列号与协议共用生成函数
  */
 static void handle_settings_get() {
     String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
                ",\"ams\":" + String(AMS_COUNT) + ",\"manual_ms\":" + String(MANUAL_PULSE_MS) +
                ",\"auto_ms\":" + String(AUTO_LOAD_MS) +
+               ",\"feed_stop_delay_ms\":" + String(FEED_STOP_DELAY_MS) +
                ",\"motor_limit\":" + String(MOTOR_LIMIT) +
                ",\"channels\":" + String(BMCU_motor_count()) +
                ",\"maxams\":" + String(BMCU_max_ams_count()) + ",\"ams_identity\":[";
@@ -502,7 +504,7 @@ static void handle_settings_get() {
         if (i) j += ',';
         j += String(IO_CONFIG.microswitch[i]);
     }
-    j += "],\"pins\":";
+    j += "],\"switch_pin\":" + String(IO_CONFIG.switch_pin) + ",\"pins\":";
     io_config_append_pin_options(j);
     j += "},\"pcf\":{\"configured\":" + String(i2c_bus_configured() ? "true" : "false") +
          ",\"sda\":" + String(PCF_SDA) + ",\"scl\":" + String(PCF_SCL) + ",\"pins\":";
@@ -669,7 +671,8 @@ static void handle_bus_save() {
 
 /**
  * 处理常规设置保存
- * 身份字段必须指定 AMS 编号；统一校验数量、时长、并发上限、逐台身份、通道和接线，保存失败时回滚完整快照
+ * 身份字段必须指定 AMS 编号；统一校验时长、数量、并发、逐台身份及通道/总微动接线，保存失败时回滚完整快照
+ * 进料停止延迟用于后续动作；接线仅登记应用请求，由主循环执行
  */
 static void handle_settings_save() {
     if (server.hasArg("rs485")) {
@@ -695,6 +698,7 @@ static void handle_settings_save() {
     bool valid = ams_valid &&
                  valid_number("manual_ms", 1, MAX_PULSE_MS - 1) &&
                  valid_number("auto_ms", 0, MAX_PULSE_MS - 1) &&
+                 valid_number("feed_stop_delay_ms", 0, MAX_PULSE_MS - 1) &&
                  valid_number("motor_limit", 1, candidate_channels);
     bool serial_valid = true;
     bool version_valid = true;
@@ -716,7 +720,7 @@ static void handle_settings_save() {
         const String key = server.argName(arg);
         if (!key.startsWith("io_") && !key.startsWith("io-")) continue;
         io_requested = true;
-        bool known = false;
+        bool known = key == "io_switch";
         for (int ch = 0; ch < candidate_channels; ch++) {
             if (key == "io_mf" + String(ch) || key == "io_mb" + String(ch) ||
                 key == "io_sw" + String(ch)) known = true;
@@ -724,6 +728,11 @@ static void handle_settings_save() {
         if (!known) io_fields_valid = false;
     }
     IoConfig candidate_io = IO_CONFIG;
+    if (server.hasArg("io_switch")) {
+        int pin = PIN_NONE;
+        if (parse_io_pin("io_switch", pin, true)) candidate_io.switch_pin = pin;
+        else valid = false;
+    }
     for (int i = 0; i < candidate_channels; i++) {
         const String k_forward = "io_mf" + String(i);
         const String k_reverse = "io_mb" + String(i);
@@ -782,6 +791,7 @@ static void handle_settings_save() {
     MOTOR_LIMIT = min(MOTOR_LIMIT, candidate_channels);
     if (server.hasArg("manual_ms")) MANUAL_PULSE_MS = server.arg("manual_ms").toInt();
     if (server.hasArg("auto_ms")) AUTO_LOAD_MS = server.arg("auto_ms").toInt();
+    if (server.hasArg("feed_stop_delay_ms")) FEED_STOP_DELAY_MS = server.arg("feed_stop_delay_ms").toInt();
     if (io_requested) IO_CONFIG = candidate_io;
     for (int i = 0; i < candidate_channels; i++) {
         String kt = "to" + String(i), kc = "cm" + String(i);

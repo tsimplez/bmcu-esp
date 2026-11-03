@@ -7,6 +7,7 @@ static SettingsData custom_record() {
     settings_reset_to_defaults();
     AMS_COUNT = 4; MOTOR_LIMIT = 3;
     MANUAL_PULSE_MS = 432; AUTO_LOAD_MS = 765;
+    FEED_STOP_DELAY_MS = 2345;
     RS485_MODE = RS485_MODE_DE; BUS_LOG_ENABLE = 0; OTA_NOTIFY = 0;
     BUS_RX = 20; BUS_TX = 21; BUS_DE = 10;
     PCF_SDA = 4; PCF_SCL = 5;
@@ -26,6 +27,7 @@ static SettingsData custom_record() {
     }
     IO_CONFIG.motor[0][0] = 6; IO_CONFIG.motor[0][1] = 7;
     IO_CONFIG.microswitch[0] = 3;
+    IO_CONFIG.switch_pin = 9;
     return settings_snapshot();
 }
 
@@ -137,7 +139,7 @@ int main(int argc, char **argv) {
     const bool invalid = scenario == "bad_magic" || old_pcf || scenario == "bad_crc" || scenario == "empty" ||
                          scenario == "default_write_failure";
     if (scenario == "bad_magic") {
-        flash_record.magic = 0x5341542Bu;
+        flash_record.magic = 0x5341542Cu;
         flash_record.checksum = calculate_crc32(&flash_record); // CRC 正确也不能加载不同格式
     }
     if (old_pcf) {
@@ -173,11 +175,23 @@ int main(int argc, char **argv) {
     }
     assert(memcmp(&actual, &original, sizeof(actual)) == 0);
     assert(write_count == 0 && read_count == 1 && validation_count == 1);
-    if (scenario == "current_custom") test_ams_identity_values(original, defaults);
+    if (scenario == "current_custom") {
+        assert(defaults.feed_stop_delay_ms == 1000 && defaults.io_config.switch_pin == PIN_NONE);
+        for (int value : {-1, 0, 1, 29999, 30000}) {
+            auto candidate = original;
+            candidate.feed_stop_delay_ms = value;
+            assert(settings_save_snapshot(candidate));
+            settings_storage_init();
+            assert(FEED_STOP_DELAY_MS == (value < 0 || value >= 30000 ? 1000 : value));
+        }
+        test_ams_identity_values(original, defaults);
+    }
     if (scenario == "write_failure" || scenario == "readback_failure") {
         fail_write = scenario == "write_failure";
         corrupt_readback = scenario == "readback_failure";
         MANUAL_PULSE_MS = 987;
+        FEED_STOP_DELAY_MS = 567;
+        IO_CONFIG.switch_pin = PIN_NONE;
         strcpy(CUSTOM_SERIAL[2], "F0F0F0F0F0F0");
         AMS_VERSION[3][0] = 123;
         auto expected = settings_snapshot();
@@ -189,6 +203,8 @@ int main(int argc, char **argv) {
         if (fail_write) assert(memcmp(&flash_record, &original, sizeof(original)) == 0);
         fail_write = corrupt_readback = false;
         MANUAL_PULSE_MS = 987;
+        FEED_STOP_DELAY_MS = 567;
+        IO_CONFIG.switch_pin = PIN_NONE;
         strcpy(CUSTOM_SERIAL[2], "F0F0F0F0F0F0");
         AMS_VERSION[3][0] = 123;
         assert(settings_save_to_flash());

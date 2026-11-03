@@ -28,6 +28,7 @@ const path = require('node:path');
     ] };
     const settings = {
       ams: 1, channels: 4, maxams: 4, motor_limit: 1, manual_ms: 300, auto_ms: 1000,
+      feed_stop_delay_ms: 1000,
       cm: Array(16).fill(2), to: Array(16).fill(7),
       ams_identity: Array.from({ length: 4 }, (_, index) => ({
         index, serial: '', ams_version: '90.0.0.0', enabled: index === 0,
@@ -36,7 +37,7 @@ const path = require('node:path');
       otaurl: '', otanotify: 0,
       io: {
         motor: Array.from({ length: 16 }, (_, i) => i < 4 ? [i * 2, i * 2 + 1] : [255, 255]),
-        microswitch: Array(16).fill(255), pins,
+        microswitch: Array(16).fill(255), switch_pin: 255, pins,
       },
       pcf: { configured: true, sda: 46, scl: 47, pins: gpioPins },
     };
@@ -79,6 +80,8 @@ const path = require('node:path');
           entry.effective_serial = `0EA${index}${entry.serial || `123456789AB${index}`}`;
         }
         if (body.has('otaurl')) settings.otaurl = body.get('otaurl');
+        if (body.has('feed_stop_delay_ms')) settings.feed_stop_delay_ms = Number(body.get('feed_stop_delay_ms'));
+        if (body.has('io_switch')) settings.io.switch_pin = Number(body.get('io_switch'));
         data = { ok: true, msg: '参数已保存' };
       } else if (url.pathname === '/api/settings') data = settings;
       else if (url.pathname === '/api/ota/check') {
@@ -97,10 +100,65 @@ const path = require('node:path');
     });
     await page.goto('http://bmcu.test/');
     await page.waitForFunction(() => document.querySelectorAll('#iobody tr').length === 4);
+    assert.equal(await page.inputValue('#feed-stop-delay-ms'), '1000');
+    for (const value of ['', '-1', '30000', '12.5']) {
+      const before = posts.length;
+      await page.evaluate(async value => {
+        const el = document.querySelector('#feed-stop-delay-ms');
+        el.value = value;
+        await saveField(el, 'feed_stop_delay_ms');
+      }, value);
+      assert.equal(posts.length, before, '非法停料延迟不得提交');
+    }
+    for (const value of ['1479', '29999', '0']) {
+      await page.evaluate(async value => {
+        const el = document.querySelector('#feed-stop-delay-ms');
+        el.value = value;
+        await saveField(el, 'feed_stop_delay_ms');
+      }, value);
+      assert.equal(posts.at(-1).get('feed_stop_delay_ms'), value);
+      await page.evaluate(() => loadPara());
+      assert.equal(await page.inputValue('#feed-stop-delay-ms'), value, '保存后重新加载保留自定义值和零值');
+    }
+    failSave = true;
+    await page.evaluate(async () => {
+      const el = document.querySelector('#feed-stop-delay-ms');
+      el.value = '789';
+      await saveField(el, 'feed_stop_delay_ms');
+    });
+    assert.equal(await page.inputValue('#feed-stop-delay-ms'), '0', '保存失败恢复上次值');
+    failSave = false;
     await page.click('[data-tab="settings"]');
     await page.waitForFunction(() => document.querySelector('#p-ams').value === '1');
     // Wait for the tab's settings read before editing.
     await page.evaluate(() => loadPara());
+    assert.equal(await page.inputValue('#io-switch'), '255');
+    const switchPosts = posts.length;
+    await page.selectOption('#io-switch', '0');
+    await page.evaluate(() => saveIoConfig());
+    assert.equal(posts.length, switchPosts, '总微动不能与通道引脚重复');
+    assert.match(await page.locator('#io-state').textContent(), /重复/);
+    await page.selectOption('#io-switch', '44');
+    await page.selectOption('#p-ams', '2');
+    await page.selectOption('#p-ams', '1');
+    assert.equal(await page.inputValue('#io-switch'), '44', '数量预览保留总微动草稿');
+    failSave = true;
+    await page.evaluate(() => saveIoConfig());
+    assert.equal(await page.inputValue('#io-switch'), '44', '保存失败保留总微动草稿');
+    assert.equal(settings.io.switch_pin, 255);
+    failSave = false;
+    await page.evaluate(() => saveIoConfig());
+    assert.equal(posts.at(-1).get('io_switch'), '44');
+    assert.equal(await page.inputValue('#io-switch'), '44');
+    assert.equal(settings.io.switch_pin, 44);
+    assert.equal(await page.evaluate(() => BUS_USES[44].includes('五通总微动')), true);
+    assert.match(await page.locator('#pcf-sda option[value="44"]').textContent(), /五通总微动/);
+    await page.selectOption('#io-switch', '66');
+    await page.evaluate(() => saveIoConfig());
+    assert.equal(settings.io.switch_pin, 66, '支持 PCF8575 输入');
+    await page.selectOption('#io-switch', '255');
+    await page.evaluate(() => saveIoConfig());
+    assert.equal(settings.io.switch_pin, 255, '支持关闭总微动');
     assert.equal(await page.locator('.ams-identity').count(), 4);
     assert.equal(await page.locator('.ams-identity:visible').count(), 1, '首次只显示已启用的一台 AMS');
     for (let index = 0; index < 4; ++index) {
@@ -353,7 +411,7 @@ const path = require('node:path');
     assert.match(await page.locator('#run0').textContent(), /手动 · 退料/);
     if (process.env.WEB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.WEB_TEST_SCREENSHOT, fullPage: true });
     assert.deepEqual(errors, []);
-    console.log('PASS: motor queue source/direction/cancel/restart, per-AMS serial/version/save/isolation/drafts/counts, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
+    console.log('PASS: feed delay/custom/zero/rollback, total switch/pins/drafts/conflicts, motor queue source/direction/cancel/restart, per-AMS serial/version/save/isolation/drafts/counts, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
   } finally {
     await browser.close();
   }

@@ -66,6 +66,7 @@ const ProjectPreset &hal_default_project_preset();
         extract_function(web, 'static void handle_project_save()'),
         extract_function(read('src/BMCU.cpp'), 'bool BMCU_channel_motor_ready('),
         read('tools/tests/fixtures/ams_identity_http_test_cases.cpp'),
+        read('tools/tests/fixtures/feed_switch_http_test_cases.cpp'),
         read('tools/tests/fixtures/project_presets_test_cases.cpp')))
     with tempfile.TemporaryDirectory(prefix='bmcu-project-test-') as directory:
         source = Path(directory) / 'test.cpp'

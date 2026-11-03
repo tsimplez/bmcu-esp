@@ -18,6 +18,8 @@ int AMS_COUNT = hal_default_project_preset().ams;
 int MANUAL_PULSE_MS = DEFAULT_MANUAL_PULSE_MS;
 // 微动由无料变有料后的辅助进料时长，单位毫秒；0 表示关闭
 int AUTO_LOAD_MS = DEFAULT_AUTO_LOAD_MS;
+// 打印机进料结束后继续运行的时长，单位毫秒；0 表示立即停车
+int FEED_STOP_DELAY_MS = DEFAULT_FEED_STOP_DELAY_MS;
 // 允许同时运行的电机数量上限，运行时由设置加载值限制到 active_channel_count()
 int MOTOR_LIMIT = 1;
 // BambuBus 的 RS485 收发模式：RS485_MODE_RXTX 或 RS485_MODE_DE
@@ -208,6 +210,8 @@ static void apply_settings_values(const SettingsData& data) {
                           ? data.manual_pulse_ms : DEFAULT_MANUAL_PULSE_MS;
     AUTO_LOAD_MS = data.auto_load_ms >= 0 && data.auto_load_ms < MAX_PULSE_MS
                        ? data.auto_load_ms : DEFAULT_AUTO_LOAD_MS;
+    FEED_STOP_DELAY_MS = data.feed_stop_delay_ms >= 0 && data.feed_stop_delay_ms < MAX_PULSE_MS
+                            ? data.feed_stop_delay_ms : DEFAULT_FEED_STOP_DELAY_MS;
     RS485_MODE = data.rs485_mode == RS485_MODE_RXTX || data.rs485_mode == RS485_MODE_DE
                      ? data.rs485_mode : hal_default_project_preset().bus.mode;
     BUS_LOG_ENABLE = data.bus_log_enable == 0 || data.bus_log_enable == 1
@@ -318,6 +322,7 @@ SettingsData settings_snapshot() {
     data.ams_count = AMS_COUNT;
     data.manual_pulse_ms = MANUAL_PULSE_MS;
     data.auto_load_ms = AUTO_LOAD_MS;
+    data.feed_stop_delay_ms = FEED_STOP_DELAY_MS;
     data.rs485_mode = RS485_MODE;
     data.bus_log_enable = BUS_LOG_ENABLE;
     data.ota_notify = OTA_NOTIFY;
@@ -386,6 +391,7 @@ void settings_reset_to_defaults() {
     AMS_COUNT = hal_default_project_preset().ams;
     MANUAL_PULSE_MS = DEFAULT_MANUAL_PULSE_MS;
     AUTO_LOAD_MS = DEFAULT_AUTO_LOAD_MS;
+    FEED_STOP_DELAY_MS = DEFAULT_FEED_STOP_DELAY_MS;
     MOTOR_LIMIT = 1;
     RS485_MODE = hal_default_project_preset().bus.mode;
     BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
@@ -436,6 +442,8 @@ static const char *channel_mode_name(const int mode) {
  * 启动和保存设置时，把总线、各 AMS 实际序列号及版本、通道、引脚、OTA 等参数分行写入主板日志
  */
 void settings_log_all() {
+    LOG_MAIN("[settings] 进料停止延迟=%dms，五通总微动=%s", FEED_STOP_DELAY_MS,
+             io_config_pin_label(IO_CONFIG.switch_pin).c_str());
     LOG_MAIN("[settings] RS485 收发模式=%d，BambuBus 原始报文日志=%s",
              RS485_MODE, BUS_LOG_ENABLE ? "已启用" : "已关闭");
     LOG_MAIN("[settings] BambuBus RX=IO%d，TX=IO%d，DE=IO%d（%s）", BUS_RX, BUS_TX, BUS_DE,

@@ -72,6 +72,7 @@ def main():
         control_support = (root / 'tools/tests/fixtures/motor_control_test_support.h').read_text(encoding='utf-8')
         control_cases = (root / 'tools/tests/fixtures/motor_control_test_cases.cpp').read_text(encoding='utf-8')
         control = motor_source[motor_source.index('namespace {'):motor_source.index('// ------------------------------ AS5600 start')]
+        control += '\n' + extract_function(motor_source, 'static void switchInterrupt() {')
         control += '\n' + extract_function(motor_source, 'void BMCU_run() {')
         control += '\n' + extract_function(motor_source, 'void BMCU_motion() {')
         helpers = '\n'.join(extract_function(cases, signature) for signature in (
@@ -83,7 +84,7 @@ def main():
                                      header, atomics, reference, bus, io_header, motor_header,
                                      control_support, control, handler, helpers, control_cases))
         scenarios = ('printer_target', 'motor_queue', 'queue_updates', 'manual_requests',
-                     'manual_bus_timeout', 'motor_guards')
+                     'manual_bus_timeout', 'motor_guards', 'feed_stop_delay', 'switch_input')
     if args.settings:
         preamble = '#include <cstdint>\n#include <string>\nusing String = std::string;\n'
         io_header = strip_includes((root / 'src/io_config.h').read_text(encoding='utf-8')).replace('#pragma once\n', '')

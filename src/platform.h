@@ -126,7 +126,7 @@ const ProjectPreset &hal_default_project_preset();
   // [合宙 airm2m_core_esp32c3](https://wiki-zh.luatos.org/chips/esp32c3/board.html)
   #define C3_BOARD_USB_TTL 1
 
-  #define PIN_SWITCH       PIN_NONE  // C3 不接单路微动开关，接口保留
+  #define PIN_SWITCH       PIN_NONE  // C3 默认不接五通总微动，可在网页中配置
 
 #else
 
@@ -145,7 +145,7 @@ const ProjectPreset &hal_default_project_preset();
     // RP2040
     #define PIN_BUS_TX  0
     #define PIN_BUS_RX  1
-    #define PIN_SWITCH  0
+    #define PIN_SWITCH  PIN_NONE // GPIO0 已被 UART0 TX 占用，总微动默认不配置
     #define MSW_PINS_1_4 26, 27, 28, 29
   #endif
 

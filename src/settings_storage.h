@@ -24,6 +24,7 @@ extern int CHANNEL_MODE[16];       // 16个通道的状态模式
 extern int AMS_COUNT;              // 唯一的数量设置（1-4），每个 AMS 对应 4 个通道
 extern int MANUAL_PULSE_MS;        // 手动进退料点动时长（毫秒）
 extern int AUTO_LOAD_MS;           // 微动辅助进料时长（毫秒，0=关闭）
+extern int FEED_STOP_DELAY_MS;     // 打印机进料结束后的延迟停车时间（毫秒，0=立即停车）
 extern int MOTOR_LIMIT;            // 同时运行的电机数（1..active_channel_count()）
 extern int RS485_MODE;             // RS485 收发模式（见下方 RS485_MODE_*）
 extern int BUS_LOG_ENABLE;         // BambuBus 原始报文日志开关（0=关 1=开）
@@ -40,6 +41,7 @@ struct SettingsData {
     int32_t ams_count;             // AMS数量（1-4）
     int32_t manual_pulse_ms;        // 手动进退料点动时长（毫秒）
     int32_t auto_load_ms;           // 微动辅助进料时长（毫秒，0=关闭）
+    int32_t feed_stop_delay_ms;     // 打印机进料结束后的延迟停车时间（毫秒，0=立即停车）
     uint32_t checksum;              // 校验和
     uint32_t magic;                 // 魔数
     int32_t rs485_mode;              // RS485 收发模式
@@ -57,8 +59,8 @@ struct SettingsData {
     int32_t ams_version[AMS_IDENTITY_COUNT][4]; // 各 AMS 版本（A.B.C.D，每段 0..255）
 };
 
-// 只接受当前四份 AMS 身份布局；旧布局（含 0x2B 单份身份）均恢复整份默认设置
-#define SETTINGS_MAGIC_NUMBER    0x5341542C
+// 当前布局包含四份 AMS 身份、进料停止延迟及五通总微动引脚；旧布局均恢复整份默认设置
+#define SETTINGS_MAGIC_NUMBER    0x5341542D
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**
@@ -73,12 +75,13 @@ inline int active_channel_count() { return AMS_COUNT * 4; }
 constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设置的回退值
 #define DEFAULT_MANUAL_PULSE_MS     1000  // 手动点动默认时长（毫秒）
 #define DEFAULT_AUTO_LOAD_MS        5000 // 微动辅助进料默认时长（毫秒）
+#define DEFAULT_FEED_STOP_DELAY_MS  1000 // 进料停止延迟默认时长（毫秒）
 #define DEFAULT_AMS_VERSION_MAJOR   1    // 默认 AMS 版本 A 段
 #define DEFAULT_AMS_VERSION_MINOR   0    // 默认 AMS 版本 B 段
 #define DEFAULT_AMS_VERSION_PATCH   6    // 默认 AMS 版本 C 段
 #define DEFAULT_AMS_VERSION_BUILD   87   // 默认 AMS 版本 D 段
 
-// 点动/辅助进料时长上限（毫秒）：只需小于 30 秒
+// 点动、辅助进料和进料停止延迟的时长上限（毫秒）：必须小于 30 秒
 #define MAX_PULSE_MS                30000
 
 #define RS485_MODE_RXTX             1   // 只用 RXD/TXD，不驱动 DE（模块自动收发方向）

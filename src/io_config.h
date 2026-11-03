@@ -8,6 +8,7 @@
 struct IoConfig {
     int32_t motor[IO_CONFIG_MAX_CHANNELS][2]; // [通道][0=进料引脚, 1=退料引脚]，PIN_NONE 表示未配置
     int32_t microswitch[IO_CONFIG_MAX_CHANNELS]; // 各通道微动开关引脚，PIN_NONE 表示无输入
+    int32_t switch_pin; // 五通总微动输入，PIN_NONE 表示不使用
 };
 
 // 整套候选总线接线；校验项目预设时不借用或修改运行期设置
@@ -18,7 +19,7 @@ struct IoBusConfig {
 // 生成当前平台的固件默认映射
 void io_config_set_defaults(IoConfig &config);
 
-// 切换 I2C 总线状态时清空在新状态下不可用的引脚，返回清掉的引脚数
+// 切换 I2C 总线状态时清空不可用的通道/总微动引脚，返回清掉的引脚数
 int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda, int scl);
 
 // 判断某个引脚是否可以出现在网页的选择列表中

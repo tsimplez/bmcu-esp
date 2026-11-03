@@ -21,7 +21,6 @@
 
 namespace {
 constexpr uint32_t CHANNEL_SWITCH_DELAY_MS = 100; // 通道切换后的运动稳定期
-constexpr uint32_t FEED_STOP_DELAY_MS = 1000;     // 打印机停止进料后的延迟停车时间
 constexpr uint32_t MSW_DEBOUNCE_MS = 30;          // 微动开关防抖时间
 constexpr float ACT_TARGET_METERS = 0.0f;         // 兼容动作的目标行程
 
@@ -61,6 +60,10 @@ struct ChannelState {
 static ChannelState channel_state[IO_CONFIG_MAX_CHANNELS];
 // 打印机总线超时后禁止新的打印机动作，直到收到合法新帧
 static bool printer_bus_fault = false;
+// Web 只登记接线应用请求，由主循环释放旧引脚并绑定新引脚
+static bool io_apply_pending = false;
+// 五通总微动上次读数；-1 表示尚未建立有效输入基线
+static int lastSwitchState = -1;
 
 // 等待启动的电机任务，按提交顺序执行，同一通道只保留一个目标动作
 static MotorJob motor_queue[IO_CONFIG_MAX_CHANNELS];
@@ -219,15 +222,29 @@ static void run_motor_queue() {
 static Motor motors[IO_CONFIG_MAX_CHANNELS];
 
 /**
- * 应用最新的通道引脚配置
- * 对比新旧配置，先停止并释放变更通道，再绑定新引脚；未变化通道保持运行状态
+ * 登记最新接线的应用请求
+ * 供 Web 回调调用；只设置标记，由主循环操作引脚和电机
  */
 void BMCU_apply_io_config() {
+    io_apply_pending = true;
+}
+
+/**
+ * 在主循环应用通道与五通总微动接线
+ * 先释放所有变更输入和通道，再绑定新引脚；未变化通道保持运行，新总微动重新建立输入基线
+ */
+static void apply_io_config() {
     // 上一次已应用到硬件的引脚配置，用与 IO_CONFIG 比较找出变更通道
     static IoConfig applied_io = {};
     // 上一次已应用的启用通道数，用于识别通道增减
     static int applied_channels = 0;
     const int channels = active_channel_count();
+    const bool switch_changed = !applied_channels || applied_io.switch_pin != IO_CONFIG.switch_pin;
+    if (switch_changed) {
+        if (applied_channels && applied_io.switch_pin != PIN_NONE)
+            pinMode_PCF8575(applied_io.switch_pin, INPUT);
+        lastSwitchState = -1;
+    }
     bool changed[IO_CONFIG_MAX_CHANNELS] = {};
     // 先释放所有变更/停用通道，再绑定新引脚，避免引脚交换时旧通道拉低新输出
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
@@ -252,8 +269,12 @@ void BMCU_apply_io_config() {
         if (pin != PIN_NONE)
             pinMode_PCF8575(pin, IS_PCF8575_VIRTUAL_PIN(pin) ? INPUT : INPUT_PULLUP);
     }
+    if (switch_changed && IO_CONFIG.switch_pin != PIN_NONE)
+        pinMode_PCF8575(IO_CONFIG.switch_pin,
+                       IS_PCF8575_VIRTUAL_PIN(IO_CONFIG.switch_pin) ? INPUT : INPUT_PULLUP);
     applied_io = IO_CONFIG;
     applied_channels = channels;
+    io_apply_pending = false;
 }
 
 /**
@@ -401,10 +422,11 @@ static void clear_feed_stop_delay(const int ch) {
  * 安排打印机进料结束后的延迟停止
  * @param ch 通道编号
  * @return true 表示本次新安排了延迟停止
- * 仅对打印机来源、正转且未设定时长的进料生效；重复的待机帧不会延长时限
+ * 仅对打印机来源、正转且未设定时长的进料生效；使用当前配置，0 表示不延迟
+ * 已安排的延迟不随配置变更或重复待机帧延长，新的设置从下一次安排开始生效
  */
 static bool arm_feed_stop_delay(const int ch) {
-    if (!valid_channel(ch) || channel_state[ch].feed_stop_pending) return false;
+    if (!valid_channel(ch) || channel_state[ch].feed_stop_pending || FEED_STOP_DELAY_MS <= 0) return false;
     const auto &m = channel_state[ch].motor;
     if (m.source != MOTOR_PRINTER || m.direction <= 0 || m.timed) return false;
     channel_state[ch].feed_stop_pending = true;
@@ -746,19 +768,19 @@ float AS5600_get_speed(const uint8_t channel) {
 
 // ------------------------------ 总微动(五通) start ------------------------------
 
-// 总微动开关引脚
-constexpr int switchPin = PIN_SWITCH;
-
-// 总微动开关的当前电平；LOW 表示触发
-static int switchState = 0;
-// 总微动开关的上一轮电平，用于检测 LOW 上升沿
-static int lastSwitchState = 0;
-
-// 微动开关中断处理 当微动开关被触发时，控制选中的电机进料200ms
+/**
+ * 在主循环轮询五通总微动，下降沿触发当前空闲电机进料 200ms
+ * 使用配置的真实或扩展输入；未配置、扩展器离线时跳过，首次有效读数只建立基线
+ * 本函数由运动调度调用，不是硬件中断回调
+ */
 static void switchInterrupt() {
-    if (switchPin == PIN_NONE) return;
-    switchState = digitalRead(switchPin);
-    if (switchState == LOW && lastSwitchState != LOW) {
+    const int pin = IO_CONFIG.switch_pin;
+    if (pin == PIN_NONE || (IS_PCF8575_VIRTUAL_PIN(pin) && !PCF8575_pin_is_online(pin))) {
+        lastSwitchState = -1;
+        return;
+    }
+    const int switchState = digitalRead_PCF8575(pin);
+    if (switchState == LOW && lastSwitchState > LOW) {
         int n = get_now_filament_num();
         if (is_active_channel(n) && !channel_state[n].motor.direction)
             motorCmd(n, 1, MOTOR_AUTOLOAD, 200);
@@ -840,7 +862,7 @@ void check_microswitch_status() {
 
 /**
  * BMCU系统初始化
- * 初始化四片扩展 IO、通道引脚、传感器和通信，逐地址记录检测结果
+ * 初始化四片扩展 IO、通道和总微动引脚、传感器和通信，逐地址记录检测结果
  */
 void BMCU_init() {
     // 初始化 PCF8575 虚拟引脚映射；I2C 未配置时不访问总线
@@ -851,8 +873,7 @@ void BMCU_init() {
                      PCF8575_is_online(device) ? "已检测到" : "未检测到");
     }
 
-    if (switchPin != PIN_NONE) pinMode(switchPin, INPUT_PULLUP);
-    BMCU_apply_io_config(); // 根据已加载设置绑定并初始化 IO 引脚
+    apply_io_config(); // 根据已加载设置绑定并初始化 IO 引脚
     AS5600_init(); // 初始化AS5600传感器
 
     BambuBus_init(); // 初始化BambuBus通信
@@ -865,9 +886,10 @@ void BMCU_init() {
 
 /**
  * BMCU主运行逻辑
- * 处理停止请求、打印机目标和共用队列；总线故障取消打印机运行及排队，保留本地手动任务
+ * 先应用待处理接线，再处理停止请求、打印机目标和共用队列；总线故障取消打印机运行及排队，保留本地手动任务
  */
 void BMCU_run() {
+    if (io_apply_pending) apply_io_config();
     motor_tick();
     PCF8575_poll();
     const int bus_stu = BambuBus_run();
@@ -980,9 +1002,9 @@ void BMCU_motion() {
             motorCmd(cur, -1, MOTOR_PRINTER, PULLBACK_TIMEOUT[cur] * 1000u);
             break;
         case need_send_out:
-            // 待进料：执行进料（正转）
+            // 待进料：执行进料
             if (execute_motion && is_filament_online(cur)) {
-                motorCmd(cur, 1); // 正转→进料
+                motorCmd(cur, 1); // 进料
             } else {
                 motorCmd(cur, 0); // 停止
             }
@@ -999,18 +1021,18 @@ void BMCU_motion() {
             switchInterrupt();
             break;
         case act_send_mm:
-            // 执行进料（正转）
+            // 执行进料
             if (ch.pullback_start_meters - get_filament_meters(cur) > ACT_TARGET_METERS) {
                 motorCmd(cur, 0); // 达到目标→停止
                 act = waiting;
             } else if (execute_motion && is_filament_online(cur)) {
-                motorCmd(cur, 1); // 继续进料（正转）
+                motorCmd(cur, 1); // 继续进料
             } else {
                 motorCmd(cur, 0); // 停止
             }
             break;
         case act_pull_mm:
-            // 执行退料（反转）
+            // 执行退料
             if (get_filament_meters(cur) - ch.pullback_start_meters > ACT_TARGET_METERS) {
                 motorCmd(cur, 0); // 达到目标→停止
                 act = waiting;

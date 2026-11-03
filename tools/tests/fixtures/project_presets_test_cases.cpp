@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
     same_settings(original, settings_snapshot()); // 校验候选配置不能改变当前引脚
 
     // 现有三类校验仍拒绝系统保留脚、重复脚、总线冲突和缺失 I2C 的扩展脚。
-    for (int test = 0; test < 8; ++test) {
+    for (int test = 0; test < 12; ++test) {
         auto bad = *pcb;
         if (test == 0) bad.bus.tx = bad.bus.rx;
         if (test == 1) bad.pins[0][0] = 14;
@@ -59,6 +59,10 @@ int main(int argc, char **argv) {
         if (test == 5) bad.bus.sda = bad.bus.scl = PIN_NONE;
         if (test == 6) bad.pins[0][0] = bad.bus.scl;
         if (test == 7) bad.target = "esp32s3";
+        if (test == 8) bad.switch_pin = bad.bus.rx;
+        if (test == 9) bad.switch_pin = bad.bus.sda;
+        if (test == 10) bad.switch_pin = bad.pins[0][0];
+        if (test == 11) bad.switch_pin = 58;
         String error;
         assert(!project_preset_validate(bad, &error) && !error.empty());
         same_settings(original, settings_snapshot());
@@ -214,7 +218,7 @@ int main(int argc, char **argv) {
     for (int ch = 4; ch < IO_CONFIG_MAX_CHANNELS; ++ch)
         assert(IO_CONFIG.motor[ch][0] == PIN_NONE && IO_CONFIG.microswitch[ch] == PIN_NONE);
     // 旧编号或单份身份布局即使引脚值仍合法、CRC 正确，也必须拒绝旧格式。
-    for (uint32_t old_magic : {0x53415429u, 0x5341542Au, 0x5341542Bu}) {
+    for (uint32_t old_magic : {0x53415429u, 0x5341542Au, 0x5341542Bu, 0x5341542Cu}) {
         flash_record = pcb_settings;
         flash_record.magic = old_magic;
         for (int ch = 0; ch < 4; ++ch) flash_record.io_config.microswitch[ch] = 60 + ch;
@@ -237,5 +241,6 @@ int main(int argc, char **argv) {
     settings_storage_init();
     assert(std::string(project_preset_match(settings_snapshot())) == direct->id);
     test_ams_identity_http();
-    std::puts("PASS: project defaults, sparse pin numbering/gaps, NVS exact length, old format reset, current settings, two-way switch, empty channels, HTTP busy/failure, CRC readback, per-AMS identity HTTP");
+    test_feed_switch_http();
+    std::puts("PASS: project defaults, sparse pin numbering/gaps, NVS exact length, old format reset, current settings, two-way switch, empty channels, HTTP busy/failure, CRC readback, per-AMS identity HTTP, feed delay and switch HTTP");
 }

@@ -8,13 +8,9 @@
  * 判断引脚是否为系统保留脚
  * @param pin 引脚号
  * @return true 表示不可分配
- * 按平台过滤微动专用脚、Flash、USB、控制台串口和启动绑带等保留引脚
+ * 按平台过滤 Flash、USB、控制台串口等保留引脚；总微动与其他输入统一校验
  */
 static bool is_reserved_pin(int pin) {
-#if defined(PIN_SWITCH)
-    if (pin != PIN_NONE && pin == PIN_SWITCH) return true;
-#endif
-
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
     // Flash 和控制台不可重分配；经典款的 USB 焊盘可用作普通 GPIO
     if (pin == 11 || (pin >= 14 && pin <= 17)) return true;
@@ -81,16 +77,20 @@ static bool pin_invalid_after_switch(int pin, bool i2c_configured, int sda, int 
 }
 
 /**
- * 清理切换后失效的通道引脚
+ * 清理切换后失效的通道和总微动引脚
  * @param config 待清理的 IO 配置
  * @param i2c_configured I2C 总线是否启用
  * @param sda I2C SDA 引脚
  * @param scl I2C SCL 引脚
  * @return 被清空的引脚数量，供日志使用
- * 电机任一脚失效就整对清成 PIN_NONE，表示通道待配置；微动脚单独清理，其余接线保持不变
+ * 电机任一脚失效就整对清成 PIN_NONE；通道微动和总微动单独清理，其余接线保持不变
  */
 int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda, int scl) {
     int cleared = 0;
+    if (pin_invalid_after_switch(config.switch_pin, i2c_configured, sda, scl)) {
+        config.switch_pin = PIN_NONE;
+        cleared++;
+    }
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
         if (pin_invalid_after_switch(config.motor[i][0], i2c_configured, sda, scl) ||
             pin_invalid_after_switch(config.motor[i][1], i2c_configured, sda, scl)) {
@@ -163,7 +163,7 @@ static bool i2c_pin_available(int pin, bool sda) {
  * @param error 可选的错误文本输出
  * @param bus 可选候选总线接线，空指针使用当前配置
  * @return true 表示配置合法
- * 检查通道数、与总线/通道引脚的冲突、SDA/SCL 是否不同以及平台复用限制
+ * 检查通道数、与总线/通道/总微动引脚的冲突、SDA/SCL 是否不同以及平台复用限制
  */
 bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active_channels, String *error,
                             const IoBusConfig *bus) {
@@ -177,6 +177,10 @@ bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active
     }
     if (!i2c_pin_available(sda, true) || !i2c_pin_available(scl, false) || sda == scl) {
         if (error) *error = "SDA、SCL 必须使用不同的可用主控 GPIO，不能使用系统保留引脚或 PCF 扩展引脚";
+        return false;
+    }
+    if (config.switch_pin != PIN_NONE && (config.switch_pin == sda || config.switch_pin == scl)) {
+        if (error) *error = "所选 GPIO 已被五通总微动占用，请先修改总微动接线";
         return false;
     }
     for (int ch = 0; ch < active_channels; ch++) {
@@ -245,7 +249,7 @@ String io_config_pin_label(int pin) {
  * @param error 可选的错误文本输出
  * @param bus 可选候选总线接线，空指针使用当前配置
  * @return true 表示配置合法
- * 检查电机和微动引脚是否可用、是否重复占用同一引脚
+ * 检查电机、通道微动和五通总微动引脚是否可用、是否重复占用同一引脚
  */
 bool io_config_validate(const IoConfig &config, int active_channels, String *error, const IoBusConfig *bus) {
     if (active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
@@ -253,8 +257,13 @@ bool io_config_validate(const IoConfig &config, int active_channels, String *err
         return false;
     }
 
-    int assigned[IO_CONFIG_MAX_CHANNELS * 3] = {};
+    if (!io_config_pin_available(config.switch_pin, true, bus)) {
+        if (error) *error = "五通总微动引脚不可用：" + io_config_pin_label(config.switch_pin);
+        return false;
+    }
+    int assigned[IO_CONFIG_MAX_CHANNELS * 3 + 1] = {};
     int assigned_count = 0;
+    if (config.switch_pin != PIN_NONE) assigned[assigned_count++] = config.switch_pin;
     for (int ch = 0; ch < active_channels; ch++) {
         for (int role = 0; role < 3; role++) {
             const int pin = role < 2 ? config.motor[ch][role] : config.microswitch[ch];
@@ -314,7 +323,7 @@ void io_config_append_pin_options(String &json, bool i2c_only) {
  * @param active_channels 启用通道数
  * @param error 可选的错误文本输出
  * @return true 表示配置合法
- * 按传入的候选 I2C 接线检查冲突，同时检查 RX/TX/DE 合法性、重复占用和平台复用限制
+ * 按候选 I2C、通道和总微动接线检查冲突，同时检查 RX/TX/DE 合法性、重复占用和平台复用限制
  */
 bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
                             const IoConfig &config, int active_channels, String *error) {
@@ -329,15 +338,16 @@ bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
         const int pin = pins[i];
         bool available = is_real_gpio(pin);
 #if defined(ARDUINO_ARCH_RP2040)
-        // 兼容 Pico 旧板级映射中 PIN_SWITCH 与默认 UART0 TX 共用 GPIO0 的布局
-        // 该引脚仍不开放给通道和 I2C；不在本次 C3 配置中改变旧板行为
-        if (i == 1 && pin == PIN_BUS_TX && pin == PIN_SWITCH) available = true;
         // 固定 UART0：RX=1/13/17/29，TX=0/12/16/28
         if (i == 0) available = available && (pin == 1 || pin == 13 || pin == 17 || pin == 29);
         if (i == 1) available = available && (pin == 0 || pin == 12 || pin == 16 || pin == 28);
 #endif
         if (!available) {
             if (error) *error = String(roles[i]) + " 必须使用支持该功能的主控 GPIO，不能使用系统保留脚或 PCF 扩展脚";
+            return false;
+        }
+        if (pin == config.switch_pin) {
+            if (error) *error = io_config_pin_label(pin) + " 已被五通总微动占用";
             return false;
         }
         for (int j = 0; j < i; j++) if (pin == pins[j]) {

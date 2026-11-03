@@ -5,9 +5,10 @@
  * 展开项目的完整通道接线
  * @param preset 项目预设
  * @param config 输出的通道配置
- * 清空全部未定义通道，防止切换项目后残留旧接线
+ * 清空全部未定义通道，并替换五通总微动输入，防止切换项目后残留旧接线
  */
 void project_preset_io(const ProjectPreset &preset, IoConfig &config) {
+    config.switch_pin = preset.switch_pin;
     for (int ch = 0; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
         config.motor[ch][0] = ch < preset.wired_channels ? preset.pins[ch][0] : PIN_NONE;
         config.motor[ch][1] = ch < preset.wired_channels ? preset.pins[ch][1] : PIN_NONE;
@@ -60,7 +61,7 @@ const ProjectPreset *project_preset_find(const char *id) {
  * 把预设接线写入候选设置
  * @param preset 已通过校验的项目
  * @param settings 由当前快照创建的候选设置
- * 保留其他参数，仅约束并发上限；I2C 只存 SDA/SCL，CRC 由存储接口重新计算
+ * 替换总线、通道和总微动接线，保留时长等其他参数，仅约束并发上限；CRC 由存储接口重新计算
  */
 void project_preset_apply(const ProjectPreset &preset, SettingsData &settings) {
     settings.ams_count = preset.ams;
@@ -78,7 +79,7 @@ void project_preset_apply(const ProjectPreset &preset, SettingsData &settings) {
  * 根据实际接线识别当前项目
  * @param settings 当前设置快照
  * @return 匹配的项目 ID，空字符串表示自定义
- * 比较所有通道含停用通道，模式 1 下忽略不使用的 DE 引脚
+ * 比较总微动和所有通道含停用通道，模式 1 下忽略不使用的 DE 引脚
  */
 const char *project_preset_match(const SettingsData &settings) {
     for (const auto &preset : PROJECT_PRESETS) {

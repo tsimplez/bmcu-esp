@@ -41,6 +41,7 @@ const path = require('node:path');
         bus: { rx: preset.rx, tx: preset.tx, de: preset.de, pins: gpioPins },
         pcf: { sda: preset.sda, scl: preset.scl, configured: preset.sda !== 255, pins: gpioPins },
         io: { pins: preset.sda !== 255 ? pins : gpioPins,
+          switch_pin: preset.switch_pin,
           motor: Array.from({ length: 16 }, (_, i) => preset.pins[i]?.slice(0, 2) || [255, 255]),
           microswitch: Array.from({ length: 16 }, (_, i) => preset.pins[i]?.[2] ?? 255) } });
     };
@@ -88,6 +89,7 @@ const path = require('node:path');
     await page.selectOption('#project-select', pcb.id);
     assert.equal(posts.length, 0, '选择项目只预览，不写入');
     assert.equal(await page.locator('#project-pins tr').count(), 8);
+    assert.match(await page.locator('#project-summary').textContent(), /五通总微动无/);
     assert.deepEqual(await page.locator('#project-pins tr').first().locator('td').allTextContents(),
       ['1', '55（io扩展1 P5）', '54（io扩展1 P4）', '50（io扩展1 P0）']);
     const secondAmsPins = [

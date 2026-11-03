@@ -97,6 +97,7 @@ int BMCU_channel_filament_state(int motorNum);
 
 void BMCU_apply_channel_modes();
 
+// 登记接线变更，下一轮 BMCU_run() 应用到硬件
 void BMCU_apply_io_config();
 
 extern void BMCU_init();

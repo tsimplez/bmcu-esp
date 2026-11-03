@@ -11,6 +11,7 @@ struct ProjectPreset {
     IoBusConfig bus;
     int wired_channels;
     int pins[IO_CONFIG_MAX_CHANNELS][3]; // 进料、退料、微动；未列出的通道统一清空
+    int switch_pin = PIN_SWITCH; // 五通总微动默认引脚，未指定时采用平台默认值
 };
 
 // 项目接线的唯一数据源：新增项目只需追加记录，ID 保持唯一且稳定。

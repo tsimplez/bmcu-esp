@@ -130,7 +130,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="project-preview-body">
     <div id="project-summary"></div>
     <table class="tbl"><thead><tr><th>通道</th><th>进料</th><th>退料</th><th>微动</th></tr></thead><tbody id="project-pins"></tbody></table>
-    <div class="hint">应用会替换 RS485、I2C、AMS 数量和全部通道接线；未定义的通道设为“无”。请确认实物接线与预览一致。</div>
+    <div class="hint">应用会替换 RS485、I2C、AMS 数量、全部通道和五通总微动接线；未定义的输入或通道设为“无”。请确认实物接线与预览一致。</div>
     <div id="project-state" class="hint" role="status"></div>
     </div>
     <div class="project-preview-actions">
@@ -182,12 +182,16 @@ button:disabled{opacity:.45;cursor:not-allowed}
         <option value="10000">10s</option>
         <option value="15000">15s</option>
       </select></label>
+      <label class="row"><span style="color:var(--dim)">进料停止延迟（毫秒）</span>
+      <input id="feed-stop-delay-ms" type="number" min="0" max="29999" step="1" required style="width:104px"
+        onchange="saveField(this,'feed_stop_delay_ms')"></label>
     </div>
     <table class="tbl channel-table">
       <thead><tr><th>通道</th><th>状态(自动: 需要微动)</th><th>退料超时(秒)</th><th>手动进退料</th></tr></thead>
       <tbody id="chbody"></tbody>
     </table>
     <div id="manual-state" class="hint">正在读取设备状态…</div>
+    <div class="hint">进料停止延迟可填 0～29999 毫秒，默认 1000；0 表示立即停车。修改后用于下一次进料结束，已开始的延迟保持原截止时间。</div>
   </div>
   <div class="card">
     <h2>I2C 设备与温湿度</h2>
@@ -284,12 +288,16 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div id="io-config-box" class="io-config">
       <h3>电机与微动引脚</h3>
       <div class="hint">通道数随上方 AMS 数量联动新增通道或修改接线前请停止电机动作；引脚不能重复带警告的引脚可能影响芯片启动</div>
+      <div class="row" style="margin-top:10px">
+        <label for="io-switch">五通总微动</label><span id="io-switch-control"></span>
+      </div>
+      <div class="hint">选“无”关闭；支持主控 GPIO 和已配置 I2C 的 PCF8575 扩展脚。拉低触发时，当前选中且空闲的通道进料 200 毫秒。与下方通道接线一起保存。</div>
       <table class="tbl">
         <thead><tr><th>通道</th><th>进料</th><th>退料</th><th>微动</th></tr></thead>
         <tbody id="iobody"></tbody>
       </table>
       <div class="row" style="margin-top:10px">
-        <button id="save-io" class="primary" onclick="saveIoConfig()">保存 AMS 数量与通道引脚</button>
+        <button id="save-io" class="primary" onclick="saveIoConfig()">保存 AMS 数量与引脚</button>
         <span id="io-state" class="hint">引脚配置未加载</span>
       </div>
     </div>
@@ -849,7 +857,8 @@ const renderProjectPreview=()=>{
       ['RS485 模式',preset.rs485 ? '模式 1：只用 RXD / TXD' : '模式 2：RO / DI / RE / DE'],
       ['总线接线','RX '+pinLabel(preset.rx)+' / TX '+pinLabel(preset.tx)+(preset.rs485===2?' / DE '+pinLabel(preset.de):'')],
       ['AMS 数量',preset.ams+' 个'],
-      ['I2C 总线',preset.sda===255?'无':'SDA '+pinLabel(preset.sda)+' / SCL '+pinLabel(preset.scl)]
+      ['I2C 总线',preset.sda===255?'无':'SDA '+pinLabel(preset.sda)+' / SCL '+pinLabel(preset.scl)],
+      ['五通总微动',pinLabel(preset.switch_pin??255)]
     ]
     for(const [label,value] of details){
       const row=document.createElement('div'),name=document.createElement('span'),text=document.createElement('b')
@@ -1000,13 +1009,13 @@ const updateBusLabels=()=>{
   }
   $('save-bus').disabled=!BUS_READY||BUS_SAVING||missing||duplicate||conflict
   $('bus-state').textContent=!BUS_READY?'正在读取总线配置…':duplicate?'RX、TX、DE 不能重复':
-    conflict?'所选 GPIO 已被通道或 PCF8575 占用，请先修改并保存对应接线':missing?'请选择完整接线':
+    conflict?'所选 GPIO 已被通道、总微动或 I2C 占用，请先修改并保存对应接线':missing?'请选择完整接线':
     warnings.join(' ')||'模式与引脚将在保存并重启后生效'
 }
 /**
  * 渲染 BambuBus 接线配置
  * @param {Object} d /api/settings 返回的完整配置
- * 按当前 configured 状态建立 I2C 占用表，填充 RX、TX、DE 并刷新冲突提示
+ * 建立通道、总微动和已配置 I2C 的占用表，填充 RX、TX、DE 并刷新冲突提示
  */
 const renderBus=(d)=>{
   const b=d.bus||{};BUS_READY=!!d.bus;BUS_SAVING=false;BUS_MODE=d.rs485===2?2:1;BUS_USES={};BUS_APPLIED={}
@@ -1023,6 +1032,7 @@ const renderBus=(d)=>{
     pins.forEach((pin,role)=>add(BUS_USES,pin,'通道'+(ch+1)+['进料','退料','微动'][role]))
   }
   if(d.pcf?.configured){add(BUS_USES,d.pcf.sda,'I2C SDA');add(BUS_USES,d.pcf.scl,'I2C SCL')}
+  add(BUS_USES,d.io?.switch_pin,'五通总微动')
   for(const key of ['rx','tx','de']){
     const sel=$('bus-'+key);sel.textContent='';sel.disabled=!BUS_READY
     for(const pin of b.pins||[]){
@@ -1071,7 +1081,7 @@ let PCF_SAVING=false
 const pcfPinIsNone=(sel)=>sel.value===''||sel.value==='255'
 /**
  * 刷新 I2C 引脚标签和保存状态
- * 检查 SDA/SCL 是否成对配置、重复、BambuBus 冲突和通道占用
+ * 检查 SDA/SCL 是否成对配置、重复、BambuBus 冲突及通道/总微动占用
  */
 const updatePcfLabels=()=>{
   const sda=$('pcf-sda'),scl=$('pcf-scl'),warnings=[]
@@ -1080,7 +1090,7 @@ const updatePcfLabels=()=>{
   const half=sdaNone!==sclNone
   const duplicate=configured&&!sdaNone&&!sclNone&&sda.value===scl.value
   const changed=configured!==PCF_DEV_ENABLED
-  // 通道占用不拦截保存：固件会清空与 SDA/SCL 冲突的通道引脚
+  // 输入输出占用不拦截保存：固件会清空与 SDA/SCL 冲突的通道和总微动引脚
   // 只有 BambuBus 占用必须先去改总线接线
   let busConflict=false, channelConflict=false
   for(const sel of [sda,scl]){
@@ -1092,7 +1102,7 @@ const updatePcfLabels=()=>{
     }
     sel.title=sel.selectedOptions[0]?.title||''
     if(!isNone&&sel.title) warnings.push(sel.title)
-    if(!isNone&&(PCF_USES[sel.value]||[]).some(u=>u.indexOf('通道')===0)) channelConflict=true
+    if(!isNone&&(PCF_USES[sel.value]||[]).some(u=>u.indexOf('通道')===0||u==='五通总微动')) channelConflict=true
     if(!isNone&&(BUS_APPLIED[sel.value]||[]).length) busConflict=true
   }
   $('save-pcf').disabled=PCF_SAVING||half||duplicate||busConflict
@@ -1101,19 +1111,21 @@ const updatePcfLabels=()=>{
     duplicate?'SDA 和 SCL 不能相同':
     busConflict?'所选 GPIO 已被 BambuBus 占用，请先修改并保存总线接线':
     hint?hint:
-    channelConflict?'SDA/SCL 占用了通道引脚，保存时会清空这些通道接线':
+    channelConflict?'SDA/SCL 占用了通道或总微动引脚，保存时会清空对应接线':
     changed?(configured?'保存后启用 I2C 总线，可用 PCF8575 扩展脚并重启':'保存后关闭 I2C 总线，扩展脚会被清空并重启'):
     configured?'I2C 总线已配置，保存后重启生效':'I2C 总线未配置；同时选择 SDA、SCL 后保存启用'
 }
 /**
  * 渲染 I2C 总线配置
  * @param {Object} d /api/settings 返回的完整配置
- * 按 configured 读取 I2C 状态，载入 SDA/SCL 下拉框及通道、总线引脚占用表
+ * 按 configured 读取 I2C 状态，载入 SDA/SCL 下拉框及通道、总微动和总线引脚占用表
  */
 const renderPcf=(d)=>{
   const p=d.pcf||{}
   PCF_DEV_ENABLED=!!p.configured
   PCF_USES=JSON.parse(JSON.stringify(BUS_APPLIED))
+  if(d.io?.switch_pin!=null&&d.io.switch_pin!==255)
+    (PCF_USES[d.io.switch_pin]??=[]).push('五通总微动')
   for(let ch=0;ch<d.channels;ch++){
     const pins=[...(d.io?.motor[ch]||[]),d.io?.microswitch[ch]]
     pins.forEach((pin,role)=>{
@@ -1196,12 +1208,14 @@ const ioMakeSelect=(id,value,allowNone)=>{
   return sel
 }
 /**
- * 统计当前页面中每个引脚被哪些通道使用
+ * 统计当前页面中每个引脚的通道和总微动用途
  * @return {Object<number,string[]>} 引脚编号到用途名称的映射
- * 扫描进料、退料和微动下拉框，为重复引脚提示提供依据
+ * 扫描进料、退料、通道微动和总微动下拉框，为重复引脚提示提供依据
  */
 const ioUsageMap=()=>{
   const uses = {};
+  const sw=$('io-switch')
+  if(sw&&sw.value!==''&&sw.value!=='255') uses[+sw.value]=['五通总微动']
   for(let i=0; i<IO_CHANNELS; i++){
     const fields = [['io-mf' + i, (i + 1) + '进料'], ['io-mb' + i, (i + 1) + '退料'], ['io-sw' + i, (i + 1) + '微动']];
     for(let k=0; k<fields.length; k++){
@@ -1215,11 +1229,11 @@ const ioUsageMap=()=>{
   return uses
 }
 /**
- * 刷新通道引脚选项的占用文字
+ * 刷新通道与总微动引脚选项的占用文字
  * 把同一引脚的当前用途追加到选项文本，并同步下拉框警告提示和徽标
  */
 const refreshIoOptionLabels=()=>{
-  const uses = ioUsageMap(), selects = document.querySelectorAll('#iobody select');
+  const uses = ioUsageMap(), selects = document.querySelectorAll('#iobody select, #io-switch');
   for(let i=0; i<selects.length; i++){
     const options = selects[i].options;
     for(let k=0; k<options.length; k++){
@@ -1242,10 +1256,15 @@ const refreshIoOptionLabels=()=>{
 }
 /**
  * 校验并显示通道引脚配置问题
- * 检查空值、重复引脚和电机未配置的通道，更新提示文字和错误样式
+ * 检查通道与总微动的空值、重复引脚及电机未配置的通道，更新提示文字和错误样式
  */
 const updateIoWarnings=()=>{
   let seen = {}, duplicate = false, missing = false;const unset = [];
+  const sw=$('io-switch')
+  if(sw){
+    missing=sw.value==='';sw.classList.toggle('bad',missing)
+    if(!missing&&sw.value!=='255') seen[+sw.value]=true
+  }
   for(let i=0; i<IO_CHANNELS; i++){
     const f=$('io-mf'+i), b=$('io-mb'+i);
     if(f&&b&&f.value==='255'&&b.value==='255') unset.push(i+1)
@@ -1267,13 +1286,14 @@ const updateIoWarnings=()=>{
   $('io-state').classList.toggle('error',duplicate||missing)
 }
 /**
- * 渲染所有通道的引脚配置表
+ * 渲染总微动输入和所有通道的引脚配置表
  * @param {Object} d 包含通道数量和引脚配置的 API 数据
- * 重建表格行和引脚下拉框，并立即执行引脚冲突检查
+ * 重建总微动下拉框、表格行和通道引脚下拉框，并立即执行引脚冲突检查
  */
 const renderIoConfig=(d)=>{
   IO_CHANNELS=d.channels||0
   IO_PIN_OPTIONS=d.io&&d.io.pins||[]
+  $('io-switch-control').replaceChildren(ioMakeSelect('io-switch',d.io?.switch_pin??255,true))
   const body = $('iobody');body.textContent=''
   for(let i=0; i<IO_CHANNELS; i++){
     const tr = document.createElement('tr'), td = document.createElement('td');td.textContent=i+1;tr.appendChild(td)
@@ -1288,11 +1308,12 @@ const renderIoConfig=(d)=>{
 }
 /**
  * 预览修改 AMS 数量后的通道表
- * 保留尚未保存的引脚选择，按新数量扩展或收缩表格，并提示待保存通道数
+ * 保留总微动和通道引脚草稿，按新数量扩展或收缩表格，并提示待保存通道数
  */
 const previewAms=()=>{
   if(!IO_DRAFT) return
   IO_DIRTY=true
+  IO_DRAFT.io.switch_pin=$('io-switch').value
   // 在数量来回切换时保留尚未保存的引脚选择
   for(let i=0;i<IO_CHANNELS;i++){
     IO_DRAFT.io.motor[i]=[$('io-mf'+i).value,$('io-mb'+i).value]
@@ -1303,12 +1324,16 @@ const previewAms=()=>{
   $('ams-hint').textContent='待保存：'+$('p-ams').value+' 个 AMS，共 '+IO_CHANNELS+' 通道；请在下方配置引脚后保存数量与引脚减少数量会停止并移除停用通道的排队动作'
 }
 /**
- * 保存 AMS 数量和全部通道引脚
+ * 保存 AMS 数量、总微动和全部通道引脚
  * @return {Promise<void>} 保存流程完成的 Promise
  * 检查缺项和重复引脚，提交 /api/settings，成功后重新读取并渲染配置
  */
 const saveIoConfig=async()=>{
   let seen = {}, body = new URLSearchParams({ams:$('p-ams').value}), duplicate = false;
+  const sw=$('io-switch')
+  if(sw.value===''){toast('请选择五通总微动引脚或“无”');return}
+  body.append('io_switch',sw.value)
+  if(sw.value!=='255') seen[Number(sw.value)]=true
   for(let i=0;i<IO_CHANNELS;i++){
     for(const key of ['io-mf'+i,'io-mb'+i,'io-sw'+i]){
       const el=$(key)
@@ -1385,10 +1410,11 @@ const loadPara=()=>{
   return fetch('/api/settings').then(r=>r.json()).then((d)=>{
     $('manual-ms').value=String(d.manual_ms||300)
     $('auto-ms').value=String(d.auto_ms!=null?d.auto_ms:1000)
+    $('feed-stop-delay-ms').value=String(d.feed_stop_delay_ms??1000)
     const limit=$('motor-limit');limit.textContent=''
     for(let i=1;i<=d.channels;i++) limit.add(new Option(i,i))
     limit.value=d.motor_limit;
-    ['manual-ms','auto-ms','motor-limit'].forEach(id=>$(id).dataset.saved=$(id).value)
+    ['manual-ms','auto-ms','feed-stop-delay-ms','motor-limit'].forEach(id=>$(id).dataset.saved=$(id).value)
     const ams = $('p-ams');ams.textContent=''
     for(let a=1; a<=d.maxams; a++){
       const op = document.createElement('option');op.value=a;op.textContent=a;ams.appendChild(op);}
