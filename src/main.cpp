@@ -38,7 +38,7 @@ void loop(){
         // 原有核心逻辑：喂狗 → 串口调试 → BMCU业务
         hal_watchdog_feed();
         BMCU_run();      // Handles BMCU protocol and BambuBus
-        BambuBus_save_run(); // 总线空闲时限频保存耗材记录
+        BambuBus_save_run(); // 总线空闲时限频保存离线设置和耗材记录
         env_sensor_run(); // 非阻塞刷新 AHT20/BMP280 读数
 
         // 检查微动开关状态并更新自动模式下的通道状态

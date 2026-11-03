@@ -66,6 +66,22 @@ extern uint32_t BambuBus_rx_dropped_count();
 
 extern uint32_t BambuBus_last_valid_packet_age_ms();
 
+// 堵转按目标 AMS 锁存，退料中保存目标通道离线后自动解除；手动解除不恢复通道模式。
+struct BambuBusPauseTestStatus {
+    bool available;
+    bool active;
+    int pending; // 1=等待触发，-1=等待解除，0=无请求
+    int channel; // 本次/上次测试的全局通道，-1=尚未测试
+    int candidate_channel; // 当前允许触发的全局通道，-1=不可用
+    uint32_t frames;
+    bool stop_seen;
+    const char *result;
+};
+
+bool BambuBus_request_pause_test(bool enable);
+
+BambuBusPauseTestStatus BambuBus_pause_test_status();
+
 extern bool BambuBus_read();
 
 extern void BambuBus_set_need_to_save();

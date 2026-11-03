@@ -87,6 +87,20 @@ struct _filament_ext {
 
 // 每个 AMS 的 4 个通道对应的内部运动扩展状态
 static _filament_ext filament_ext[4][4];
+// 堵转反馈保持到目标进入退料中并保存离线模式；后台保存失败时继续锁存。
+static struct PauseTest {
+    int channel = -1;
+    int requested_channel = -1;
+    int request = 0;
+    bool active = false;
+    bool offline_pending = false;
+    uint32_t frames = 0;
+    bool stop_seen = false;
+    const char *result = "idle";
+} pause_test;
+
+static void pause_test_run(uint32_t now);
+
 // 当前协商使用的 AMS 总线地址
 static uint16_t bambubus_ams_address = 0x0000;
 // 各 AMS 是否已完成在线检测注册
@@ -843,9 +857,10 @@ static void BambuBUS_UART_Init(const uint32_t baud) {
 
 /**
  * 初始化 BambuBus 协议层
- * 加载耗材记录、复位运动与注册状态、生成各 AMS 共用身份，再以 1.25Mbps 启动接收回调；仅在启动时调用
+ * 加载耗材记录、复位运动、测试与注册状态、生成各 AMS 共用身份，再以 1.25Mbps 启动接收回调；仅在启动时调用
  */
 void BambuBus_init() {
+    pause_test = PauseTest();
     const bool _init_ready = BambuBus_read();
     if (RS485_MODE == RS485_MODE_DE) {
         digitalWrite(BUS_DE, LOW);
@@ -1317,21 +1332,41 @@ static void set_prepare_response(unsigned char *out, const uint8_t ams_num, cons
 }
 
 /**
+ * 在目标 AMS 的运动回复中持续注入锁存的堵转反馈
+ * @param payload 从 AMS 字段开始的运动载荷，至少 12 字节
+ * @param ams_num 当前回复的 AMS 编号
+ * 离线模式保存成功前覆盖目标 AMS 的压力及相邻字段；本函数不改变耗材和电机状态
+ * 回复按所属 AMS 隔离，后续统一计算 CRC；无通道轮询和同 AMS 换槽也不能清除故障
+ */
+static void apply_pause_test_response(unsigned char *payload, const uint8_t ams_num) {
+    if (!pause_test.active || pause_test.channel / 4 != ams_num) return;
+    // 与 BMCU-U 的 Cxx/Dxx 堵转路径一致：小端 F06F / 1CE7。
+    payload[8] = 0x6F; payload[9] = 0xF0;
+    payload[10] = 0xE7; payload[11] = 0x1C;
+    if (++pause_test.frames == 1)
+        LOG_MAIN("[pause-test] 通道 %d 开始反馈 F06F/1CE7，请在打印机上确认是否暂停", pause_test.channel + 1);
+}
+
+/**
  * 回复短包运动请求
  * @param buf 收到的请求报文
  * @param length 请求长度
- * 要求完整的 12 字节请求；重建基础响应，按状态填充准备序列，最后计算 CRC
+ * 要求完整的 12 字节请求；先应用退料离线状态，再填充准备序列和暂停反馈，最后计算 CRC
+ * 准备表中的位图必须由真实状态覆盖，避免离线通道在打印机重试准备时重新报在线
  */
 static void send_for_Cxx(const unsigned char *buf, const int length) {
     if (!buf || length < 12) return;
 
     // Cxx 的通道位于 [7]、运动标志位于 [8]；与 Dxx 的布局不同
     if (!process_motion_state_machine(buf[5], buf[7], buf[6], buf[8])) return;
+    pause_test_run(millis());
     now_op_num = buf[7];
     memcpy(Cxx_res, Cxx_template, sizeof(Cxx_res));
     Cxx_res[1] = 0xC0 | (package_num << 3);
     Cxx_res[38] = set_motion_response(Cxx_res + 5, buf[5]);
     set_prepare_response(Cxx_res, buf[5], Cxx_res[38]);
+    Cxx_res[29] = get_filament_left_char(buf[5]);
+    apply_pause_test_response(Cxx_res + 5, buf[5]);
 
     package_send_with_crc(Cxx_res, sizeof(Cxx_res));
     if (package_num < 7)
@@ -1369,7 +1404,7 @@ static uint8_t res_for_06_num = 0xFF;
  * @param buf 收到的请求报文
  * @param length 请求长度
  * 解析 AMS/通道/状态标志，驱动状态机并生成包含在线、NFC、长度和压力的 Dxx 响应
- * 与 Cxx 共用状态和反馈；回显请求通道，保留本机温湿度与 NFC 数据，不消耗 Cxx 准备序列
+ * 与 Cxx 共用退料离线及暂停反馈，在组装在线位图前应用；回显请求通道，保留温湿度与 NFC 数据，不消耗 Cxx 准备序列
  */
 static void send_for_Dxx(const unsigned char *buf, const int length) {
     if (!buf || length < 13) return;
@@ -1379,6 +1414,7 @@ static void send_for_Dxx(const unsigned char *buf, const int length) {
     const unsigned char AMS_num = buf[5];
     // Dxx 的运动标志位于 [7]、通道位于 [9]
     if (!process_motion_state_machine(AMS_num, buf[9], buf[6], buf[7])) return;
+    pause_test_run(millis());
     now_op_num = buf[9];
     memcpy(Dxx_res, Dxx_template, sizeof(Dxx_res));
 
@@ -1399,6 +1435,7 @@ static void send_for_Dxx(const unsigned char *buf, const int length) {
     Dxx_res[12] = buf[9];
     Dxx_res[13] = filament_flag_NFC;
     set_motion_response(Dxx_res + 17, AMS_num);
+    apply_pause_test_response(Dxx_res + 17, AMS_num);
 
     // AHT20 有效时把温湿度写入 AMS 长包回复；无效或未检测到时恢复固定默认值，
     // 避免把上一次的旧读数继续发给打印机
@@ -1961,6 +1998,112 @@ uint32_t BambuBus_last_valid_packet_age_ms() {
 }
 
 /**
+ * 查找当前允许触发暂停实验的耗材通道
+ * @param now 当前毫秒时间
+ * @return 正在使用的全局通道；通信或运动状态不满足时返回 -1
+ * 同时要求有效心跳、最近一秒的合法报文、非离线模式和正在使用反馈，避免使用旧通道或离线重试
+ */
+static int pause_test_candidate(const uint32_t now) {
+    if (!heartbeat_seen || heartbeat_timed_out || now - last_heartbeat_ms >= 10000u ||
+        !bus_packet_seen || bus_packet_timed_out || now - last_bus_packet_ms > 1000u) return -1;
+    const int channel = data_save.BambuBus_now_filament_num;
+    if (channel < 0 || channel >= active_channel_count() || channel >= 16) return -1;
+    if (CHANNEL_MODE[channel] == CHANNEL_MODE_OFFLINE) return -1;
+    const auto &ext = filament_ext[channel / 4][channel % 4];
+    return ext.motion == filament_motion_internal::on_use && ext.last_time_valid &&
+           now - ext.last_time_ticks <= 1000u ? channel : -1;
+}
+
+/**
+ * 登记网页暂停实验或解除请求
+ * @param enable true 请求触发，false 请求解除
+ * @return true 表示请求已登记；无可用通道或已有测试请求时拒绝触发
+ * 这里只登记目标，由主循环再次校验并执行；解除可重复提交且允许断线登记，但不恢复离线模式或取消待保存
+ */
+bool BambuBus_request_pause_test(const bool enable) {
+    if (!enable) {
+        pause_test.request = -1;
+        return true;
+    }
+    const int channel = pause_test_candidate(millis());
+    if (pause_test.active || pause_test.offline_pending || pause_test.request || channel < 0) return false;
+    pause_test.requested_channel = channel;
+    pause_test.request = 1;
+    return true;
+}
+
+/**
+ * 读取暂停实验的状态快照
+ * @return 可用通道、排队请求、故障锁存状态、已反馈帧数和结束原因
+ * 不改变测试状态；停止供料指令仅作为观察结果，不能据此声称打印任务已暂停
+ */
+BambuBusPauseTestStatus BambuBus_pause_test_status() {
+    const uint32_t now = millis();
+    const int candidate = pause_test_candidate(now);
+    return {candidate >= 0 && !pause_test.active && !pause_test.offline_pending && !pause_test.request,
+            pause_test.active, pause_test.request, pause_test.channel, candidate,
+            pause_test.frames, pause_test.stop_seen, pause_test.result};
+}
+
+/**
+ * 结束暂停实验并记录观察结果
+ * @param reason 结束原因，供网页和主板日志显示
+ * 保留通道和反馈帧数供用户回报，不恢复通道模式或发送恢复打印命令
+ */
+static void finish_pause_test(const char *reason) {
+    pause_test.active = false;
+    pause_test.result = reason;
+    LOG_MAIN("[pause-test] 通道 %d 结束，原因=%s，反馈=%lu 帧，停止供料=%s",
+             pause_test.channel + 1, reason, static_cast<unsigned long>(pause_test.frames),
+             pause_test.stop_seen ? "已收到" : "未收到");
+}
+
+/**
+ * 在主循环中应用暂停请求，目标进入退料中后切换离线并等待后台保存
+ * @param now 当前毫秒时间
+ * 停止供料和请求退料不会提前解除；仅目标仍为当前通道且进入 pull_back 时设置离线
+ * 只改目标通道的模式和有料状态，不清理运动目标或操作电机；保存成功后才自动解除堵转
+ */
+static void pause_test_run(const uint32_t now) {
+    const int request = pause_test.request;
+    pause_test.request = 0;
+    if (request < 0) {
+        finish_pause_test("cleared");
+        return;
+    }
+    if (request > 0) {
+        const int channel = pause_test.requested_channel;
+        pause_test = PauseTest();
+        pause_test.channel = channel;
+        if (pause_test_candidate(now) != channel) {
+            finish_pause_test("rejected");
+            return;
+        }
+        pause_test.active = true;
+        pause_test.result = "active";
+        LOG_MAIN("[pause-test] 已锁存 AMS %d 的堵转反馈，触发通道 %d，等待退料中后离线", channel / 4 + 1, channel + 1);
+    }
+    if (!pause_test.active) return;
+    if (pause_test.channel < 0 || pause_test.channel >= active_channel_count() || pause_test.channel >= 16) {
+        finish_pause_test("target_disabled");
+        return;
+    }
+    if (!pause_test.stop_seen &&
+        filament_ext[pause_test.channel / 4][pause_test.channel % 4].motion == filament_motion_internal::stop_on_use) {
+        pause_test.stop_seen = true;
+        LOG_MAIN("[pause-test] 通道 %d 已收到停止供料，继续保持堵转反馈，等待退料中", pause_test.channel + 1);
+    }
+    if (!pause_test.offline_pending && data_save.BambuBus_now_filament_num == pause_test.channel &&
+        filament_ext[pause_test.channel / 4][pause_test.channel % 4].motion == filament_motion_internal::pull_back) {
+        CHANNEL_MODE[pause_test.channel] = CHANNEL_MODE_OFFLINE;
+        set_filament_online(pause_test.channel / 4, pause_test.channel % 4, false);
+        pause_test.offline_pending = true;
+        pause_test.result = "saving_offline";
+        LOG_MAIN("[pause-test] 通道 %d 已进入退料中，切为离线，等待保存后解除堵转", pause_test.channel + 1);
+    }
+}
+
+/**
  * 判断总线最近是否有活动
  * @param quiet_ms 静默时间窗口（毫秒）
  * @return true 表示当前不满足总线静默条件
@@ -2042,11 +2185,12 @@ static void log_auth_request(uint8_t *frame, const uint16_t length, const int ty
  * @return 0=无帧、发送忙或忽略其它设备帧，1=处理了本机合法帧，2=错误帧，-1=合法通信超时
  * 发送槽空闲时才预占并解析队首，每轮最多处理一帧；全部回复及日志完成后释放请求和缓冲
  * 发送忙时不消费请求、不改变业务状态，仍更新通信超时；保存由独立后台入口执行
- * 有效 0x040D/0x040E 请求独立写入主板日志，保留原始帧而不执行认证应答
+ * 每轮维护暂停实验的请求和故障锁存；有效 0x040D/0x040E 请求独立写入主板日志，不执行认证应答
  */
 int BambuBus_run() {
     int stu = 0;
     const uint32_t now = millis();
+    if (!bus_request_active) pause_test_run(now);
     if (!TX_IDLE || bus_request_active) {
         update_bus_timeouts(now);
         return bus_packet_timed_out ? -1 : 0;
@@ -2127,9 +2271,10 @@ int BambuBus_run() {
 }
 
 /**
- * 在总线空闲时保存耗材记录
+ * 在总线空闲时优先保存暂停触发的离线模式，再保存耗材记录
  * 每轮先更新一秒冷却标记，再检查收发静默；写入并回读成功才清除待保存标记，失败下轮限频重试
- * 冷却到期会被锁存为就绪，即使长期没有新保存请求也不会被旧截止时间阻塞
+ * 离线模式经设置存储的 CRC 和回读校验成功后才解除堵转；失败继续锁存并每秒重试
+ * 用户在网页恢复模式后取消离线待保存，避免后台重新覆盖用户选择；冷却到期锁存为就绪
  */
 void BambuBus_save_run() {
     static bool cooling_down = false;
@@ -2137,10 +2282,22 @@ void BambuBus_save_run() {
     const uint32_t now = millis();
     if (cooling_down && now - save_finished_ms >= 1000u)
         cooling_down = false;
-    if (!BambuBus_need_to_save || cooling_down || BambuBus_recent_activity(5u))
+    if (pause_test.offline_pending && CHANNEL_MODE[pause_test.channel] != CHANNEL_MODE_OFFLINE) {
+        pause_test.offline_pending = false;
+        finish_pause_test("restored");
+    }
+    if ((!BambuBus_need_to_save && !pause_test.offline_pending) || cooling_down || BambuBus_recent_activity(5u))
         return;
 
-    if (BambuBus_save()) {
+    if (pause_test.offline_pending) {
+        if (settings_save_to_flash()) {
+            pause_test.offline_pending = false;
+            finish_pause_test("offline");
+        } else {
+            pause_test.result = "save_failed";
+            LOG_MAIN("[pause-test] 通道 %d 离线设置写入或回读失败，保持当前反馈并限频重试", pause_test.channel + 1);
+        }
+    } else if (BambuBus_save()) {
         BambuBus_need_to_save = false;
     } else {
         LOG_MAIN("[storage] 耗材记录写入或校验失败，将在总线空闲时重试");

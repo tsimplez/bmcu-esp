@@ -43,6 +43,10 @@ const path = require('node:path');
     };
     const posts = [];
     const motorPosts = [], motorStates = [];
+    const pauseTestPosts = [];
+    const pauseTestState = { available: false, active: false, pending: 0, channel: -1,
+      candidate_channel: -1, frames: 0, stop_seen: false, result: 'idle' };
+    let failPauseTest = false, failStatus = false;
     let failSave = false;
     let failOta = false, otaChecks = 0;
     await page.route('http://bmcu.test/**', async route => {
@@ -52,7 +56,17 @@ const path = require('node:path');
         return route.fulfill({ contentType: 'text/html', body: fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8') });
       }
       let data = {};
-      if (url.pathname === '/api/motor' && req.method() === 'POST') {
+      if (url.pathname === '/api/printer/pause-test' && req.method() === 'POST') {
+        const body = new URLSearchParams(req.postData());
+        pauseTestPosts.push(body);
+        if (failPauseTest) return route.fulfill({ status: 409, json: { ok: false, msg: '测试状态已改变' } });
+        const enable = body.get('enable') === '1';
+        Object.assign(pauseTestState, { available: !enable, active: enable, pending: 0,
+          channel: enable ? pauseTestState.candidate_channel : pauseTestState.channel,
+          frames: enable ? 8 : pauseTestState.frames,
+          result: enable ? 'active' : 'cleared' });
+        return route.fulfill({ status: 202, json: { ok: true, msg: enable ? '测试请求已提交，请观察打印机' : '解除请求已提交' } });
+      } else if (url.pathname === '/api/motor' && req.method() === 'POST') {
         const body = new URLSearchParams(req.postData());
         motorPosts.push(body);
         const channel = Number(body.get('motor')), direction = Number(body.get('dir'));
@@ -82,6 +96,7 @@ const path = require('node:path');
         if (body.has('otaurl')) settings.otaurl = body.get('otaurl');
         if (body.has('feed_stop_delay_ms')) settings.feed_stop_delay_ms = Number(body.get('feed_stop_delay_ms'));
         if (body.has('io_switch')) settings.io.switch_pin = Number(body.get('io_switch'));
+        for (let i = 0; i < settings.channels; i++) if (body.has('cm' + i)) settings.cm[i] = Number(body.get('cm' + i));
         data = { ok: true, msg: '参数已保存' };
       } else if (url.pathname === '/api/settings') data = settings;
       else if (url.pathname === '/api/ota/check') {
@@ -90,16 +105,91 @@ const path = require('node:path');
           ok: true, current: '26.10.25', latest: '26.10.28', has_update: true, source: 'ghfast.top', size: 1600000,
         };
       }
-      else if (url.pathname === '/api/status') data = {
+      else if (url.pathname === '/api/status') {
+        if (failStatus) return route.abort();
+        data = {
         ...settings, mode: 'STA', ip: '192.0.2.1', chip: 'ESP32-C3', rs485: 1,
         maintenance: true, printer: 0, motors: motorStates, motor_running: motorStates.filter(m => m.dir).length,
         fl: [], uptime: 10, heap: 102400, heap_total: 204800,
         i2c: i2cStatus,
+        pause_test: pauseTestState,
       };
+      }
       await route.fulfill({ json: data });
     });
     await page.goto('http://bmcu.test/');
     await page.waitForFunction(() => document.querySelectorAll('#iobody tr').length === 4);
+    await page.click('[data-tab="experiments"]');
+    assert.equal(await page.locator('#pause-test-start').isDisabled(), true);
+    assert.equal(await page.locator('#pause-test-clear').isEnabled(), true);
+    Object.assign(pauseTestState, { available: true, candidate_channel: 6 });
+    await page.evaluate(() => refreshStatus());
+    assert.match(await page.locator('#pause-test-state').textContent(), /AMS 2 · 通道 7/);
+    await page.evaluate(() => Promise.all([sendPauseTest(true), sendPauseTest(true)]));
+    assert.equal(pauseTestPosts.length, 1, '重复触发只发出一次请求');
+    assert.equal(pauseTestPosts[0].get('enable'), '1');
+    assert.equal(await page.locator('#pause-test-start').isDisabled(), true);
+    assert.match(await page.locator('#pause-test-state').textContent(), /AMS 2 · 通道 7 · 已发送测试反馈 8 帧/);
+    assert.doesNotMatch(await page.locator('#pause-test-state').textContent(), /打印已暂停/);
+    await page.click('#pause-test-clear');
+    await page.waitForFunction(() => !pauseTestPending && !S.pause_test.active);
+    assert.equal(pauseTestPosts.at(-1).get('enable'), '0');
+    assert.match(await page.locator('#pause-test-state').textContent(), /已解除测试/);
+    failPauseTest = true;
+    await page.evaluate(() => sendPauseTest(true));
+    assert.equal(await page.locator('#pause-test-start').isEnabled(), true);
+    assert.equal(pauseTestState.active, false);
+    assert.match(await page.locator('#toast').textContent(), /测试状态已改变/);
+    failPauseTest = false;
+    Object.assign(pauseTestState, { available: false, active: true, result: 'active', stop_seen: true });
+    await page.evaluate(() => refreshStatus());
+    assert.match(await page.locator('#pause-test-state').textContent(), /已收到停止供料.*堵转持续保持，等待退料中后离线/);
+    assert.doesNotMatch(await page.locator('#pause-test-state').textContent(), /打印已暂停/);
+    assert.equal(await page.locator('#pause-test-start').isDisabled(), true);
+    assert.doesNotMatch(await page.locator('#pause-test-card').textContent(), /15 秒|到期解除|剩余/);
+    Object.assign(pauseTestState, { channel: 0, result: 'saving_offline' });
+    settings.cm[0] = 0;
+    await page.evaluate(() => refreshStatus());
+    assert.match(await page.locator('#pause-test-state').textContent(), /通道已离线，等待保存.*堵转持续保持/);
+    assert.equal(await page.inputValue('#cm0'), '0', '自动离线同步到现有模式下拉框');
+    Object.assign(pauseTestState, { result: 'save_failed' });
+    await page.evaluate(() => refreshStatus());
+    assert.match(await page.locator('#pause-test-state').textContent(), /保存失败，将自动重试.*堵转持续保持/);
+    Object.assign(pauseTestState, { active: false, result: 'offline' });
+    await page.evaluate(() => refreshStatus());
+    assert.match(await page.locator('#pause-test-state').textContent(), /已保存离线并解除堵转.*恢复在线或自动/);
+    assert.match(await page.locator('#pause-test-card').textContent(), /重启仍保持离线/);
+    for (const mode of ['1', '2']) {
+      await page.evaluate(async mode => {
+        const el = document.querySelector('#cm0'); el.value = mode;
+        await saveField(el, 'cm0');
+      }, mode);
+      await page.evaluate(() => refreshStatus());
+      assert.equal(posts.at(-1).get('cm0'), mode);
+      assert.equal(await page.inputValue('#cm0'), mode);
+      assert.match(await page.locator('#pause-test-state').textContent(), /通道已恢复(在线|自动)，堵转已解除/);
+    }
+    await page.evaluate(() => { document.querySelector('#cm1').value = '1'; });
+    await page.evaluate(() => refreshStatus());
+    assert.equal(await page.inputValue('#cm1'), '1', '轮询保留尚未提交的模式选择');
+    await page.evaluate(() => { document.querySelector('#cm1').value = '2'; });
+    failSave = true;
+    await page.evaluate(async () => { const el = document.querySelector('#cm0'); el.value = '1'; await saveField(el, 'cm0'); });
+    assert.equal(await page.inputValue('#cm0'), '2', '恢复失败时回退到已保存的模式');
+    failSave = false;
+    failStatus = true;
+    await page.evaluate(() => refreshStatus());
+    assert.equal(await page.locator('#pause-test-start').isDisabled(), true);
+    assert.equal(await page.locator('#pause-test-clear').isEnabled(), true, '连接失效时保留解除入口');
+    const beforeOfflineClick = pauseTestPosts.length;
+    await page.evaluate(() => sendPauseTest(true));
+    assert.equal(pauseTestPosts.length, beforeOfflineClick, '旧状态不能触发');
+    await page.evaluate(() => sendPauseTest(false));
+    assert.equal(pauseTestPosts.at(-1).get('enable'), '0');
+    failStatus = false;
+    Object.assign(pauseTestState, { available: false, channel: -1, candidate_channel: -1, frames: 0, result: 'idle' });
+    await page.evaluate(() => refreshStatus());
+    await page.click('[data-tab="status"]');
     assert.equal(await page.inputValue('#feed-stop-delay-ms'), '1000');
     for (const value of ['', '-1', '30000', '12.5']) {
       const before = posts.length;
@@ -391,6 +481,14 @@ const path = require('node:path');
         style: 'header,.toast{visibility:hidden!important;opacity:0!important;transition:none!important}' });
     await page.click('[data-tab="status"]');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '四片状态必须适配手机宽度');
+    await page.click('[data-tab="experiments"]');
+    Object.assign(pauseTestState, { channel: 15, active: true, frames: 1234, result: 'active' });
+    await page.evaluate(() => refreshStatus());
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '暂停实验按钮和反馈必须适配手机宽度');
+    if (process.env.WEB_TEST_PAUSE_SCREENSHOT)
+      await page.locator('#pause-test-card').screenshot({ path: process.env.WEB_TEST_PAUSE_SCREENSHOT,
+        style: 'header,.toast{visibility:hidden!important;opacity:0!important;transition:none!important}' });
+    await page.click('[data-tab="status"]');
     motorStates[0] = { dir: 0, queue_position: 1, queued_dir: -1, queued_source: 1 };
     motorStates[1] = { dir: 0, queue_position: 2, queued_dir: 1, queued_source: 2 };
     motorStates[2] = { dir: 1, source: 1, remaining_ms: -1 };
@@ -411,7 +509,7 @@ const path = require('node:path');
     assert.match(await page.locator('#run0').textContent(), /手动 · 退料/);
     if (process.env.WEB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.WEB_TEST_SCREENSHOT, fullPage: true });
     assert.deepEqual(errors, []);
-    console.log('PASS: feed delay/custom/zero/rollback, total switch/pins/drafts/conflicts, motor queue source/direction/cancel/restart, per-AMS serial/version/save/isolation/drafts/counts, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
+    console.log('PASS: pause test/start/clear/duplicate/failure/offline/status/mobile, feed delay/custom/zero/rollback, total switch/pins/drafts/conflicts, motor queue source/direction/cancel/restart, per-AMS serial/version/save/isolation/drafts/counts, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
   } finally {
     await browser.close();
   }

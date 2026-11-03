@@ -64,7 +64,7 @@ def main():
                  'zero_time', 'registration', 'responses', 'motion_sequences',
                  'motion_isolation', 'motion_timing', 'serial_identity',
                  'ams_version', 'tx_backpressure', 'tx_lifetime', 'u_compatibility', 'long_flags', 'motor_stop',
-                 'auth_logging')
+                 'auth_logging', 'pause_test')
     if args.motor_control:
         io_header = strip_includes((root / 'src/io_config.h').read_text(encoding='utf-8')).replace('#pragma once\n', '')
         motor_header = (root / 'src/BMCU.h').read_text(encoding='utf-8')
@@ -73,18 +73,21 @@ def main():
         control_cases = (root / 'tools/tests/fixtures/motor_control_test_cases.cpp').read_text(encoding='utf-8')
         control = motor_source[motor_source.index('namespace {'):motor_source.index('// ------------------------------ AS5600 start')]
         control += '\n' + extract_function(motor_source, 'static void switchInterrupt() {')
+        control += '\n' + extract_function(motor_source, 'static bool autoload_blocked(')
+        control += '\n' + extract_function(motor_source, 'void check_microswitch_status() {')
         control += '\n' + extract_function(motor_source, 'void BMCU_run() {')
         control += '\n' + extract_function(motor_source, 'void BMCU_motion() {')
         helpers = '\n'.join(extract_function(cases, signature) for signature in (
             'static void seal(', 'static std::vector<uint8_t> short_request(',
             'static void feed(', 'static void reset_motion_fixture(', 'static void request_motion('))
         web_source = (root / 'src/web_config.cpp').read_text(encoding='utf-8')
-        handler = extract_function(web_source, 'static void handle_manual_motor() {')
+        handler = '\n'.join(extract_function(web_source, signature) for signature in (
+            'static void handle_manual_motor() {', 'static void handle_pause_test() {'))
         translation_unit = '\n'.join(('#define BMCU_TEST_MOTOR_CONTROL 1', support, serial_function,
                                      header, atomics, reference, bus, io_header, motor_header,
                                      control_support, control, handler, helpers, control_cases))
         scenarios = ('printer_target', 'motor_queue', 'queue_updates', 'manual_requests',
-                     'manual_bus_timeout', 'motor_guards', 'feed_stop_delay', 'switch_input')
+                     'manual_bus_timeout', 'motor_guards', 'feed_stop_delay', 'switch_input', 'pause_test_http', 'pause_offline_motor')
     if args.settings:
         preamble = '#include <cstdint>\n#include <string>\nusing String = std::string;\n'
         io_header = strip_includes((root / 'src/io_config.h').read_text(encoding='utf-8')).replace('#pragma once\n', '')

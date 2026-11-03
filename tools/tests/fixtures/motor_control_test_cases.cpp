@@ -2,6 +2,8 @@
 static void reset_motor_fixture() {
     AMS_COUNT = 4;
     reset_motion_fixture();
+    pause_test = PauseTest();
+    BambuBus_need_to_save = false;
     fake_ms += 200;
     printer_bus_fault = false;
     motor_queued = 0;
@@ -13,6 +15,7 @@ static void reset_motor_fixture() {
     switch_level = 1;
     input_reads.clear();
     pin_modes.clear();
+    input_levels.clear();
     expander_online = true;
     for (int i = 0; i < active_channel_count(); ++i) {
         channel_state[i] = {};
@@ -21,6 +24,7 @@ static void reset_motor_fixture() {
         IO_CONFIG.motor[i][1] = 2;
         IO_CONFIG.microswitch[i] = PIN_NONE;
         PULLBACK_TIMEOUT[i] = 7;
+        CHANNEL_MODE[i] = CHANNEL_MODE_ONLINE;
         set_filament_online(i / 4, i % 4, true);
     }
     motor_outputs = 0;
@@ -326,6 +330,90 @@ static void test_motor_guards() {
     assert(BMCU_motor_status(0).queue_position == 0 && BMCU_motor_status(1).direction == -1);
 }
 
+/** 验证真实暂停实验 HTTP 处理器只登记请求，且解除、非法输入和重复触发行为正确 */
+static void test_pause_test_http() {
+    reset_motor_fixture();
+    server.args.clear(); handle_pause_test(); assert(server.status == 400);
+    for (const char *value : {"", "-1", "2", "1x", "true", "0.0"}) {
+        server.args = {{"enable", value}};
+        handle_pause_test(); assert(server.status == 400);
+    }
+    server.args = {{"enable", "1"}};
+    handle_pause_test(); assert(server.status == 409);
+    feed(short_request(0x20, 33)); assert(BambuBus_run() == 1);
+    request_motion(3, 0, 0, 7, 0x7f);
+    const auto outputs = motor_outputs;
+    const auto writes = write_count;
+    const auto settings_writes = settings_write_count;
+    const auto sent = uart_tx.size();
+    handle_pause_test(); assert(server.status == 202);
+    assert(!pause_test.active && pause_test.request == 1);
+    assert(motor_outputs == outputs && uart_tx.size() == sent && write_count == writes);
+    handle_pause_test(); assert(server.status == 409);
+    BambuBus_run(); assert(pause_test.active);
+    handle_pause_test(); assert(server.status == 409);
+    server.args = {{"enable", "0"}};
+    handle_pause_test(); assert(server.status == 202 && pause_test.active);
+    assert(motor_outputs == outputs && uart_tx.size() == sent);
+    BambuBus_run(); assert(!pause_test.active);
+    fake_ms += 20000; BambuBus_run();
+    handle_pause_test(); assert(server.status == 202); // 离线时解除仍可提交。
+    BambuBus_run(); assert(!pause_test.request && !pause_test.active);
+    assert(motor_outputs == outputs && write_count == writes);
+    assert(settings_write_count == settings_writes);
+}
+
+/** 验证退料离线不改变电机截止时间，阻止打印机和两种微动再次进料，并能通过原模式恢复 */
+static void test_pause_offline_motor() {
+    for (uint8_t command : {3, 4}) for (int mode : {CHANNEL_MODE_ONLINE, CHANNEL_MODE_AUTO}) {
+        reset_motor_fixture();
+        fake_ms = command == 3 ? 10000u * mode : UINT32_MAX - 500u + 10000u * (mode - 1);
+        CHANNEL_MODE[6] = CHANNEL_MODE_AUTO;
+        IO_CONFIG.microswitch[6] = 10;
+        input_levels[10] = 0;
+        BMCU_apply_channel_modes();
+        feed(short_request(0x20, 33)); assert(BambuBus_run() == 1);
+        request_motion(command, 1, 2, 7, 0x7f);
+        assert(BambuBus_request_pause_test(true)); BMCU_run();
+        request_motion(command, 1, 2, 7, 0); BMCU_run();
+        request_motion(command, 1, 2, 9, 0x3f); BMCU_run();
+        const auto end = channel_state[6].motor.end;
+        assert(channel_state[6].motor.direction == -1 && channel_state[6].motor.timed);
+        const auto outputs = motor_outputs;
+        request_motion(command, 1, 0xff, 3, 0);
+        assert(motor_outputs == outputs && CHANNEL_MODE[6] == CHANNEL_MODE_OFFLINE);
+        BMCU_run(); check_microswitch_status();
+        assert(channel_state[6].motor.direction == -1 && channel_state[6].motor.end == end);
+        assert(!is_filament_online(6));
+        fake_ms += 1001;
+        request_motion(command, 1, 0xff, 3, 0);
+        fake_ms += 5; BambuBus_save_run();
+        assert(!pause_test.active && saved_channel_modes[6] == CHANNEL_MODE_OFFLINE);
+        request_motion(command, 1, 2, 3, 0); BMCU_run();
+        assert(channel_state[6].motor.direction == -1 && channel_state[6].motor.end == end);
+        fake_ms = end - 1;
+        request_motion(command, 1, 2, 3, 0); BMCU_run();
+        assert(channel_state[6].motor.direction == -1);
+        fake_ms = end; BMCU_run();
+        assert(channel_state[6].motor.direction == 0);
+        for (int level : {1, 0}) {
+            input_levels[10] = level; check_microswitch_status();
+            fake_ms += 31; check_microswitch_status();
+        }
+        assert(channel_state[6].motor.direction == 0 && !is_filament_online(6));
+        IO_CONFIG.switch_pin = 11;
+        switch_level = 1; switchInterrupt();
+        switch_level = 0; switchInterrupt();
+        assert(channel_state[6].motor.direction == 0); // 五通总微动也不能让离线通道进料。
+        CHANNEL_MODE[6] = mode;
+        assert(settings_save_to_flash());
+        BMCU_apply_channel_modes(); // 复用网页模式恢复后的应用路径。
+        assert(is_filament_online(6));
+        request_motion(command, 1, 2, 3, 0); BMCU_run();
+        assert(channel_state[6].motor.direction == 1);
+    }
+}
+
 /**
  * 执行单个电机控制回归场景
  * @param argc 参数数量
@@ -343,6 +431,8 @@ int main(int argc, char **argv) {
     else if (name == "feed_stop_delay") test_feed_stop_delay();
     else if (name == "switch_input") test_switch_input();
     else if (name == "motor_guards") test_motor_guards();
+    else if (name == "pause_test_http") test_pause_test_http();
+    else if (name == "pause_offline_motor") test_pause_offline_motor();
     else return 2;
     std::printf("PASS %s\n", name.c_str());
 }

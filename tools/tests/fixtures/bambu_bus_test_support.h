@@ -20,6 +20,21 @@ static uint32_t clock_step = 0;
 static int AMS_COUNT = 1;
 static int RS485_MODE = 0;
 static int BUS_LOG_ENABLE = 0;
+static constexpr int CHANNEL_MODE_OFFLINE = 0, CHANNEL_MODE_ONLINE = 1, CHANNEL_MODE_AUTO = 2;
+static int CHANNEL_MODE[16];
+static int saved_channel_modes[16];
+static int settings_write_count = 0;
+static bool fail_settings_save = false;
+/**
+ * 模拟设置保存的成功和失败边界，记录整组模式；真实 CRC 与回读由设置存储套件覆盖
+ * @return true 表示模拟写入并回读成功
+ */
+static bool settings_save_to_flash() {
+    ++settings_write_count;
+    if (fail_settings_save) return false;
+    std::copy(std::begin(CHANNEL_MODE), std::end(CHANNEL_MODE), saved_channel_modes);
+    return true;
+}
 static constexpr int RS485_MODE_RXTX = 0;
 static constexpr int RS485_MODE_DE = 1;
 static constexpr int BUS_DE = 255;

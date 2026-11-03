@@ -117,6 +117,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <button data-tab="update">更新</button>
     <button data-tab="wifi">配网</button>
     <button data-tab="logs">日志</button>
+    <button data-tab="experiments">实验测试</button>
   </nav>
   <div id="upbar" class="upbar hide">
     <span id="upbar-txt">发现新固件</span>
@@ -207,6 +208,19 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="kv"><span>BMP280 温度</span><b id="s-bmp-temp">-</b></div>
     <div class="kv"><span>大气压</span><b id="s-bmp-press">-</b></div>
     <div class="hint">未检测到的传感器会自动停用并定期重试；网页显示“未检测到”时不会使用旧读数</div>
+  </div>
+</div>
+
+<!-- ================= 实验测试 ================= -->
+<div id="t-experiments" class="hide">
+  <div class="card" id="pause-test-card">
+    <h2>暂停打印测试（实验）</h2>
+    <div class="row">
+      <button id="pause-test-start" class="danger" onclick="sendPauseTest(true)" disabled>测试暂停</button>
+      <button id="pause-test-clear" onclick="sendPauseTest(false)">解除测试</button>
+    </div>
+    <div id="pause-test-state" class="hint" role="status">正在读取测试状态…</div>
+    <div class="hint">点击后保持堵转，目标通道进入“退料中”时设为离线，保存成功后自动解除堵转。恢复使用请在“通道参数”中改回在线或自动；重启仍保持离线。“解除测试”只解除堵转，不恢复通道模式。</div>
   </div>
 </div>
 
@@ -437,7 +451,7 @@ const esc=(s)=>{
   const d = document.createElement('div');d.textContent=(s==null?'':String(s));return d.innerHTML;}
 
 // ---------- 标签页 ----------
-// 当前显示的标签页名称：status/wifi/settings/update/logs
+// 当前显示的标签页名称：status/wifi/settings/update/logs/experiments
 let TAB = 'status';
 /**
  * 切换页面标签页
@@ -445,10 +459,10 @@ let TAB = 'status';
  * 显示目标面板并保存当前标签；首次进入日志页启动持续收集，状态和设置页按需重载参数
  */
 const showTab=(name)=>{
-  if(['status','wifi','settings','update','logs'].indexOf(name)<0) name='status'
+  if(['status','wifi','settings','update','logs','experiments'].indexOf(name)<0) name='status'
   TAB=name
   try{localStorage.setItem('bmcu-tab',name);}catch(e){}
-  ['status','wifi','settings','update','logs'].forEach((n)=>{$('t-'+n).classList.toggle('hide',n!==name);})
+  ['status','wifi','settings','update','logs','experiments'].forEach((n)=>{$('t-'+n).classList.toggle('hide',n!==name);})
   const bs = document.querySelectorAll('nav button');
   for(let i=0; i<bs.length; i++) bs[i].classList.toggle('on',bs[i].getAttribute('data-tab')===name)
   if((name==='status'||name==='settings') && !IO_DIRTY) loadPara()
@@ -527,7 +541,7 @@ const showSensorValue=(id,value,unit)=>{
 /**
  * 拉取并刷新设备运行状态
  * @return {Promise<void>|undefined} 请求完成后的 Promise；已有请求时返回 undefined
- * 带 3 秒超时读取 /api/status，逐地址显示四片 PCF 状态并更新电机、项目和 OTA，首次成功时自动检查更新
+ * 带 3 秒超时读取 /api/status，逐地址显示四片 PCF 状态并更新电机、暂停实验、项目和 OTA，首次成功时自动检查更新
  */
 const refreshStatus=()=>{
   if(statusPending) return
@@ -580,7 +594,8 @@ const refreshStatus=()=>{
     $('b1').classList.toggle('on', d.buslog==1)
     $('b0').classList.toggle('on', d.buslog==0)
     renderMotorControls()
-    updateChannelStateText()
+    renderPauseTest()
+    updateChannelStateText(true)
     $('btn-otapull').disabled=!gOtaLatest||!d.maintenance
     $('btn-otaupload').disabled=!d.maintenance;
     /* 首次拿到状态后自动检查一次更新，有新版就把常驻横幅亮出来 */
@@ -591,22 +606,87 @@ const refreshStatus=()=>{
     $('printer').textContent='设备连接中断，打印机状态未知'
     $('printer').style.color='var(--warn)'
     renderMotorControls()
+    renderPauseTest()
   }).finally(()=>{clearTimeout(timer);statusPending=false;})
+}
+
+// 暂停实验请求只在浏览器内防重，实际状态由固件主循环返回。
+let pauseTestPending=false
+/**
+ * 刷新暂停实验按钮和观察结果
+ * 状态过期时禁止触发并保留解除入口；显示等待退料、离线保存和恢复方式，停止供料只作为观察结果
+ */
+const renderPauseTest=()=>{
+  const fresh=statusAt&&performance.now()-statusAt<3000,t=S.pause_test
+  $('pause-test-start').disabled=pauseTestPending||!fresh||!t?.available
+  $('pause-test-clear').disabled=pauseTestPending
+  const el=$('pause-test-state')
+  if(!fresh){el.textContent='设备状态未更新，可尝试解除测试';return}
+  if(!t){el.textContent='当前固件未提供暂停测试状态';return}
+  if(pauseTestPending||t.pending){el.textContent=t.pending<0?'等待主循环解除测试…':'请求处理中…';return}
+  const channel=t.channel>=0?'AMS '+(Math.floor(t.channel/4)+1)+' · 通道 '+(t.channel+1)+' · ':''
+  if(t.result==='saving_offline'||t.result==='save_failed'){
+    el.textContent=channel+(t.result==='save_failed'?'离线设置保存失败，将自动重试':'已进入退料中，通道已离线，等待保存')+
+      (t.active?' · 堵转持续保持':' · 堵转已手动解除')
+    return
+  }
+  if(t.active){
+    el.textContent=channel+(t.frames?'已发送测试反馈':'等待发送测试反馈')+' '+t.frames+' 帧 · '+
+      (t.stop_seen?'已收到停止供料 · ':'')+'堵转持续保持，等待退料中后离线'
+    return
+  }
+  const mode=S.cm?.[t.channel]
+  const results={cleared:'已解除测试，通道模式不变',target_disabled:'目标 AMS 已禁用，测试已解除',
+    rejected:'通道状态改变，本次未触发',restored:'通道模式已恢复，堵转已解除',
+    offline:mode===1||mode===2?'通道已恢复'+CH_STATUS_NAMES[mode]+'，堵转已解除':
+      '已保存离线并解除堵转；请在通道参数中恢复在线或自动'}
+  el.textContent=results[t.result]?channel+results[t.result]+' · 共反馈 '+t.frames+' 帧':
+    t.available?'可测试：AMS '+(Math.floor(t.candidate_channel/4)+1)+' · 通道 '+(t.candidate_channel+1):
+      '等待有效的正在使用通道；进料准备和空闲时不能触发'
+}
+/**
+ * 提交暂停实验或解除请求
+ * @param {boolean} enable true 触发测试，false 解除测试
+ * @return {Promise<void>} 请求及状态刷新完成的 Promise
+ * 设置 3 秒请求超时、防止重复点击，失败后重新读取设备状态以判断请求是否实际生效
+ */
+const sendPauseTest=async(enable)=>{
+  if(pauseTestPending) return
+  if(enable&&(!statusAt||performance.now()-statusAt>=3000||!S.pause_test?.available)) return
+  pauseTestPending=true
+  renderPauseTest()
+  const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),3000)
+  try{
+    const r=await fetch('/api/printer/pause-test',{method:'POST',signal:ac.signal,
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'enable='+(enable?1:0)})
+    const d=await r.json()
+    if(!r.ok||!d.ok) throw Error(d.msg||'测试请求失败')
+    toast(d.msg)
+  }catch(e){toast(e.name==='AbortError'?'请求超时，请查看测试状态或尝试解除':e.message||'测试请求失败')}
+  finally{
+    clearTimeout(timer)
+    pauseTestPending=false
+    await refreshStatus()
+    renderPauseTest()
+  }
 }
 
 // 只记录正在发送的请求；运行状态和并发限制以固件为准
 // 按通道记录正在发送的手动电机命令方向，避免重复点击；0 表示停止请求
 const motorPending={},CH_STATUS_NAMES=['离线','在线','自动'];
-// 通道模式是“自动”时，把该通道微动开关状态显示成 自动(有料) / 自动(无料)，随状态轮询实时刷新
 /**
- * 更新自动模式通道的状态文字
- * 根据最新状态中的耗材检测值，把自动模式选项显示为“自动(有料)”或“自动(无料)”
+ * 更新通道模式和自动模式的有料状态文字
+ * @param {boolean} syncModes 是否用本次状态响应同步通道模式
+ * 自动离线同步到下拉框；保留正在操作、保存或尚未提交的值，避免覆盖用户选择
  */
-const updateChannelStateText=()=>{
+const updateChannelStateText=(syncModes=false)=>{
   const n = (S && S.channels) || 0, fl = (S && S.fl) || null;
   for(let i=0; i<n; i++){
     const sel = $('cm' + i);
     if(!sel||!sel.autoOpt) continue
+    if(syncModes&&Number.isInteger(S.cm?.[i])&&!sel.disabled&&document.activeElement!==sel&&sel.value===sel.dataset.saved){
+      sel.value=String(S.cm[i]);sel.dataset.saved=sel.value
+    }
     const st = (fl && typeof fl[i] === 'number') ? fl[i] : -1;
     if(sel.value==='2'&&st>=0) sel.autoOpt.textContent='自动('+(st?'有料':'无料')+')'
     else sel.autoOpt.textContent='自动'
@@ -2307,6 +2387,7 @@ loadPara()
 loadProjects()
 setInterval(refreshStatus,1000)
 setInterval(renderMotorControls,200)
+setInterval(renderPauseTest,200)
 
 </script>
 </body>

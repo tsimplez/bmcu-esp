@@ -392,7 +392,7 @@ static String sensor_json_value(bool valid, float value, int digits) {
 
 /**
  * 处理运行状态查询
- * 汇总 WiFi、IP、项目匹配、总线、电机、耗材、传感器和版本；PCF 状态按四个地址分别输出
+ * 汇总 WiFi、IP、项目匹配、总线、暂停实验、通道模式、电机、耗材、传感器和版本；PCF 状态按四个地址分别输出
  */
 static void handle_status() {
     IPAddress ip = ap_mode ? WiFi.softAPIP() : WiFi.localIP();
@@ -414,8 +414,19 @@ static void handle_status() {
     j += ",\"buslog\":" + String(BUS_LOG_ENABLE);
     j += ",\"ams\":" + String(AMS_COUNT);
     j += ",\"channels\":" + String(BMCU_motor_count());
+    j += ",\"cm\":[";
+    for (int i = 0; i < BMCU_motor_count(); i++) { if (i) j += ','; j += String(CHANNEL_MODE[i]); }
+    j += ']';
     j += ",\"maxams\":" + String(BMCU_max_ams_count());
     j += ",\"printer\":" + String(BambuBus_printer_status());
+    const auto pause = BambuBus_pause_test_status();
+    j += ",\"pause_test\":{\"available\":" + String(pause.available ? "true" : "false") +
+         ",\"active\":" + String(pause.active ? "true" : "false") +
+         ",\"pending\":" + String(pause.pending) + ",\"channel\":" + String(pause.channel) +
+         ",\"candidate_channel\":" + String(pause.candidate_channel) +
+         ",\"frames\":" + String(pause.frames) +
+         ",\"stop_seen\":" + String(pause.stop_seen ? "true" : "false") +
+         ",\"result\":\"" + String(pause.result) + "\"}";
     j += ",\"bus_fault\":" + String(BMCU_printer_bus_fault() ? "true" : "false");
     j += ",\"bus_rx_errors\":" + String(BambuBus_rx_error_count());
     j += ",\"bus_rx_dropped\":" + String(BambuBus_rx_dropped_count());
@@ -869,6 +880,29 @@ static void handle_manual_motor() {
     }
     LOG_MAIN("[web] 通道 %d 排队%s，%dms", motor + 1, dir > 0 ? "进料" : "退料", duration);
     server.send(202, "application/json", "{\"ok\":true,\"msg\":\"已排队\"}");
+}
+
+/**
+ * 登记暂停打印实验或解除请求
+ * 只接受 enable=0/1；回调不发送总线帧、不驱动电机，实际反馈和解除交由主循环
+ */
+static void handle_pause_test() {
+    if (!server.hasArg("enable")) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"缺少测试操作\"}");
+        return;
+    }
+    const String enable = server.arg("enable");
+    if (enable != "0" && enable != "1") {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"测试操作必须为 0 或 1\"}");
+        return;
+    }
+    if (!BambuBus_request_pause_test(enable == "1")) {
+        server.send(409, "application/json", "{\"ok\":false,\"msg\":\"需要有效的正在使用通道，且不能重复触发测试\"}");
+        return;
+    }
+    server.send(202, "application/json", enable == "1"
+        ? "{\"ok\":true,\"msg\":\"测试请求已提交，请观察打印机\"}"
+        : "{\"ok\":true,\"msg\":\"解除请求已提交\"}");
 }
 
 /**
@@ -1855,6 +1889,7 @@ static void setup_routes() {
     server.on("/api/bus", HTTP_POST, handle_bus_save);
     server.on("/api/pcf", HTTP_POST, handle_pcf_save);
     server.on("/api/motor", HTTP_POST, handle_manual_motor);
+    server.on("/api/printer/pause-test", HTTP_POST, handle_pause_test);
     server.on("/api/scan", HTTP_GET, handle_scan);
     server.on("/api/wifi", HTTP_POST, handle_wifi_save);
     server.on("/api/mdns", HTTP_POST, handle_mdns_save);

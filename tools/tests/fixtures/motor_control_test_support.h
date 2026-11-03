@@ -2,11 +2,10 @@
 #include <map>
 
 static constexpr int PIN_NONE = 255, INPUT = 0, INPUT_PULLUP = 2;
-static constexpr int CHANNEL_MODE_ONLINE = 1, CHANNEL_MODE_AUTO = 2;
 static constexpr uint32_t MAX_PULSE_MS = 30000;
 static int PULLBACK_TIMEOUT[IO_CONFIG_MAX_CHANNELS];
-static int CHANNEL_MODE[IO_CONFIG_MAX_CHANNELS];
 static int MANUAL_PULSE_MS = 300, MOTOR_LIMIT = 1;
+static int AUTO_LOAD_MS = 1000;
 static int FEED_STOP_DELAY_MS = 1000;
 static IoConfig IO_CONFIG;
 static bool expander_online = true;
@@ -14,6 +13,7 @@ static unsigned motor_outputs = 0;
 static int switch_level = 1;
 static std::vector<int> input_reads;
 static std::map<int, int> pin_modes;
+static std::map<int, int> input_levels;
 #define IS_PCF8575_VIRTUAL_PIN(pin) ((pin) >= 50 && (pin) < 128)
 
 class Motor {
@@ -51,13 +51,13 @@ static bool PCF8575_pin_is_online(int pin) { return expander_online; }
  */
 static void pinMode_PCF8575(int pin, int mode) { pin_modes[pin] = mode; }
 /**
- * 模拟总微动输入，其他通道微动保持未触发
+ * 模拟总微动和指定通道的输入，未指定的通道微动保持未触发
  * @param pin 引脚编号
- * @return 总微动的测试电平，或其他输入的高电平
+ * @return 指定测试电平，未指定时为高电平
  */
 static int digitalRead_PCF8575(int pin) {
     input_reads.push_back(pin);
-    return pin == IO_CONFIG.switch_pin ? switch_level : 1;
+    return pin == IO_CONFIG.switch_pin ? switch_level : input_levels.count(pin) ? input_levels[pin] : 1;
 }
 /** 模拟扩展器轮询，不访问 I2C */
 static void PCF8575_poll() {}
@@ -70,6 +70,11 @@ static void switchInterrupt();
 
 struct TestArg {
     std::string value;
+    /**
+     * 提供请求参数原文供真实处理器校验
+     * @return 未经数值转换的参数字符串
+     */
+    operator String() const { return value; }
     /**
      * 将请求参数转换为整数
      * @return 参数值；测试仅提交合法数字

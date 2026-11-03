@@ -985,6 +985,208 @@ static void test_motor_stop() {
 }
 
 /**
+ * 准备具有真实心跳和运动请求的暂停实验场景
+ * @param start 模拟开始时间，支持零毫秒和回绕附近
+ */
+static void reset_pause_test_fixture(uint32_t start) {
+    reset_motion_fixture();
+    pause_test = PauseTest();
+    BambuBus_need_to_save = false;
+    fail_settings_save = false;
+    std::fill(std::begin(CHANNEL_MODE), std::end(CHANNEL_MODE), CHANNEL_MODE_AUTO);
+    AMS_COUNT = 4;
+    fake_ms = start;
+    feed(short_request(0x20, 33));
+    assert(BambuBus_run() == 1);
+}
+
+/** 验证堵转反馈、AMS 隔离、退料离线顺序、保存失败重试、手动解除和恢复模式 */
+static void test_pause_test() {
+    assert(!BambuBus_request_pause_test(true));
+    reset_pause_test_fixture(0);
+    data_save.BambuBus_now_filament_num = 6;
+    assert(!BambuBus_pause_test_status().available); // Flash 中的旧选择不能用于触发。
+    request_motion(3, 1, 2, 9, 0x7f);
+    assert(!BambuBus_request_pause_test(true)); // 使用前准备不能触发。
+
+    for (uint8_t command : {3, 4}) {
+        reset_pause_test_fixture(1000);
+        request_motion(command, 1, 2, 7, 0x7f);
+        const auto normal = uart_tx.back();
+        const auto record = data_save;
+        const auto writes = write_count;
+        assert(BambuBus_pause_test_status().available);
+        assert(BambuBus_pause_test_status().candidate_channel == 6);
+        assert(BambuBus_request_pause_test(true));
+        assert(!BambuBus_request_pause_test(true));
+        assert(BambuBus_pause_test_status().pending == 1 && !pause_test.active);
+        BambuBus_run();
+        assert(pause_test.active && !pause_test.frames);
+        request_motion(command, 1, 2, 7, 0x7f);
+        auto expected = normal;
+        expected[1] = uart_tx.back()[1];
+        const size_t offset = command == 3 ? 13u : 25u;
+        expected[offset] = 0x6f; expected[offset + 1] = 0xf0;
+        expected[offset + 2] = 0xe7; expected[offset + 3] = 0x1c;
+        seal(expected);
+        assert(uart_tx.back() == expected); // 仅压力和相邻字段改变，封装与 CRC 仍正确。
+        assert(pause_test.frames == 1 && memcmp(&record, &data_save, sizeof(record)) == 0);
+        request_motion(command == 3 ? 4 : 3, 1, 2, 7, 0x7f);
+        expect_motion_feedback(1, 2, 4, 0xf06f);
+        assert(pause_test.frames == 2); // 交替 Cxx/Dxx 使用同一测试目标。
+        request_motion(command, 0, 0xff, 1, 0);
+        expect_motion_feedback(0, 0xff, 0, 0xff74);
+        assert(pause_test.frames == 2);
+        auto bad = short_request(command, command == 3 ? 12 : 13);
+        bad.back() ^= 1;
+        feed(bad); assert(BambuBus_run() == 2 && pause_test.frames == 2);
+        TX_IDLE = false;
+        BambuBus_run();
+        assert(pause_test.frames == 2);
+        TX_IDLE = true;
+        assert(BambuBus_request_pause_test(false) && pause_test.active);
+        BambuBus_run();
+        assert(!pause_test.active && !strcmp(pause_test.result, "cleared"));
+        request_motion(command, 1, 2, 7, 0x7f);
+        expected = normal; expected[1] = uart_tx.back()[1]; seal(expected);
+        assert(uart_tx.back() == expected && write_count == writes);
+        assert(BambuBus_request_pause_test(true));
+        request_motion(command, 1, 2, 7, 0x7f);
+        for (int i = 0; i < active_channel_count(); ++i) set_filament_online(i / 4, i % 4, true);
+        request_motion(command, 1, 2, 7, 0);
+        assert(pause_test.active && pause_test.stop_seen && !pause_test.offline_pending);
+        request_motion(command, 1, 2, 9, 0x3f);
+        expect_motion_feedback(1, 2, 4, 0xf06f);
+        assert(CHANNEL_MODE[6] == CHANNEL_MODE_AUTO && is_filament_online(6));
+        request_motion(command, 0, 0xff, 3, 0); // 其他 AMS 的退料轮询不得使目标离线。
+        assert(!pause_test.offline_pending);
+        const auto settings_writes = settings_write_count;
+        request_motion(command, 1, 0xff, 3, 0);
+        expect_motion_feedback(1, 2, 2, 0xf06f);
+        assert(pause_test.active && pause_test.offline_pending);
+        assert(CHANNEL_MODE[6] == CHANNEL_MODE_OFFLINE && !is_filament_online(6));
+        assert(settings_write_count == settings_writes); // 收发处理器不能直接写 Flash。
+        for (int i = 0; i < active_channel_count(); ++i) if (i != 6) {
+            assert(CHANNEL_MODE[i] == CHANNEL_MODE_AUTO && is_filament_online(i));
+        }
+        assert((uart_tx.back()[command == 3 ? 29 : 41] & 0x30) == 0);
+        if (command == 4) for (int i : {9, 10, 11}) assert((uart_tx.back()[i] & 4) == 0);
+        BambuBus_save_run(); // 刚回复不能写入，等静默窗口。
+        assert(settings_write_count == settings_writes);
+        fake_ms += 1001;
+        TX_IDLE = false; BambuBus_save_run(); TX_IDLE = true;
+        assert(settings_write_count == settings_writes);
+        fail_settings_save = true;
+        BambuBus_save_run();
+        assert(settings_write_count == settings_writes + 1 && pause_test.active);
+        assert(!strcmp(pause_test.result, "save_failed"));
+        fake_ms += 999; BambuBus_save_run();
+        assert(settings_write_count == settings_writes + 1); // 写入失败也需要冷却。
+        fail_settings_save = false;
+        fake_ms += 1; BambuBus_save_run();
+        assert(settings_write_count == settings_writes + 2 && !pause_test.active && !pause_test.offline_pending);
+        assert(!strcmp(pause_test.result, "offline") && saved_channel_modes[6] == CHANNEL_MODE_OFFLINE);
+        for (int i = 0; i < active_channel_count(); ++i) if (i != 6) assert(saved_channel_modes[i] == CHANNEL_MODE_AUTO);
+        for (uint8_t reply_type : {3, 4}) {
+            request_motion(reply_type, 1, 0xff, 3, 0);
+            expect_motion_feedback(1, 2, 2, 0x4700);
+            assert((uart_tx.back()[reply_type == 3 ? 29 : 41] & 0x30) == 0);
+            if (reply_type == 4) for (int i : {9, 10, 11}) assert((uart_tx.back()[i] & 4) == 0);
+        }
+        assert(BambuBus_request_pause_test(false)); BambuBus_run();
+        assert(CHANNEL_MODE[6] == CHANNEL_MODE_OFFLINE); // 解除测试不会恢复通道。
+        request_motion(command, 1, 2, 3, 0);
+        request_motion(command, 1, 2, 9, 0x7f);
+        assert((uart_tx.back()[command == 3 ? 29 : 41] & 0x30) == 0); // 准备表也不能把离线通道重新报在线。
+        request_motion(command, 1, 2, 9, 0xa5);
+        request_motion(command, 1, 2, 7, 0x7f);
+        assert(!BambuBus_request_pause_test(true)); // 离线通道的旧使用请求不能再次触发。
+        fake_ms += 1001; BambuBus_save_run();
+        assert(settings_write_count == settings_writes + 2); // 一次成功只保存一次。
+        BambuBus_init();
+        assert(CHANNEL_MODE[6] == CHANNEL_MODE_OFFLINE && saved_channel_modes[6] == CHANNEL_MODE_OFFLINE);
+
+    }
+
+    for (int restored_mode : {CHANNEL_MODE_ONLINE, CHANNEL_MODE_AUTO}) {
+        reset_pause_test_fixture(10000);
+        request_motion(3, 1, 2, 7, 0x7f);
+        assert(BambuBus_request_pause_test(true)); BambuBus_run();
+        request_motion(3, 1, 0xff, 3, 0);
+        assert(pause_test.offline_pending);
+        CHANNEL_MODE[6] = restored_mode; // 等效于网页成功保存后的运行期设置。
+        const int writes = settings_write_count;
+        BambuBus_save_run();
+        assert(!pause_test.active && !pause_test.offline_pending && !strcmp(pause_test.result, "restored"));
+        assert(settings_write_count == writes && CHANNEL_MODE[6] == restored_mode);
+    }
+
+    for (uint32_t start : {0u, UINT32_MAX - 500u}) {
+        reset_pause_test_fixture(start);
+        request_motion(3, 0, 0, 7, 0x7f);
+        assert(BambuBus_request_pause_test(true));
+        BambuBus_run();
+        for (uint32_t elapsed = 1000; elapsed < 60000; elapsed += 1000) {
+            fake_ms = start + elapsed;
+            feed(short_request(0x20, 33)); assert(BambuBus_run() == 1);
+            request_motion(4, 0, 0, 7, 0x7f);
+            assert(pause_test.active && !BambuBus_request_pause_test(true));
+            expect_motion_feedback(0, 0, 4, 0xf06f);
+        }
+        fake_ms = start + 3600000;
+        TX_IDLE = false; // 长时间断线或无发送槽都不清除故障。
+        BambuBus_run();
+        TX_IDLE = true;
+        assert(pause_test.active);
+        request_motion(3, 0, 0, 7, 0x7f);
+        expect_motion_feedback(0, 0, 4, 0xf06f);
+        assert(BambuBus_request_pause_test(false)); BambuBus_run();
+        request_motion(3, 0, 0, 7, 0x7f);
+        expect_motion_feedback(0, 0, 4, 0x2b00);
+    }
+
+    reset_pause_test_fixture(1000);
+    request_motion(3, 0, 0, 7, 0x7f);
+    assert(BambuBus_request_pause_test(true));
+    assert(BambuBus_request_pause_test(false)); // 主循环执行前解除，不能发出任何异常反馈。
+    BambuBus_run();
+    assert(!pause_test.active && pause_test.frames == 0);
+    assert(BambuBus_request_pause_test(true));
+    set_filament_motion(0, waiting);
+    BambuBus_run();
+    assert(!pause_test.active && !strcmp(pause_test.result, "rejected"));
+    request_motion(3, 0, 0, 7, 0x7f);
+    assert(BambuBus_request_pause_test(true)); BambuBus_run();
+    fake_ms += 1001;
+    BambuBus_run();
+    assert(pause_test.active);
+    assert(!BambuBus_request_pause_test(true));
+    assert(BambuBus_request_pause_test(false)); BambuBus_run(); // 断线时允许解除。
+
+    reset_pause_test_fixture(1000);
+    request_motion(3, 3, 3, 7, 0x7f);
+    assert(BambuBus_request_pause_test(true)); BambuBus_run();
+    AMS_COUNT = 1;
+    BambuBus_run();
+    assert(!pause_test.active && !strcmp(pause_test.result, "target_disabled"));
+    reset_pause_test_fixture(1000);
+    request_motion(3, 0, 0, 7, 0x7f);
+    assert(BambuBus_request_pause_test(true)); BambuBus_run();
+    request_motion(3, 0, 0, 9, 0xa5);
+    assert(pause_test.active);
+    expect_motion_feedback(0, 0, 4, 0xf06f);
+    assert(BambuBus_request_pause_test(false)); BambuBus_run();
+    request_motion(3, 0, 0, 7, 0x7f);
+    fake_ms += 1001;
+    feed(short_request(0x20, 33)); BambuBus_run();
+    assert(!BambuBus_request_pause_test(true)); // 心跳不能让旧运动状态重新变新鲜。
+    request_motion(3, 0, 0, 7, 0x7f);
+    assert(BambuBus_request_pause_test(true)); BambuBus_run();
+    BambuBus_init();
+    assert(!pause_test.active && pause_test.channel == -1 && !BambuBus_pause_test_status().available);
+}
+
+/**
  * 执行指定回归场景
  * @param argc 参数数量，必须包含一个场景名
  * @param argv 程序名和场景名
@@ -1016,6 +1218,7 @@ int main(int argc, char **argv) {
     else if (name == "long_flags") test_long_flags();
     else if (name == "auth_logging") test_auth_logging();
     else if (name == "motor_stop") test_motor_stop();
+    else if (name == "pause_test") test_pause_test();
     else return 2;
     std::printf("PASS %s\n", name.c_str());
 }

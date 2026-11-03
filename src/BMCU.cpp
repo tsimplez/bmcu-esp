@@ -770,7 +770,7 @@ float AS5600_get_speed(const uint8_t channel) {
 
 /**
  * 在主循环轮询五通总微动，下降沿触发当前空闲电机进料 200ms
- * 使用配置的真实或扩展输入；未配置、扩展器离线时跳过，首次有效读数只建立基线
+ * 使用配置的真实或扩展输入；未配置、扩展器离线时跳过，首次有效读数只建立基线；通道无料时不进料
  * 本函数由运动调度调用，不是硬件中断回调
  */
 static void switchInterrupt() {
@@ -782,7 +782,7 @@ static void switchInterrupt() {
     const int switchState = digitalRead_PCF8575(pin);
     if (switchState == LOW && lastSwitchState > LOW) {
         int n = get_now_filament_num();
-        if (is_active_channel(n) && !channel_state[n].motor.direction)
+        if (is_active_channel(n) && is_filament_online(n) && !channel_state[n].motor.direction)
             motorCmd(n, 1, MOTOR_AUTOLOAD, 200);
     }
     lastSwitchState = switchState;
@@ -960,7 +960,7 @@ void BMCU_run() {
 /**
  * 电机运动逻辑
  * 按打印机目标方向接管或切换电机；重复请求保持运行，达到并发上限时排队
- * 明确的 07/00 停止供料跳过普通进料结束延迟；定时退料可被新的进料请求切换
+ * 明确的 07/00 停止供料跳过普通进料结束延迟；定时退料仅可被在线通道的新进料请求切换
  */
 void BMCU_motion() {
     if (printer_bus_fault) {
@@ -988,8 +988,9 @@ void BMCU_motion() {
         motorCmd(cur, 0);
         return;
     }
-    // 待机和重复退料请求保持原截止时间，新的进料请求可以立即切换方向。
-    if (m.source == MOTOR_PRINTER && m.timed && m.direction < 0 && act != need_send_out) {
+    // 待机和重复退料保持原截止时间，离线期间的进料重试不得打断已开始的退料。
+    if (m.source == MOTOR_PRINTER && m.timed && m.direction < 0 &&
+        (act != need_send_out || !is_filament_online(cur))) {
         return;
     }
 
