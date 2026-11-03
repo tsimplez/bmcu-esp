@@ -43,6 +43,8 @@ enum package_type {
     BambuBus_package_ERROR, // CRC、长度或格式错误
     BambuBus_package_set_filament_type2, // 新增：0x05 0x218 长包设置耗材
     BambuBus_package_IGNORED, // 合法但不发给本机的报文，不刷新通信状态
+    BambuBus_long_package_certification, // 0x040D 设备证书请求，仅记录不应答
+    BambuBus_long_package_authorization, // 0x040E 设备授权请求，仅记录不应答
     __BambuBus_package_packge_type_size // 枚举数量哨兵，不是实际报文类型
 };
 

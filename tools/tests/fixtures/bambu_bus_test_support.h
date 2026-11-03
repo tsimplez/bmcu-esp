@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
+#include <cstdarg>
 #include <string>
 #include <vector>
 #include <deque>
@@ -19,6 +20,7 @@ static uint32_t clock_step = 0;
 static int AMS_COUNT = 1;
 static int RS485_MODE = 0;
 static int BUS_LOG_ENABLE = 0;
+static constexpr int RS485_MODE_RXTX = 0;
 static constexpr int RS485_MODE_DE = 1;
 static constexpr int BUS_DE = 255;
 static constexpr int LOW = 0, OUTPUT = 1;
@@ -46,8 +48,10 @@ struct TestBusLog {
     char direction;
     int type;
     std::vector<uint8_t> data;
+    int channel;
 };
 static std::vector<TestBusLog> bus_logs;
+static std::vector<std::string> main_logs;
 
 /** 获取模拟毫秒时间；可选步进用于验证生产代码的忙等间隔 */
 static uint32_t millis() { const auto value = fake_ms; fake_ms += clock_step; return value; }
@@ -115,11 +119,25 @@ static void hal_storage_read(int, void *out, uint32_t length) {
     if (!flash_data.empty()) memcpy(out, flash_data.data(), std::min<size_t>(length, flash_data.size()));
     if (corrupt_read && length) static_cast<uint8_t *>(out)[0] ^= 1u;
 }
-#define LOG_MAIN(...) do {} while (0)
+/**
+ * 捕获主板日志摘要，验证认证帧诊断不依赖总线日志开关
+ * @param format 日志格式
+ * @param ... 与格式对应的参数
+ */
+static void test_log_main(const char *format, ...) {
+    char text[512];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    main_logs.emplace_back(text);
+}
+#define LOG_MAIN(...) test_log_main(__VA_ARGS__)
 #define LOG_BUS(...) do {} while (0)
+static constexpr int LOG_CH_MAIN = 0;
 static constexpr int LOG_CH_BUS = 1;
 /**
- * 捕获总线日志和关联报文类型
+ * 捕获两路原始帧日志和关联报文类型
  * @param channel 日志通道
  * @param direction 收发方向
  * @param type 报文类型
@@ -128,7 +146,6 @@ static constexpr int LOG_CH_BUS = 1;
  * 在读取数据前注入回调，验证日志期间的缓冲所有权和重入保护
  */
 static void log_bus_hex_typed(int channel, char direction, int type, const uint8_t *data, uint16_t length) {
-    (void)channel;
     if (during_log) during_log(direction);
-    bus_logs.push_back({direction, type, std::vector<uint8_t>(data, data + length)});
+    bus_logs.push_back({direction, type, std::vector<uint8_t>(data, data + length), channel});
 }

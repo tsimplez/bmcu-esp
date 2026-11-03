@@ -79,6 +79,78 @@ static void test_parser() {
     f = long_request(0x999, 985); assert(get_package_type(f.data(), f.size()) == BambuBus_package_ETC);
     f = long_request(0x999, 986); assert(get_package_type(f.data(), f.size()) == BambuBus_package_ERROR);
 }
+
+/**
+ * 验证认证帧经真实接收链路写入主板日志，且不产生认证应答
+ * 覆盖两种请求标志、总线日志开关、其他目标地址、最大帧、坏 CRC、回显及发送背压
+ */
+static void test_auth_logging() {
+    BambuBus_init();
+    const auto initial_channel = get_now_filament_num();
+    const auto initial_motion = get_filament_motion(0);
+    for (const auto command : {0x040D, 0x040E}) {
+        const auto expected = command == 0x040D ? BambuBus_long_package_certification :
+                                                BambuBus_long_package_authorization;
+        for (const auto flags : {0x04, 0x05}) {
+            for (const auto payload_length : {0, 34, 985}) {
+                auto frame = long_request(command, payload_length);
+                frame[1] = flags;
+                seal(frame);
+                BUS_LOG_ENABLE = 0;
+                bus_logs.clear(); main_logs.clear(); uart_tx.clear();
+                feed(frame);
+                assert(BambuBus_run() == 1 && cmd == expected);
+                assert(uart_tx.empty() && main_logs.size() == 1 && bus_logs.size() == 1);
+                assert(bus_logs[0].channel == LOG_CH_MAIN && bus_logs[0].type == expected);
+                assert(bus_logs[0].direction == 'R' && bus_logs[0].data == frame);
+                assert(main_logs[0].find(command == 0x040D ? "0x040D" : "0x040E") != std::string::npos);
+                assert(main_logs[0].find("src=0x0300 dst=0x0700 seq=66") != std::string::npos);
+                assert(main_logs[0].find("len=" + std::to_string(frame.size()) + " payload=" +
+                                        std::to_string(payload_length)) != std::string::npos);
+                assert(main_logs[0].find(flags == 0x04 ? "flags=0x04" : "flags=0x05") != std::string::npos);
+                assert(main_logs[0].find("result=LOG_ONLY") != std::string::npos);
+                assert(!have_registered[0] && get_now_filament_num() == initial_channel);
+                assert(get_filament_motion(0) == initial_motion);
+
+                BUS_LOG_ENABLE = 1;
+                bus_logs.clear(); main_logs.clear();
+                feed(frame); assert(BambuBus_run() == 1);
+                assert(bus_logs.size() == 2 && main_logs.size() == 1 && uart_tx.empty());
+                assert(bus_logs[0].channel == LOG_CH_BUS && bus_logs[0].type == expected);
+                assert(bus_logs[0].data == frame && bus_logs[1].channel == LOG_CH_MAIN);
+
+                frame[8] = 0x12; seal(frame);
+                BUS_LOG_ENABLE = 0;
+                bus_logs.clear(); main_logs.clear();
+                const auto last_packet = last_bus_packet_ms;
+                const auto address = bambubus_ams_address;
+                feed(frame); assert(BambuBus_run() == 0 && cmd == BambuBus_package_IGNORED);
+                assert(bus_logs.size() == 1 && main_logs.size() == 1 && uart_tx.empty());
+                assert(bus_logs[0].data == frame && bus_logs[0].type == expected);
+                assert(main_logs[0].find("dst=0x1200") != std::string::npos);
+                assert(main_logs[0].find("result=IGNORED") != std::string::npos);
+                assert(last_bus_packet_ms == last_packet && bambubus_ams_address == address);
+            }
+        }
+
+        auto frame = long_request(command, 4);
+        frame.back() ^= 1u;
+        bus_logs.clear(); main_logs.clear();
+        feed(frame); assert(BambuBus_run() == 2);
+        assert(main_logs.empty() && bus_logs.empty() && uart_tx.empty());
+
+        frame = long_request(command, 4); frame[1] = 0; seal(frame);
+        feed(frame); assert(BambuBus_run() == 0);
+        assert(main_logs.empty() && bus_logs.empty() && uart_tx.empty());
+
+        frame = long_request(command, 4);
+        TX_IDLE = false;
+        feed(frame); assert(BambuBus_run() == 0 && main_logs.empty());
+        TX_IDLE = true;
+        assert(BambuBus_run() == 1 && main_logs.size() == 1 && uart_tx.empty());
+        assert(BambuBus_run() == 0 && main_logs.size() == 1);
+    }
+}
 /** 验证队列次序、满队列保护、显式释放和序号回绕 */
 static void test_queue() {
     rx_write_seq = rx_read_seq = UINT32_MAX - 1u;
@@ -942,6 +1014,7 @@ int main(int argc, char **argv) {
     else if (name == "tx_lifetime") test_tx_lifetime();
     else if (name == "u_compatibility") test_u_compatibility();
     else if (name == "long_flags") test_long_flags();
+    else if (name == "auth_logging") test_auth_logging();
     else if (name == "motor_stop") test_motor_stop();
     else return 2;
     std::printf("PASS %s\n", name.c_str());

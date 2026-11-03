@@ -61,7 +61,8 @@ def main():
     scenarios = ('parser', 'queue', 'queue_threads', 'receiver', 'timeout', 'save',
                  'zero_time', 'registration', 'responses', 'motion_sequences',
                  'motion_isolation', 'motion_timing', 'serial_identity',
-                 'ams_version', 'tx_backpressure', 'tx_lifetime', 'u_compatibility', 'long_flags', 'motor_stop')
+                 'ams_version', 'tx_backpressure', 'tx_lifetime', 'u_compatibility', 'long_flags', 'motor_stop',
+                 'auth_logging')
     if args.settings:
         preamble = '#include <cstdint>\n#include <string>\nusing String = std::string;\n'
         io_header = strip_includes((root / 'src/io_config.h').read_text(encoding='utf-8')).replace('#pragma once\n', '')

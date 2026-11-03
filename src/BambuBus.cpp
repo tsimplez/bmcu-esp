@@ -1128,6 +1128,7 @@ static package_type addressed_package(package_type type, uint8_t ams, uint8_t ch
  * @param length 包含头部与两字节 CRC16 的总长度
  * @return 合法类型、校验/字段错误 ERROR 或不属于本机的 IGNORED
  * 在更新通信状态前校验帧头、CRC8/16、载荷、目标地址、AMS/通道和注册身份；不读取 CRC 尾部作为载荷
+ * 0x040D/0x040E 只识别命令类型，不解释其认证载荷或生成应答
  */
 static package_type get_package_type(unsigned char *buf, const int length) {
     if (!buf || length < 7 || length > BUS_FRAME_CAPACITY || buf[0] != 0x3Du)
@@ -1205,6 +1206,12 @@ static package_type get_package_type(unsigned char *buf, const int length) {
             if (payload_length < 1u) return BambuBus_package_ERROR;
             type = addressed_package(BambuBus_long_package_version,
                                      serial_query_ams(payload, payload_length));
+            break;
+        case 0x40D:
+            type = BambuBus_long_package_certification;
+            break;
+        case 0x40E:
+            type = BambuBus_long_package_authorization;
             break;
         default:
             break;
@@ -1996,8 +2003,38 @@ static const char *package_type_name(const int type) {
         case BambuBus_package_ERROR: return "错误(ERROR)";
         case BambuBus_package_IGNORED: return "忽略(IGNORED)";
         case BambuBus_package_set_filament_type2: return "长包设置耗材(set_filament_type2)";
+        case BambuBus_long_package_certification: return "设备证书请求(0x040D)";
+        case BambuBus_long_package_authorization: return "设备授权请求(0x040E)";
         default: return "未知(unknown)";
     }
+}
+
+/**
+ * 将有效认证请求的摘要和完整原始帧复制到主板日志
+ * @param frame 已由集中解析入口校验的接收帧
+ * @param length 包含头部和 CRC16 的总长度
+ * @param type 集中解析结果，错误帧不记录为认证请求
+ * 独立于总线日志开关，包含发往其他地址的 04/05 长帧；只在主循环记录，不应答或改变注册与运动状态
+ */
+static void log_auth_request(uint8_t *frame, const uint16_t length, const int type) {
+    if (type == BambuBus_package_ERROR || length < 15u ||
+        (frame[1] != 0x04u && frame[1] != 0x05u)) return;
+    long_packge_data request{};
+    BambuBus_long_package_analysis(frame, length, &request);
+    package_type auth_type;
+    if (request.type == 0x040Du)
+        auth_type = BambuBus_long_package_certification;
+    else if (request.type == 0x040Eu)
+        auth_type = BambuBus_long_package_authorization;
+    else
+        return;
+
+    LOG_MAIN("[BambuBus] 收到%s src=0x%04X dst=0x%04X seq=%u len=%u payload=%u flags=0x%02X result=%s",
+             package_type_name(auth_type), static_cast<unsigned>(request.source_address),
+             static_cast<unsigned>(request.target_address), static_cast<unsigned>(request.package_number),
+             static_cast<unsigned>(length), static_cast<unsigned>(request.data_length),
+             static_cast<unsigned>(frame[1]), type == BambuBus_package_IGNORED ? "IGNORED" : "LOG_ONLY");
+    log_bus_hex_typed(LOG_CH_MAIN, 'R', auth_type, frame, length);
 }
 
 /**
@@ -2005,6 +2042,7 @@ static const char *package_type_name(const int type) {
  * @return 0=无帧、发送忙或忽略其它设备帧，1=处理了本机合法帧，2=错误帧，-1=合法通信超时
  * 发送槽空闲时才预占并解析队首，每轮最多处理一帧；全部回复及日志完成后释放请求和缓冲
  * 发送忙时不消费请求、不改变业务状态，仍更新通信超时；保存由独立后台入口执行
+ * 有效 0x040D/0x040E 请求独立写入主板日志，保留原始帧而不执行认证应答
  */
 int BambuBus_run() {
     int stu = 0;
@@ -2034,6 +2072,7 @@ int BambuBus_run() {
             log_bus_hex_typed(LOG_CH_BUS, 'R', cmd, frame, static_cast<uint16_t>(data_length));
             LOG_BUS("<< 收到包 %s (type=%d) len=%d", package_type_name(cmd), cmd, data_length);
         }
+        log_auth_request(frame, static_cast<uint16_t>(data_length), cmd);
         bus_tx_context_type = cmd;
         switch (cmd) {
             case BambuBus_package_heartbeat:
@@ -2052,6 +2091,9 @@ int BambuBus_run() {
                 break;
             case BambuBus_package_REQx6:
                 break;
+            case BambuBus_long_package_certification:
+            case BambuBus_long_package_authorization:
+                break; // 认证帧仅用于诊断，尚未实现证书或签名应答。
             case BambuBus_long_package_MC_online:
                 send_for_long_packge_MC_online(frame, data_length);
                 break;

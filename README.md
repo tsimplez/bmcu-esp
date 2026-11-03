@@ -59,7 +59,7 @@
 https://github.com/RobTillaart/PCF8575
 
 ### 其他
-#### 最新版本支持
+#### 最新版本支持（第一次打印有效）
 https://github.com/Le-Maxime/BMCU-U
 https://github.com/jarczakpawel/BMCU-Flasher
 
