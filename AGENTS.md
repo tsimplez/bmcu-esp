@@ -52,7 +52,7 @@ void io_config_set_defaults(IoConfig &config) {
 | `src/platform.h` / `src/platform.cpp` | 平台适配：引脚、I2C、UART、看门狗、片内 ID、Flash/NVS 存储 | `hal_*()` |
 | `src/i2c_bus.cpp` / `.h` | I2C 配置判断、初始化和地址探测 | `i2c_bus_configured()`、`i2c_bus_begin()`、`i2c_bus_probe()` |
 | `src/env_sensor.cpp` / `.h` | AHT20 温湿度、BMP280 温度/气压采集，缺失设备定期重试 | `env_sensor_init()`、`env_sensor_run()`、`env_sensor_get_aht20()` |
-| `src/BMCU.cpp` / `.h` | 电机、手动队列、微动辅助进料、AS5600 模拟、运行调度 | `BMCU_run()`、`BMCU_motion()`、`motorCmd()`、`check_microswitch_status()` |
+| `src/BMCU.cpp` / `.h` | 电机、打印机与手动共用队列、微动辅助进料、AS5600 模拟、运行调度 | `BMCU_run()`、`BMCU_motion()`、`motorCmd()`、`check_microswitch_status()` |
 | `src/BambuBus.cpp` / `.h` | 协议组帧、校验、状态机、长短包回复、耗材记录 | `BambuBus_run()`、`RX_IRQ()`、`get_package_type()`、`process_motion_state_machine()` |
 | `src/settings_storage.cpp` / `.h` | 设置结构、默认值、加载/保存/快照/回滚、CRC32 | `settings_storage_init()`、`settings_save_to_flash()`、`apply_settings_values()` |
 | `src/project_presets.h` / `.cpp` | 项目接线预设、候选校验、整套应用和当前配置匹配 | `PROJECT_PRESETS`、`project_preset_validate()`、`project_preset_apply()`、`project_preset_match()` |
@@ -89,8 +89,9 @@ void io_config_set_defaults(IoConfig &config) {
 
 - 控制链路：BambuBus 状态机 -> `get_filament_motion()` -> `BMCU_run()` / `BMCU_motion()` -> `motorCmd()` -> `Motor`。
 - Cxx/Dxx 共用 `process_motion_state_machine()` 和 `set_motion_response()`；计时及运动状态按 AMS、通道保存，无通道请求只影响所属 AMS，打印头仍只选中一个全局通道。
-- `set_motion_response()` 统一生成当前通道、使用标志、长度、压力和在线位图；内部停车调用 `set_filament_motion()` 不解除打印机阻断。
-- 电机与通道：`BMCU_channel_motor_ready()`、`BMCU_manual_pulse()`、`BMCU_stop_motor()`、`BMCU_motor_status()`、`BMCU_can_maintain()`。
+- `set_motion_response()` 统一生成当前通道、使用标志、长度、压力和在线位图；停车清理当前运行及排队，下一条打印机动作可以重新启动。
+- 打印机目标优先接管同通道：同方向保持，反方向切换；达到并发上限时与手动任务共用 FIFO，同通道重复请求更新目标而不重复入队。
+- 电机与通道：`BMCU_channel_motor_ready()`、`BMCU_manual_pulse()`、`BMCU_request_stop_motor()`、`BMCU_stop_motor()`、`BMCU_motor_status()`、`BMCU_can_maintain()`；网页启停只提交请求，由主循环执行。
 - 微动与自动进料：`check_microswitch_status()`、`autoload_blocked()`、`BMCU_apply_channel_modes()`。
 - AS5600 模拟：`AS5600_init()`、`AS5600_get_raw_angle()`、`AS5600_get_speed()`、`AS5600_is_online()`。
 

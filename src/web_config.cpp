@@ -428,9 +428,8 @@ static void handle_status() {
         if (i) j += ',';
         auto m = BMCU_motor_status(i);
         j += "{\"dir\":" + String(m.direction) + ",\"source\":" + String((int)m.source) +
-             ",\"remaining_ms\":" + String(m.remaining_ms) + ",\"blocked\":" +
-             String(m.blocked ? "true" : "false") + ",\"queue_position\":" + String(m.queue_position) +
-             ",\"queued_dir\":" + String(m.queued_direction) + "}";
+             ",\"remaining_ms\":" + String(m.remaining_ms) + ",\"queue_position\":" + String(m.queue_position) +
+             ",\"queued_dir\":" + String(m.queued_direction) + ",\"queued_source\":" + String(m.queued_source) + "}";
     }
     j += ']';
     // 每个通道的微动开关状态：1=有料 0=无料 -1=该通道没有微动开关
@@ -827,10 +826,9 @@ static void handle_settings_save() {
     server.send(200, "application/json", "{\"ok\":true,\"msg\":\"参数已保存\"}");
 }
 
-// dir=0 停止任意来源的动作；启动只登记截止时间，立即返回
 /**
  * 处理手动电机控制请求
- * 方向为 0 时停止任意来源的动作；否则校验通道和时长后提交点动，忙时进入手动队列
+ * 方向为 0 时登记停止请求；否则校验通道和时长后提交点动，全部由主循环驱动电机
  */
 static void handle_manual_motor() {
     if (!server.hasArg("motor") || !server.hasArg("dir") ||
@@ -840,9 +838,9 @@ static void handle_manual_motor() {
     }
     int motor = server.arg("motor").toInt(), dir = server.arg("dir").toInt();
     if (!dir) {
-        BMCU_stop_motor(motor);
-        LOG_MAIN("[web] 已停止通道 %d", motor + 1);
-        server.send(200, "application/json", "{\"ok\":true,\"msg\":\"已停止\"}");
+        BMCU_request_stop_motor(motor);
+        LOG_MAIN("[web] 已请求停止通道 %d", motor + 1);
+        server.send(202, "application/json", "{\"ok\":true,\"msg\":\"停止请求已提交\"}");
         return;
     }
     if (!valid_number("duration", 1, MAX_PULSE_MS - 1)) {
@@ -856,12 +854,11 @@ static void handle_manual_motor() {
         return;
     }
     if (!BMCU_manual_pulse(motor, dir, duration)) {
-        server.send(409, "application/json", "{\"ok\":false,\"msg\":\"通道正在运行或已排队\"}");
+        server.send(409, "application/json", "{\"ok\":false,\"msg\":\"通道正在运行、停止或已排队\"}");
         return;
     }
-    const bool queued = BMCU_motor_status(motor).queue_position > 0;
-    LOG_MAIN("[web] 通道 %d %s%s，%dms", motor + 1, queued ? "排队" : "开始", dir > 0 ? "进料" : "退料", duration);
-    server.send(202, "application/json", queued ? "{\"ok\":true,\"msg\":\"已排队\"}" : "{\"ok\":true,\"msg\":\"已启动\"}");
+    LOG_MAIN("[web] 通道 %d 排队%s，%dms", motor + 1, dir > 0 ? "进料" : "退料", duration);
+    server.send(202, "application/json", "{\"ok\":true,\"msg\":\"已排队\"}");
 }
 
 /**

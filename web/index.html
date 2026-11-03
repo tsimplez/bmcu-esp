@@ -606,7 +606,7 @@ const updateChannelStateText=()=>{
 }
 /**
  * 根据状态刷新电机按钮和运行提示
- * 处理手动请求中的按钮禁用、排队/运行/停止按钮切换，并显示剩余时间或等待状态
+ * 处理手动请求中的按钮禁用、排队/运行/停止按钮切换，并显示运行和排队任务的来源
  */
 const renderMotorControls=()=>{
   const fresh=statusAt&&performance.now()-statusAt<3000
@@ -621,10 +621,10 @@ const renderMotorControls=()=>{
     const el=$('run'+i)
     if(!el) continue
     const left=Math.max(0,(m.remaining_ms||0)-(performance.now()-statusAt))
-    el.textContent=queued?'等待'+(m.queued_dir>0?'进料':'退料')+' · 排队第 '+m.queue_position+' 位'+(fresh?'':' · 状态待确认'):
+    el.textContent=queued?(['','打印机','手动','微动辅助'][m.queued_source]||'')+' · 等待'+(m.queued_dir>0?'进料':'退料')+' · 排队第 '+m.queue_position+' 位'+(fresh?'':' · 状态待确认'):
       running?(['','打印机','手动','微动辅助'][m.source]||'')+' · '+(m.dir>0?'进料':'退料')+
       (!fresh?' · 状态待确认':m.remaining_ms<0?' · 剩余时间未知':left>0?' · 剩余 '+(left/1000).toFixed(1)+' 秒':' · 等待停止确认'):
-      m.blocked?'已拦截打印机动作，等待打印机结束本次操作':''
+      ''
   }
   $('manual-state').textContent=fresh?'运行电机 '+S.motor_running+' / '+S.motor_limit+' · 排队 '+(S.motors||[]).filter(m=>m.queue_position).length+'，可继续点击其他通道':
     '设备状态未更新，请检查连接；仍可尝试停止运行中的电机'

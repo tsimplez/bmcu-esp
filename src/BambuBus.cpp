@@ -337,7 +337,7 @@ static const char *motion_internal_name(const filament_motion_internal m) {
  * @param new_motion 新的内部状态
  * @param printer_request 是否由打印机请求更新，默认为 true
  * 同步状态与转换历史；离开进料时清除等待计时，进入 idle 时清除反馈和准备历史
- * 只有打印机请求的 idle 才通知 BMCU 解除阻断，内部停车必须保留阻断
+ * 打印机请求的 idle 通知 BMCU 取消尚未启动的打印机任务，内部停车由调用方清理队列
  */
 static void set_motion_internal(const uint8_t ams_num, const uint8_t ch,
                                 const filament_motion_internal new_motion, const bool printer_request = true) {
@@ -390,7 +390,7 @@ bool BambuBus_filament_stop_requested(const int num) {
  * 设置通道对外运动状态
  * @param num 全局通道编号 0-15
  * @param motion 新的对外状态
- * 同步状态、历史和计时，但不解除打印机阻断；保留上层传入的对外命令
+ * 同步状态、历史和计时，不发送打印机空闲通知；保留上层传入的对外命令
  */
 void set_filament_motion(const int num, const filament_motion_state_set motion) {
     if (num < 0 || num >= 16) return;

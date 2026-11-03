@@ -58,9 +58,9 @@ struct MotorStatus {
     int direction; // 当前方向：1=进料，-1=退料，0=停止
     MotorSource source; // 当前动作来源：打印机、手动点动或微动辅助进料
     int32_t remaining_ms; // -1 表示结束时间由打印机决定
-    bool blocked; // 等待打印机结束当前动作，防止停止后重复启动
     int queue_position; // 0=未排队，1=下一个执行
-    int queued_direction; // 排队任务的点动方向：1=进料，-1=退料，0=无排队任务
+    int queued_direction; // 排队任务的目标方向：1=进料，-1=退料，0=无排队任务
+    MotorSource queued_source; // 排队任务来源，便于区分打印机和手动操作
 };
 
 bool motorCmd(int motorNum, int cmd, MotorSource source = MOTOR_PRINTER, uint32_t duration_ms = 0);
@@ -70,6 +70,8 @@ MotorStatus BMCU_motor_status(int motorNum);
 int BMCU_running_count();
 
 void BMCU_stop_motor(int motorNum);
+
+void BMCU_request_stop_motor(int motorNum);
 
 void BMCU_printer_idle(int motorNum);
 

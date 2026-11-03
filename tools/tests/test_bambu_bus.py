@@ -30,11 +30,13 @@ def extract_function(source, signature):
 
 
 def main():
-    """在临时目录编译真实协议或设置存储代码，逐个验证协议、记录格式及失败场景。"""
+    """在临时目录编译真实协议、电机调度或设置存储代码，逐个验证互锁、记录格式及失败场景。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--zig', type=Path, help='可选的 zig 可执行文件，用其 c++ 子命令编译')
     parser.add_argument('--wasi', action='store_true', help='用 Zig 编译为 WebAssembly 并由 Node WASI 沙箱执行（不运行线程压测）')
-    parser.add_argument('--settings', action='store_true', help='改为测试真实设置存储代码的当前格式加载与失败回滚')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--settings', action='store_true', help='改为测试真实设置存储代码的当前格式加载与失败回滚')
+    mode.add_argument('--motor-control', action='store_true', help='测试真实电机队列、互锁、主循环及网页请求处理')
     args = parser.parse_args()
     if args.wasi and not args.zig:
         parser.error('--wasi 需要 --zig')
@@ -63,6 +65,25 @@ def main():
                  'motion_isolation', 'motion_timing', 'serial_identity',
                  'ams_version', 'tx_backpressure', 'tx_lifetime', 'u_compatibility', 'long_flags', 'motor_stop',
                  'auth_logging')
+    if args.motor_control:
+        io_header = strip_includes((root / 'src/io_config.h').read_text(encoding='utf-8')).replace('#pragma once\n', '')
+        motor_header = (root / 'src/BMCU.h').read_text(encoding='utf-8')
+        motor_header = motor_header[motor_header.index('enum MotorSource'):motor_header.rindex('#ifdef __cplusplus')]
+        control_support = (root / 'tools/tests/fixtures/motor_control_test_support.h').read_text(encoding='utf-8')
+        control_cases = (root / 'tools/tests/fixtures/motor_control_test_cases.cpp').read_text(encoding='utf-8')
+        control = motor_source[motor_source.index('namespace {'):motor_source.index('// ------------------------------ AS5600 start')]
+        control += '\n' + extract_function(motor_source, 'void BMCU_run() {')
+        control += '\n' + extract_function(motor_source, 'void BMCU_motion() {')
+        helpers = '\n'.join(extract_function(cases, signature) for signature in (
+            'static void seal(', 'static std::vector<uint8_t> short_request(',
+            'static void feed(', 'static void reset_motion_fixture(', 'static void request_motion('))
+        web_source = (root / 'src/web_config.cpp').read_text(encoding='utf-8')
+        handler = extract_function(web_source, 'static void handle_manual_motor() {')
+        translation_unit = '\n'.join(('#define BMCU_TEST_MOTOR_CONTROL 1', support, serial_function,
+                                     header, atomics, reference, bus, io_header, motor_header,
+                                     control_support, control, handler, helpers, control_cases))
+        scenarios = ('printer_target', 'motor_queue', 'queue_updates', 'manual_requests',
+                     'manual_bus_timeout', 'motor_guards')
     if args.settings:
         preamble = '#include <cstdint>\n#include <string>\nusing String = std::string;\n'
         io_header = strip_includes((root / 'src/io_config.h').read_text(encoding='utf-8')).replace('#pragma once\n', '')

@@ -33,10 +33,11 @@ struct MotorRun {
     bool timed = false;                // false 表示由打印机状态机持续控制
 };
 
-// 一次等待执行的手动点动任务
+// 一次等待执行的电机任务，打印机和手动共用队列
 struct MotorJob {
     int channel;
     int direction;                     // 1=进料，-1=退料
+    MotorSource source;
     uint32_t duration;                 // 持续时间（毫秒）
 };
 
@@ -48,7 +49,7 @@ struct ChannelState {
     float pullback_start_meters = 0.0f;    // 退料开始时的耗材长度
     uint32_t msw_raw_time = 0;             // 原始状态最近变化时间
     // 单字节字段集中放在末尾，减少结构体对齐填充
-    bool printer_blocked = false;         // 等待打印机 idle 或总线恢复
+    bool stop_requested = false;          // 网页提交停止请求，由主循环处理
     bool feed_stop_pending = false;       // 正在等待进料延迟停车
     int8_t msw_previous = -1;              // 防抖后的微动状态：-1 未知，0 无料，1 有料
     int8_t msw_raw = -1;                   // 防抖前的微动状态
@@ -61,30 +62,48 @@ static ChannelState channel_state[IO_CONFIG_MAX_CHANNELS];
 // 打印机总线超时后禁止新的打印机动作，直到收到合法新帧
 static bool printer_bus_fault = false;
 
-// 等待启动的手动点动任务，按提交顺序执行
-static MotorJob manual_queue[IO_CONFIG_MAX_CHANNELS];
-// 手动队列中当前有效的任务数量
-static int manual_queued = 0;
+// 等待启动的电机任务，按提交顺序执行，同一通道只保留一个目标动作
+static MotorJob motor_queue[IO_CONFIG_MAX_CHANNELS];
+// 电机队列中当前有效的任务数量
+static int motor_queued = 0;
 
 /**
- * 查询通道在手动队列中的位置
+ * 查询通道在电机队列中的位置
  * @param ch 通道编号
  * @return 从 1 开始的排队位置；未排队返回 0
- * 顺序扫描手动动作队列，供状态接口显示排队位置
+ * 顺序扫描电机队列，供状态接口显示排队位置
  */
 static int queue_position(const int ch) {
-    for (int i = 0; i < manual_queued; i++) if (manual_queue[i].channel == ch) return i + 1;
+    for (int i = 0; i < motor_queued; i++) if (motor_queue[i].channel == ch) return i + 1;
     return 0;
 }
 
 /**
- * 从手动队列删除指定任务
+ * 从电机队列删除指定任务
  * @param index 队列下标
  * 把后续任务前移并减少队列长度
  */
 static void remove_job(const int index) {
-    for (int i = index; i + 1 < manual_queued; i++) manual_queue[i] = manual_queue[i + 1];
-    --manual_queued;
+    for (int i = index; i + 1 < motor_queued; i++) motor_queue[i] = motor_queue[i + 1];
+    --motor_queued;
+}
+
+/**
+ * 新增或更新一个排队动作
+ * @param channel 通道编号
+ * @param direction 目标方向
+ * @param source 动作来源
+ * @param duration 动作时长，0 表示持续运行
+ * @return true 表示请求已排队；队列已满时返回 false
+ * 同一通道的新目标覆盖旧目标并保留排队位置，重复报文不会增加任务
+ */
+static bool queue_motor_job(const int channel, const int direction, const MotorSource source,
+                            const uint32_t duration) {
+    const int pos = queue_position(channel);
+    if (!pos && motor_queued >= active_channel_count()) return false;
+    const int index = pos ? pos - 1 : motor_queued++;
+    motor_queue[index] = {channel, direction, source, duration};
+    return true;
 }
 
 /**
@@ -169,12 +188,12 @@ bool BMCU_channel_motor_ready(const int motorNum) {
 }
 
 /**
- * 启动排队中的手动电机动作
- * 在并发上限内依次取出队首任务启动；无效通道或引脚未配置的任务会被丢弃
+ * 启动排队中的电机动作
+ * 在并发上限内依次启动队首；丢弃无效接线及已结束、换通道或缺料的打印机任务
  */
-static void run_manual_queue() {
-    while (manual_queued && BMCU_running_count() < MOTOR_LIMIT) {
-        const auto job = manual_queue[0];
+static void run_motor_queue() {
+    while (motor_queued && BMCU_running_count() < MOTOR_LIMIT) {
+        const auto job = motor_queue[0];
         if (!is_active_channel(job.channel)) {
             remove_job(0);
             continue;
@@ -184,8 +203,14 @@ static void run_manual_queue() {
             remove_job(0);
             continue;
         }
-        if (!motorCmd(job.channel, job.direction, MOTOR_MANUAL, job.duration)) break;
-        remove_job(0);
+        if (job.source == MOTOR_PRINTER &&
+            (printer_bus_fault || job.channel != get_now_filament_num() ||
+             get_filament_motion(job.channel) == waiting ||
+             (job.direction > 0 && !is_filament_online(job.channel)))) {
+            remove_job(0);
+            continue;
+        }
+        if (!motorCmd(job.channel, job.direction, job.source, job.duration)) break;
     }
 }
 
@@ -217,7 +242,6 @@ void BMCU_apply_io_config() {
             pinMode_PCF8575(applied_io.microswitch[i], INPUT);
         auto &ch = channel_state[i];
         ch.previous_motion = waiting;
-        ch.printer_blocked = false;
         ch.msw_previous = ch.msw_raw = -1;
         ch.msw_raw_time = 0;
     }
@@ -247,10 +271,10 @@ int BMCU_max_ams_count() { return IO_CONFIG_MAX_CHANNELS / 4; }
 /**
  * 判断是否存在手动动作
  * @return true 表示有手动任务在运行或排队
- * 检查手动队列和所有手动来源的电机
+ * 检查共用队列中的手动任务和所有手动来源的电机
  */
 bool BMCU_manual_active() {
-    if (manual_queued) return true;
+    for (int i = 0; i < motor_queued; i++) if (motor_queue[i].source == MOTOR_MANUAL) return true;
     for (const auto &ch: channel_state) if (ch.motor.source == MOTOR_MANUAL) return true;
     return false;
 }
@@ -290,11 +314,11 @@ void BMCU_apply_channel_modes() {
 /**
  * 判断当前是否允许维护操作
  * @return true 表示可以安全修改配置或升级
- * 要求没有手动排队、没有电机运行、所有通道处于停止且打印机状态为 waiting
+ * 要求没有电机排队或运行、所有通道处于停止且打印机状态为 waiting
  */
 bool BMCU_can_maintain() {
     // 手动维护不再因为打印机总线近期有通信而被拒绝，只检查本地运动状态
-    if (BMCU_running_count() || manual_queued) return false;
+    if (BMCU_running_count() || motor_queued) return false;
     for (int i = 0; i < active_channel_count(); i++) {
         if (!motors[i].getStopState() || get_filament_motion(i) != waiting) return false;
     }
@@ -324,7 +348,7 @@ bool BMCU_printer_bus_fault() {
 /**
  * 读取通道电机完整状态
  * @param motorNum 通道编号
- * @return 包含方向、来源、剩余时间、阻断和排队信息的 MotorStatus
+ * @return 包含方向、来源、剩余时间及排队位置、方向和来源的 MotorStatus
  * 越界通道返回默认空闲状态
  */
 MotorStatus BMCU_motor_status(const int motorNum) {
@@ -341,14 +365,14 @@ MotorStatus BMCU_motor_status(const int motorNum) {
         }
     }
     const int pos = queue_position(motorNum);
-    return {m.direction, m.source, remaining_ms, ch.printer_blocked, pos,
-            pos ? manual_queue[pos - 1].direction : 0};
+    return {m.direction, m.source, remaining_ms, pos,
+            pos ? motor_queue[pos - 1].direction : 0, pos ? motor_queue[pos - 1].source : MOTOR_IDLE};
 }
 
 /**
- * 解除通道的打印机阻断
+ * 处理打印机通道空闲通知
  * @param motorNum 通道编号
- * 收到打印机 idle 后清除 blocked 标志，并把上一次动作恢复为 waiting
+ * 收到打印机 idle 后取消尚未启动的打印机任务，并把上一次动作恢复为 waiting
  */
 void BMCU_printer_idle(const int motorNum) {
     if (!is_active_channel(motorNum)) return;
@@ -357,7 +381,8 @@ void BMCU_printer_idle(const int motorNum) {
         // 退料由 Web 超时独立控制，打印机提前空闲也必须跑满设定时间
         LOG_MAIN("[motor] 通道 %d 打印机已空闲，但退料定时未到，继续运行", motorNum + 1);
     }
-    ch.printer_blocked = false;
+    const int pos = queue_position(motorNum);
+    if (pos && motor_queue[pos - 1].source == MOTOR_PRINTER) remove_job(pos - 1);
     ch.previous_motion = waiting;
 }
 
@@ -392,20 +417,28 @@ static bool arm_feed_stop_delay(const int ch) {
 /**
  * 停止指定通道并清理排队
  * @param motorNum 通道编号
- * 移除该通道的排队任务、停止电机并回到 waiting；打印机来源的动作会设置阻断，等待总线确认
+ * 移除该通道的排队任务、停止电机并回到 waiting；下一条打印机动作请求可以重新启动
  */
 void BMCU_stop_motor(const int motorNum) {
     if (!valid_channel(motorNum)) return;
     auto &ch = channel_state[motorNum];
+    ch.stop_requested = false;
     const int pos = queue_position(motorNum);
     if (pos) remove_job(pos - 1);
-    // 内部设置 waiting 不解锁；只在总线真正收到 idle 后允许打印机再次启动
-    if (ch.motor.source == MOTOR_PRINTER || get_filament_motion(motorNum) != waiting)
-        ch.printer_blocked = true;
     motorCmd(motorNum, 0);
     set_filament_motion(motorNum, waiting);
-    // 强制停车后同步清掉边沿缓存，避免打印机再次请求退料时被误判为重复命令
+    // 清理动作历史；下一条打印机请求可以从新的动作开始。
     ch.previous_motion = waiting;
+}
+
+/**
+ * 提交通道停止请求
+ * @param motorNum 通道编号
+ * 只设置标记，由主循环停止电机并清理排队，供网页回调使用
+ */
+void BMCU_request_stop_motor(const int motorNum) {
+    if (!is_active_channel(motorNum)) return;
+    channel_state[motorNum].stop_requested = true;
 }
 
 /**
@@ -413,20 +446,18 @@ void BMCU_stop_motor(const int motorNum) {
  * @param motorNum 通道编号
  * @param cmd 1=进料，-1=退料
  * @param duration_ms 点动时长（毫秒）
- * @return true 表示已启动或已排队
- * 校验参数、通道状态和并发限制后加入手动队列并尝试立即启动
+ * @return true 表示已加入电机队列，等待主循环启动
+ * 只检查本地运行、停止请求、排队和引脚状态；后续打印机请求可以接管本通道
  */
 bool BMCU_manual_pulse(const int motorNum, const int cmd, const uint32_t duration_ms) {
     if (!is_active_channel(motorNum) || (cmd != 1 && cmd != -1) || !duration_ms ||
         duration_ms >= MAX_PULSE_MS)
         return false;
-    if (channel_state[motorNum].motor.direction || queue_position(motorNum) ||
-        manual_queued >= active_channel_count() || !BMCU_channel_motor_ready(motorNum) ||
-        get_filament_motion(motorNum) != waiting)
+    const auto &ch = channel_state[motorNum];
+    if (ch.motor.direction || ch.stop_requested || queue_position(motorNum) ||
+        !BMCU_channel_motor_ready(motorNum))
         return false;
-    manual_queue[manual_queued++] = {.channel = motorNum, .direction = cmd, .duration = duration_ms};
-    run_manual_queue();
-    return true;
+    return queue_motor_job(motorNum, cmd, MOTOR_MANUAL, duration_ms);
 }
 
 /**
@@ -435,8 +466,9 @@ bool BMCU_manual_pulse(const int motorNum, const int cmd, const uint32_t duratio
  * @param cmd 1=正转，-1=反转，0=停止
  * @param source 动作来源
  * @param duration_ms 限时动作时长，0 表示不自动停止
- * @return true 表示命令被接受
- * 检查来源互锁、并发上限和通道占用后驱动 Motor，并记录动作截止时间；重复命令不续期
+ * @return true 表示命令已执行或已排队
+ * 打印机可接管本通道；同方向不重复驱动，反方向直接切换，同来源重复命令不续期
+ * 并发名额不足时按通道合并排队，实际启动后才计算时长；故障总线不能启动打印机任务
  */
 bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const uint32_t duration_ms) {
     if (!valid_channel(motorNum) || cmd < -1 || cmd > 1) return false;
@@ -457,24 +489,26 @@ bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const
     }
     if (!is_active_channel(motorNum)) return false;
     if (!BMCU_channel_motor_ready(motorNum)) return false;
-    if (source == MOTOR_PRINTER && (printer_bus_fault || ch.printer_blocked)) return false;
-    if ((source != MOTOR_MANUAL && queue_position(motorNum)) ||
-        (m.direction && m.source != source) ||
-        (!m.direction && BMCU_running_count() >= MOTOR_LIMIT)) {
-        // 拒绝本次打印机动作，不在名额空出后悄悄执行积压命令
-        if (source == MOTOR_PRINTER) {
-            ch.printer_blocked = true;
-            LOG_MAIN("[motor] 通道 %d 忙碌或达到并发上限，打印机动作已拒绝", motorNum + 1);
-        }
-        return false;
+    if (source == MOTOR_PRINTER && printer_bus_fault) return false;
+    const int pos = queue_position(motorNum);
+    if (source != MOTOR_PRINTER &&
+        ((m.direction && m.source != source) || (pos && motor_queue[pos - 1].source != source))) return false;
+    if (!m.direction && (BMCU_running_count() >= MOTOR_LIMIT || (motor_queued && pos != 1))) {
+        if (source == MOTOR_AUTOLOAD) return false;
+        return queue_motor_job(motorNum, cmd, source, duration_ms);
     }
+    if (pos) remove_job(pos - 1);
     if (m.direction == cmd && m.source == source) return true; // 重复命令不续期
+    const bool same_direction = m.direction == cmd;
+    clear_feed_stop_delay(motorNum);
     m.direction = cmd;
     m.source = source;
     m.end = millis() + duration_ms;
     m.timed = duration_ms > 0;
-    if (cmd > 0) motors[motorNum].forward();
-    else motors[motorNum].backward();
+    if (!same_direction) {
+        if (cmd > 0) motors[motorNum].forward();
+        else motors[motorNum].backward();
+    }
     if (duration_ms > 0) {
         LOG_MAIN("[motor] 通道 %d %s启动，来源=%s，定时 %lu ms", motorNum + 1,
                  motor_direction_name(cmd), motor_source_name(source),
@@ -508,14 +542,18 @@ void BMCU_apply_pullback_timeout(const int motorNum, const uint32_t previous_tim
 }
 
 /**
- * 处理限时电机和手动队列
- * 停止已到期的限时动作，并继续启动排队中的手动任务
+ * 处理停止请求和限时电机
+ * 先处理网页停止请求，再停止已到期的限时动作；队列等本轮打印机状态处理完成后再启动
  */
 static void motor_tick() {
     const uint32_t now = millis();
     for (int i = 0; i < active_channel_count(); i++) {
         auto &ch = channel_state[i];
         auto &m = ch.motor;
+        if (ch.stop_requested) {
+            BMCU_stop_motor(i);
+            continue;
+        }
         // 打印机停止进料后先保持运行；动作失效时直接清除，避免残留延时
         if (ch.feed_stop_pending) {
             if (m.source != MOTOR_PRINTER || m.direction <= 0 || m.timed) {
@@ -537,7 +575,6 @@ static void motor_tick() {
             motorCmd(i, 0);
         }
     }
-    run_manual_queue();
 }
 
 // ------------------------------ AS5600 start ------------------------------
@@ -828,7 +865,7 @@ void BMCU_init() {
 
 /**
  * BMCU主运行逻辑
- * 处理耗材状态、更新耗材长度、运行通信和调试逻辑
+ * 处理停止请求、打印机目标和共用队列；总线故障取消打印机运行及排队，保留本地手动任务
  */
 void BMCU_run() {
     motor_tick();
@@ -839,14 +876,17 @@ void BMCU_run() {
             LOG_MAIN("[bus] 打印机总线超过 1 秒未收到合法帧，停止打印机动作");
         printer_bus_fault = true;
         for (int i = 0; i < active_channel_count(); i++) {
-            if (channel_state[i].motor.source == MOTOR_PRINTER || get_filament_motion(i) != waiting)
+            if (channel_state[i].motor.source == MOTOR_PRINTER)
                 BMCU_stop_motor(i);
-            // 即使当前没有运行中的电机，也阻止超时期间的新动作
-            channel_state[i].printer_blocked = true;
+            else if (get_filament_motion(i) != waiting) {
+                set_filament_motion(i, waiting);
+                channel_state[i].previous_motion = waiting;
+            }
+            const int pos = queue_position(i);
+            if (pos && motor_queue[pos - 1].source == MOTOR_PRINTER) remove_job(pos - 1);
         }
     } else if (bus_stu == 1 && printer_bus_fault) {
         printer_bus_fault = false;
-        for (int i = 0; i < active_channel_count(); i++) channel_state[i].printer_blocked = false;
         LOG_MAIN("[bus] 收到合法打印机帧，总线恢复，允许新的打印机动作");
     }
     float d = AS5600_get_distance_E();
@@ -870,12 +910,9 @@ void BMCU_run() {
     if (current_valid) {
         auto &ch = channel_state[now_f];
         if (state == need_pull_back) {
-            // 进料延迟停止尚未到期时先继续进料，等延迟结束后再启动退料
-            if (ch.previous_motion != need_pull_back && !ch.feed_stop_pending) {
+            if (ch.previous_motion != need_pull_back) {
                 ch.previous_motion = need_pull_back;
                 ch.pullback_start_meters = get_filament_meters(now_f);
-                if (!motorCmd(now_f, -1, MOTOR_PRINTER, PULLBACK_TIMEOUT[now_f] * 1000u))
-                    LOG_MAIN("[motor] 通道 %d 退料启动失败：通道被阻断或暂时不可用", now_f + 1);
             }
         } else if (state == need_send_out) {
             if (ch.feed_stop_pending) {
@@ -891,15 +928,17 @@ void BMCU_run() {
         if (state == need_send_out) {
             d = -d; // 进料时长度减少
         }
-        if (!ch.printer_blocked) add_filament_meters(now_f, d);
+        if (ch.motor.source == MOTOR_PRINTER && ch.motor.direction) add_filament_meters(now_f, d);
     }
 
     BMCU_motion(); // 处理电机运动
+    run_motor_queue();
 }
 
 /**
  * 电机运动逻辑
- * 根据当前状态控制电机；打印机明确的 07/00 停止供料跳过普通进料结束延迟
+ * 按打印机目标方向接管或切换电机；重复请求保持运行，达到并发上限时排队
+ * 明确的 07/00 停止供料跳过普通进料结束延迟；定时退料可被新的进料请求切换
  */
 void BMCU_motion() {
     if (printer_bus_fault) {
@@ -919,30 +958,26 @@ void BMCU_motion() {
     }
     auto &ch = channel_state[cur];
     auto &m = ch.motor;
+    auto act = get_filament_motion(cur);
+    const int pos = queue_position(cur);
+    if (act == waiting && pos && motor_queue[pos - 1].source == MOTOR_PRINTER) remove_job(pos - 1);
     if (BambuBus_filament_stop_requested(cur) && m.source == MOTOR_PRINTER && m.direction > 0) {
         clear_feed_stop_delay(cur);
         motorCmd(cur, 0);
         return;
     }
-    // 打印机发起的定时退料不接受打印机后续状态干扰，必须由 Web 超时参数决定停止时间
-    if (m.source == MOTOR_PRINTER && m.timed && m.direction < 0) {
+    // 待机和重复退料请求保持原截止时间，新的进料请求可以立即切换方向。
+    if (m.source == MOTOR_PRINTER && m.timed && m.direction < 0 && act != need_send_out) {
         return;
     }
 
-    const bool execute_motion = channel_switch_ready(cur);
-    if (m.source == MOTOR_MANUAL) {
-        if (get_filament_motion(cur) != waiting) motorCmd(cur, 1); // 拒绝占用中的通道，不延后执行
-        return;
-    }
-    if (m.source == MOTOR_AUTOLOAD) {
-        if (get_filament_motion(cur) == waiting) return;
-        motorCmd(cur, 0);
-    }
+    const bool execute_motion = channel_switch_ready(cur) || m.direction != 0;
+    if (act == waiting && (m.source == MOTOR_MANUAL || m.source == MOTOR_AUTOLOAD)) return;
 
-    auto act = get_filament_motion(cur);
     switch (act) {
         case need_pull_back:
-            // 待退料
+            clear_feed_stop_delay(cur);
+            motorCmd(cur, -1, MOTOR_PRINTER, PULLBACK_TIMEOUT[cur] * 1000u);
             break;
         case need_send_out:
             // 待进料：执行进料（正转）

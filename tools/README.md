@@ -22,7 +22,7 @@ tools/
 
 | 入口 | 检查内容 | 依赖 |
 |---|---|---|
-| `tests/test_bambu_bus.py` | 协议收发、状态机、电机调度；加 `--settings` 检查设置加载、默认值和失败回滚 | Python、GCC/Clang 或 Zig；WASI 模式另需 Node.js |
+| `tests/test_bambu_bus.py` | 协议收发、状态机；加 `--motor-control` 检查真实电机接管、换向、队列和网页启停；加 `--settings` 检查设置加载、默认值和失败回滚 | Python、GCC/Clang 或 Zig；WASI 模式另需 Node.js |
 | `tests/test_as5600.py` | 模拟采样、时间边界、重置及统计特征 | Python、Zig、Node.js |
 | `tests/test_ota.py` | OTA 清单、下载回退和写入失败路径 | Python、Zig、Node.js |
 | `tests/test_project_presets.py` | 项目预设、接线校验、存储、逐台 AMS 身份 GET/POST 和失败回滚 | Python、GCC/Clang |
@@ -37,6 +37,7 @@ tools/
 ```powershell
 # 已有 GCC/Clang 时；通过 CXX 环境变量选择编译器
 python -B tools/tests/test_bambu_bus.py
+python -B tools/tests/test_bambu_bus.py --motor-control
 python -B tools/tests/test_bambu_bus.py --settings
 
 # Zig 0.15.2 或更新版本；WASI 运行需要 Node.js

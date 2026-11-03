@@ -94,9 +94,13 @@ static void pinMode(int, int) {}
 /**
  * 记录空闲通知
  * @param channel 全局通道号
- * 验证内部停车不会意外解除打印机阻断
+ * 验证内部停车不会伪造来自打印机的空闲通知
  */
+#ifdef BMCU_TEST_MOTOR_CONTROL
+void BMCU_printer_idle(int channel);
+#else
 static void BMCU_printer_idle(int channel) { assert(channel >= 0 && channel < 16); ++idle_notifications[channel]; }
+#endif
 /** 默认传感器离线；黄金报文场景提供固定 22℃、20% 湿度 */
 static bool env_sensor_get_aht20(float *temperature, float *humidity) {
     if (!sensor_online) return false;

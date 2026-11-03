@@ -41,6 +41,7 @@ const path = require('node:path');
       pcf: { configured: true, sda: 46, scl: 47, pins: gpioPins },
     };
     const posts = [];
+    const motorPosts = [], motorStates = [];
     let failSave = false;
     let failOta = false, otaChecks = 0;
     await page.route('http://bmcu.test/**', async route => {
@@ -50,7 +51,13 @@ const path = require('node:path');
         return route.fulfill({ contentType: 'text/html', body: fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8') });
       }
       let data = {};
-      if (url.pathname === '/api/settings' && req.method() === 'POST') {
+      if (url.pathname === '/api/motor' && req.method() === 'POST') {
+        const body = new URLSearchParams(req.postData());
+        motorPosts.push(body);
+        const channel = Number(body.get('motor')), direction = Number(body.get('dir'));
+        motorStates[channel] = direction ? { dir: direction, source: 2, remaining_ms: 300 } : {};
+        return route.fulfill({ status: 202, json: { ok: true, msg: direction ? '已排队' : '停止请求已提交' } });
+      } else if (url.pathname === '/api/settings' && req.method() === 'POST') {
         const body = new URLSearchParams(req.postData());
         posts.push(body);
         if (failSave) return route.fulfill({ status: 500, json: { ok: false, msg: '保存失败，请重试' } });
@@ -82,7 +89,8 @@ const path = require('node:path');
       }
       else if (url.pathname === '/api/status') data = {
         ...settings, mode: 'STA', ip: '192.0.2.1', chip: 'ESP32-C3', rs485: 1,
-        maintenance: true, printer: 0, motors: [], fl: [], uptime: 10, heap: 102400, heap_total: 204800,
+        maintenance: true, printer: 0, motors: motorStates, motor_running: motorStates.filter(m => m.dir).length,
+        fl: [], uptime: 10, heap: 102400, heap_total: 204800,
         i2c: i2cStatus,
       };
       await route.fulfill({ json: data });
@@ -325,9 +333,27 @@ const path = require('node:path');
         style: 'header,.toast{visibility:hidden!important;opacity:0!important;transition:none!important}' });
     await page.click('[data-tab="status"]');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '四片状态必须适配手机宽度');
+    motorStates[0] = { dir: 0, queue_position: 1, queued_dir: -1, queued_source: 1 };
+    motorStates[1] = { dir: 0, queue_position: 2, queued_dir: 1, queued_source: 2 };
+    motorStates[2] = { dir: 1, source: 1, remaining_ms: -1 };
+    await page.evaluate(() => refreshStatus());
+    assert.match(await page.locator('#run0').textContent(), /打印机 · 等待退料 · 排队第 1 位/);
+    assert.match(await page.locator('#run1').textContent(), /手动 · 等待进料 · 排队第 2 位/);
+    assert.match(await page.locator('#run2').textContent(), /打印机 · 进料/);
+    assert.equal(await page.locator('[data-motor="0"][data-dir="0"]').textContent(), '取消排队');
+    assert.equal(await page.locator('[data-motor="0"][data-dir="1"]').isVisible(), false);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '排队来源和方向必须适配手机宽度');
+    await page.click('[data-motor="0"][data-dir="0"]');
+    await page.waitForFunction(() => motorPending[0] == null && !S.motors[0].queue_position);
+    assert.equal(motorPosts.at(-1).get('dir'), '0');
+    assert.equal(await page.locator('[data-motor="0"][data-dir="1"]').isEnabled(), true);
+    await page.click('[data-motor="0"][data-dir="-1"]');
+    await page.waitForFunction(() => motorPending[0] == null && S.motors[0].dir === -1);
+    assert.equal(motorPosts.at(-1).get('dir'), '-1');
+    assert.match(await page.locator('#run0').textContent(), /手动 · 退料/);
     if (process.env.WEB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.WEB_TEST_SCREENSHOT, fullPage: true });
     assert.deepEqual(errors, []);
-    console.log('PASS: per-AMS serial/version/save/isolation/drafts/counts, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
+    console.log('PASS: motor queue source/direction/cancel/restart, per-AMS serial/version/save/isolation/drafts/counts, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
   } finally {
     await browser.close();
   }
