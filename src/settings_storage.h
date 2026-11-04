@@ -73,8 +73,8 @@ inline int active_channel_count() { return AMS_COUNT * 4; }
 // 默认值定义
 #define DEFAULT_PULLBACK_TIMEOUT    7    // 退料超时默认值（秒）
 constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设置的回退值
-#define DEFAULT_MANUAL_PULSE_MS     1000  // 手动点动默认时长（毫秒）
-#define DEFAULT_AUTO_LOAD_MS        5000 // 微动辅助进料默认时长（毫秒）
+#define DEFAULT_MANUAL_PULSE_MS     10000  // 手动点动默认时长（毫秒）
+#define DEFAULT_AUTO_LOAD_MS        8000 // 微动辅助进料默认时长（毫秒）
 #define DEFAULT_FEED_STOP_DELAY_MS  1000 // 进料停止延迟默认时长（毫秒）
 #define DEFAULT_AMS_VERSION_MAJOR   1    // 默认 AMS 版本 A 段
 #define DEFAULT_AMS_VERSION_MINOR   0    // 默认 AMS 版本 B 段

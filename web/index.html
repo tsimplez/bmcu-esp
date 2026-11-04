@@ -111,9 +111,16 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .hall-stats{display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
 .hall-stats b{color:var(--fg);font-weight:500}
 .hall-state{min-height:19px;margin:5px 0 10px;font-size:11px;color:var(--dim)}
-.channel-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding-top:10px;border-top:1px solid var(--line)}
+.channel-fields{display:grid;grid-template-columns:minmax(70px,.75fr) minmax(0,1.5fr);gap:10px;padding-top:10px;border-top:1px solid var(--line)}
 .channel-fields label{display:block;font-size:12px;color:var(--dim)}
 .channel-fields select,.channel-fields input{margin-top:5px;padding:6px 8px;min-width:0}
+.pullback-heading{display:flex;align-items:center;gap:4px;min-height:18px}
+.field-help{width:18px;height:18px;padding:0;border-radius:50%;font-size:12px;color:var(--dim)}
+.pullback-controls{display:flex;align-items:stretch;gap:5px;margin-top:5px}
+.pullback-controls input{flex:1;width:0;margin-top:0}
+.pullback-controls button{flex:none;padding:6px 8px;font-size:12px;white-space:nowrap}
+.pullback-elapsed{font-size:12px;color:var(--dim);margin-top:5px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.pullback-help{grid-column:1/-1;margin:0;line-height:1.6}
 .channel-card .acts{justify-content:flex-start;margin-top:12px}
 .channel-card .acts button{flex:1;padding:7px 10px}
 .channel-card .motor-state{width:auto;min-width:0;white-space:normal;overflow:visible}
@@ -178,22 +185,8 @@ button:disabled{opacity:.45;cursor:not-allowed}
 <!-- ================= 状态 ================= -->
 <div id="t-status">
   <div class="card">
-    <h2>运行状态</h2>
-    <div class="kv"><span>WiFi 模式</span><b id="s-mode">-</b></div>
-    <div class="kv"><span>IP 地址</span><b id="s-ip">-</b></div>
-    <div class="kv"><span>当前网络</span><b id="s-ssid">-</b></div>
-    <div class="kv"><span>信号强度</span><b id="s-rssi">-</b></div>
-    <div class="kv"><span>MAC</span><b id="s-mac">-</b></div>
-    <div class="kv"><span>运行时长</span><b id="s-uptime">-</b></div>
-    <div class="kv"><span>空闲内存/总内存</span><b id="s-heap">-</b></div>
-    <div class="kv"><span>芯片</span><b id="s-chip">-</b></div>
-    <div class="kv"><span>RS485 模式</span><b id="s-rs485">-</b></div>
-    <div class="kv"><span>固件版本</span><b id="s-fw">-</b></div>
-    <div class="kv"><span>编译时间</span><b id="s-build">-</b></div>
-  </div>
-  <div class="card">
     <div class="row" style="margin-bottom:10px">
-      <h2 style="margin:0">通道参数与手动进退料</h2>
+      <h2 style="margin:0">通道</h2>
       <span class="spacer"></span>
       <label class="row"><span style="color:var(--dim)">同时运行电机上限</span>
       <select id="motor-limit" style="width:70px" onchange="saveField(this,'motor_limit')"></select></label>
@@ -223,7 +216,6 @@ button:disabled{opacity:.45;cursor:not-allowed}
     </div>
     <div id="chbody"></div>
     <div id="manual-state" class="hint">正在读取设备状态…</div>
-    <div class="hint">进料停止延迟可填 0～29999 毫秒，默认 1000；0 表示立即停车。修改后用于下一次进料结束，已开始的延迟保持原截止时间。</div>
   </div>
   <div class="card">
     <h2>I2C 设备与温湿度</h2>
@@ -239,6 +231,20 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="kv"><span>BMP280 温度</span><b id="s-bmp-temp">-</b></div>
     <div class="kv"><span>大气压</span><b id="s-bmp-press">-</b></div>
     <div class="hint">未检测到的传感器会自动停用并定期重试；网页显示“未检测到”时不会使用旧读数</div>
+  </div>
+  <div class="card">
+    <h2>运行状态</h2>
+    <div class="kv"><span>WiFi 模式</span><b id="s-mode">-</b></div>
+    <div class="kv"><span>IP 地址</span><b id="s-ip">-</b></div>
+    <div class="kv"><span>当前网络</span><b id="s-ssid">-</b></div>
+    <div class="kv"><span>信号强度</span><b id="s-rssi">-</b></div>
+    <div class="kv"><span>MAC</span><b id="s-mac">-</b></div>
+    <div class="kv"><span>运行时长</span><b id="s-uptime">-</b></div>
+    <div class="kv"><span>空闲内存/总内存</span><b id="s-heap">-</b></div>
+    <div class="kv"><span>芯片</span><b id="s-chip">-</b></div>
+    <div class="kv"><span>RS485 模式</span><b id="s-rs485">-</b></div>
+    <div class="kv"><span>固件版本</span><b id="s-fw">-</b></div>
+    <div class="kv"><span>编译时间</span><b id="s-build">-</b></div>
   </div>
 </div>
 
@@ -350,7 +356,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="io-config">
       <h3>各 AMS 序列号与版本</h3>
       <div class="hint">AMS 1～4 对应协议编号 0～3。完整序列号为 0EA + 编号 + 12 位后缀；留空时使用芯片 ID 后缀，并把末位改为该编号。自定义后缀完整保留。</div>
-      <div class="hint">版本格式为 A.B.C.D，每段 0..255，默认 1.0.6.87。修改后打印机需重新查询才能更新显示；未启用 AMS 的设置仍会保存。</div>
+      <div class="hint">版本格式为 A.B.C.D，每段 0..255，修改后打印机需重新查询才能更新显示；未启用 AMS 的设置仍会保存。</div>
       <div id="ams-identities" class="ams-identities"></div>
     </div>
   </div>
@@ -358,8 +364,10 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <h2>设备操作</h2>
     <div class="row">
       <button onclick="doReboot()">重启设备</button>
+      <button id="btn-config-reset" class="danger" onclick="doConfigReset()">恢复默认配置</button>
       <button class="danger" onclick="doFactory()">恢复出厂设置</button>
     </div>
+    <div class="hint">恢复默认配置会重置接线、通道参数、AMS 身份和更新设置，保留 WiFi 配置，并重启设备</div>
     <div class="hint">恢复出厂设置会清空 WiFi 凭据、通道参数，并重启进入配网模式</div>
   </div>
 </div>
@@ -574,18 +582,19 @@ const showSensorValue=(id,value,unit)=>{
 /**
  * 拉取并刷新设备运行状态
  * @return {Promise<void>|undefined} 请求完成后的 Promise；已有请求时返回 undefined
- * 带 3 秒超时读取 /api/status，逐地址显示四片 PCF 状态并更新电机、暂停实验、项目和 OTA，首次成功时自动检查更新
+ * 带 3 秒超时读取 /api/status，同步电机及退料测时、传感器、暂停实验、项目和 OTA，首次成功时自动检查更新
  */
 const refreshStatus=()=>{
   if(statusPending) return
   statusPending=true
-  const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),3000)
+  const requestedAt=performance.now(),ac=new AbortController(),timer=setTimeout(()=>ac.abort(),3000)
   return fetch('/api/status',{signal:ac.signal,cache:'no-store'}).then(r=>{
     if(!r.ok) throw Error('状态请求失败')
     return r.json()
   }).then((d)=>{
     S=d
     statusAt=performance.now()
+    syncPullbackTests(requestedAt)
     syncProjectCurrent(d.project)
     $('printer').textContent=['等待打印机连接','打印机在线','打印机离线'][d.printer]||'打印机状态未知'
     $('printer').style.color=d.printer===1?'var(--ok)':d.printer===2?'var(--err)':'var(--dim)'
@@ -709,6 +718,8 @@ const sendPauseTest=async(enable)=>{
 // 只记录正在发送的请求；运行状态和并发限制以固件为准
 // 按通道记录正在发送的手动电机命令方向，避免重复点击；0 表示停止请求
 const motorPending={},CH_STATUS_NAMES=['离线','在线','自动'];
+// 检测复用手动点动上限；测时状态只保存在本页，实际启停仍由原电机接口处理。
+const PULLBACK_TEST_MS=29999,pullbackTests={}
 /**
  * 刷新各通道的打印机选择、当前使用和微动状态
  * 仅使用后端确认的当前通道；未选中与电机运行分开描述，状态过期时清除高亮
@@ -887,16 +898,138 @@ const updateChannelStateText=(syncModes=false)=>{
   }
 }
 /**
+ * 计算本次检测已运行的时间
+ * @param {Object} test 该通道的浏览器测时状态
+ * @return {number} 已运行毫秒数，不包含排队时间且最多为点动上限
+ * 根据最近的设备剩余时间补齐显示，点击停止后固定为点击时的读数
+ */
+const pullbackElapsed=(test)=>test.stopElapsed??Math.min(PULLBACK_TEST_MS,
+  test.elapsed+(test.started?Math.max(0,performance.now()-test.sampleAt):0))
+/**
+ * 结束退料检测并保存有效时长
+ * @param {number} motor 通道编号
+ * @param {number|null} elapsed 测得的毫秒数；null 表示检测取消或中断
+ * @param {string} message 不能保存时的说明
+ * @return {Promise<void>} 回填和保存处理完成的 Promise
+ * 仅保存 3 秒以上的正常结果，向上取整；保存失败沿用单字段回滚并保留测量读数
+ */
+const finishPullbackTest=async(motor,elapsed,message)=>{
+  const test=pullbackTests[motor],input=$('to'+motor)
+  test.phase='saving';test.stopElapsed=elapsed??pullbackElapsed(test)
+  if(elapsed===null||test.invalid||!input){
+    test.message=test.invalid?'检测连接中断或请求失败，本次时间未保存':message
+  }else if(elapsed<3000){
+    test.message='检测 '+(elapsed/1000).toFixed(1)+' 秒，不足 3 秒，未修改超时'
+  }else{
+    const seconds=String(Math.ceil(elapsed/1000))
+    input.value=seconds
+    const saved=await saveField(input,input.id)
+    const current=$('to'+motor)
+    if(current&&current!==input){current.value=input.value;current.dataset.saved=input.dataset.saved}
+    test.message='检测 '+(elapsed/1000).toFixed(1)+' 秒，'+
+      (saved?'已保存 '+seconds+' 秒':'保存失败，请重试')
+  }
+  test.phase='done'
+  const current=$('to'+motor)
+  if(current) current.disabled=false
+  renderMotorControls()
+}
+/**
+ * 根据新设备状态推进退料检测
+ * @param {number} requestedAt 本次状态请求发起的浏览器时间
+ * 排队不计时；忽略启停请求完成前发出的状态，以请求时间估算自动截止，避免响应延迟造成漏存
+ * 确认停车后才回填，接管或明确提前结束不保存
+ */
+const syncPullbackTests=(requestedAt)=>{
+  for(const [key,test] of Object.entries(pullbackTests)){
+    const motor=Number(key)
+    if(['starting','saving','done'].includes(test.phase)||motorPending[motor]!=null||requestedAt<test.afterRequestAt) continue
+    const m=S.motors?.[motor]||{}
+    if(motor>=S.channels){finishPullbackTest(motor,null,'通道配置已改变，检测已取消');continue}
+    if(m.dir===-1&&m.source===2&&!m.queue_position&&m.remaining_ms>=0&&m.remaining_ms<=PULLBACK_TEST_MS){
+      test.started=true;test.elapsed=PULLBACK_TEST_MS-m.remaining_ms;test.sampleAt=statusAt
+      test.deadline=requestedAt+m.remaining_ms
+      if(!test.stopAccepted) test.phase='running'
+    }else if(!m.dir&&m.queue_position&&m.queued_dir===-1&&m.queued_source===2&&!test.started){
+      test.queued=true
+    }else if(m.dir||m.queue_position){
+      finishPullbackTest(motor,null,'电机动作已改变，检测时间未保存')
+    }else if(test.stopAccepted){
+      finishPullbackTest(motor,test.started?test.stopElapsed:null,'已取消检测，未修改超时')
+    }else if(test.started){
+      const completed=statusAt>=test.deadline
+      finishPullbackTest(motor,completed?PULLBACK_TEST_MS:null,'退料提前结束，检测时间未保存')
+    }else if(test.queued||test.invalid||statusAt-test.requestedAt>=3000){
+      finishPullbackTest(motor,null,'未检测到退料运行，未修改超时')
+    }
+  }
+}
+/**
+ * 切换指定通道的退料时间检测
+ * @param {number} motor 通道编号
+ * @return {Promise<void>} 启停请求处理完成的 Promise
+ * 使用原手动接口退料最多 29999 毫秒，停止时冻结读数并等待设备确认，失败仍保留停止入口
+ */
+const togglePullbackTest=async(motor)=>{
+  let test=pullbackTests[motor]
+  if(motorPending[motor]!=null||test?.pending||test?.phase==='saving') return
+  if(test&&test.phase!=='done'){
+    test.pending=true
+    test.stopElapsed=test.started?pullbackElapsed(test):null
+    test.phase='stopping';test.afterRequestAt=Infinity
+    test.stopAccepted=await sendMotor(motor,0)
+    if(!test.stopAccepted){test.stopElapsed=null;test.phase=test.started?'running':'waiting'}
+  }else{
+    const m=S.motors?.[motor]||{},input=$('to'+motor)
+    if(!statusAt||performance.now()-statusAt>=3000||m.dir||m.queue_position||!input||input.disabled) return
+    test=pullbackTests[motor]={phase:'starting',pending:true,requestedAt:performance.now(),afterRequestAt:Infinity,
+      elapsed:0,sampleAt:0,started:false,stopElapsed:null,stopAccepted:false,invalid:false}
+    const accepted=await sendMotor(motor,-1,PULLBACK_TEST_MS)
+    test.invalid=test.invalid||!accepted
+    test.phase='waiting'
+  }
+  test.afterRequestAt=performance.now()
+  await refreshStatus()
+  test.pending=false
+  renderMotorControls()
+}
+/**
+ * 刷新检测按钮和计时文字
+ * @param {number} motor 通道编号
+ * @param {boolean} fresh 设备状态是否仍然有效
+ * @param {boolean} occupied 该通道是否正在运行或排队
+ * @return {boolean} 是否正在检测或保存；用于隐藏同通道其他电机动作
+ * 连接失效后仍可请求停止，时间最多显示约 30 秒，未经确认的结果不保存
+ */
+const renderPullbackTest=(motor,fresh,occupied)=>{
+  const test=pullbackTests[motor],active=!!test&&test.phase!=='done'
+  const button=$('pullback-test-'+motor),input=$('to'+motor),label=$('pullback-elapsed-'+motor)
+  if(!button) return active
+  button.textContent=active?'停止':'检测时间'
+  button.classList.toggle('danger',active)
+  button.disabled=active?test.pending||motorPending[motor]!=null||test.phase==='saving':
+    !fresh||occupied||motorPending[motor]!=null||input.disabled
+  if(active){
+    input.disabled=true
+    if(!fresh) test.invalid=true
+    label.textContent=test.phase==='saving'?'正在保存检测时间…':
+      (test.started?'已检测 '+(pullbackElapsed(test)/1000).toFixed(1)+' 秒':test.queued?'排队等待，尚未计时':'等待退料启动…')+
+      (!fresh?' · 连接中断，可尝试停止':test.phase==='stopping'?' · 等待停止确认':'')
+  }else label.textContent=test?.message||''
+  return active
+}
+/**
  * 根据状态刷新电机按钮和运行提示
- * 处理手动请求中的按钮禁用、排队/运行/停止按钮切换，并显示运行和排队任务的来源
+ * 检测中由检测按钮提供停止入口；处理请求防重、排队和运行切换，并显示任务来源与检测时间
  */
 const renderMotorControls=()=>{
   const fresh=statusAt&&performance.now()-statusAt<3000
   for(let i=0;i<(S.channels||0);i++){
     const m=(S.motors||[])[i]||{},queued=!!m.queue_position,running=!!m.dir,occupied=running||queued
+    const testing=renderPullbackTest(i,!!fresh,occupied)
     document.querySelectorAll('[data-motor="'+i+'"]').forEach(b=>{
       const stop=b.dataset.dir==='0'
-      b.classList.toggle('hide',stop?!occupied:occupied)
+      b.classList.toggle('hide',testing||(stop?!occupied:occupied))
       if(stop) b.textContent=queued?'取消排队':'停止'
       b.disabled=stop?motorPending[i]===0:!fresh||motorPending[i]!=null
     })
@@ -915,20 +1048,23 @@ const renderMotorControls=()=>{
  * 发送手动电机控制请求
  * @param {number} motor 通道编号
  * @param {number} dir 方向：1 进料、-1 退料、0 停止
- * @return {Promise<void>} 请求处理完成的 Promise
- * 防止同一通道重复提交，调用 /api/motor 并在结束后刷新运行状态
+ * @param {number|string} [duration] 点动毫秒数，默认使用手动时长下拉框
+ * @return {Promise<boolean>} 请求是否被设备接受
+ * 防止同一通道重复提交，调用原 /api/motor，3 秒未响应时允许重试并刷新状态
  */
-const sendMotor=async(motor,dir)=>{
-  if(motorPending[motor]!=null&&(dir||motorPending[motor]===0)) return
+const sendMotor=async(motor,dir,duration=$('manual-ms').value)=>{
+  if(motorPending[motor]!=null&&(dir||motorPending[motor]===0)) return false
   motorPending[motor]=dir
   renderMotorControls()
+  const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),3000)
   try{
-    const r=await fetch('/api/motor',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:'motor='+motor+'&dir='+dir+'&duration='+encodeURIComponent($('manual-ms').value)})
+    const r=await fetch('/api/motor',{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'motor='+motor+'&dir='+dir+'&duration='+encodeURIComponent(duration)})
     const d=await r.json()
     if(!r.ok||!d.ok) throw Error(d.msg||'操作失败')
-  }catch(e){toast(e.message||'电机请求失败');}
-  finally{if(motorPending[motor]===dir) delete motorPending[motor];await refreshStatus();renderMotorControls();}
+    return true
+  }catch(e){toast(e.name==='AbortError'?'电机请求超时，请确认状态或重试停止':e.message||'电机请求失败');return false;}
+  finally{clearTimeout(timer);if(motorPending[motor]===dir) delete motorPending[motor];await refreshStatus();renderMotorControls();}
 };
 
 // ---------- 配网 ----------
@@ -1683,7 +1819,7 @@ const renderAmsIdentities=(d)=>{
 /**
  * 按 AMS 分组创建通道卡片并填充已保存参数
  * @param {Object} d 包含通道数量、模式、退料时间和霍尔引脚的设置响应
- * 保留原有控制入口、当前使用提示和微动状态；仅已配置霍尔的通道显示读数和曲线
+ * 提供退料时间检测及说明，保留重绘前的检测状态；仅已配置霍尔的通道显示读数和曲线
  */
 const renderChannelCards=(d)=>{
   const body=$('chbody');body.textContent=''
@@ -1704,7 +1840,11 @@ const renderChannelCards=(d)=>{
       <div class="hall-stats"><span>最小 <b id="hall-min-${i}">—</b></span><span>平均 <b id="hall-avg-${i}">—</b></span><span>最大 <b id="hall-max-${i}">—</b></span></div>
       <div class="hall-state" id="hall-state-${i}">等待采样</div>
       </div>
-      <div class="channel-fields"><label id="mode-label-${i}" for="cm${i}">通道状态</label><label id="timeout-label-${i}" for="to${i}">退料超时（秒）</label></div>`
+      <div class="channel-fields"><label id="mode-label-${i}" for="cm${i}">通道状态</label>
+      <div><div class="pullback-heading"><label for="to${i}">退料超时（秒）</label><button type="button" class="field-help" id="pullback-help-${i}"
+      aria-label="通道 ${i+1} 退料时间检测说明" aria-expanded="false" aria-controls="pullback-help-text-${i}">?</button></div>
+      <div class="pullback-controls" id="timeout-label-${i}"></div><div class="pullback-elapsed" id="pullback-elapsed-${i}"></div></div>
+      <div class="hint pullback-help hide" id="pullback-help-text-${i}">进料成功后点击“检测时间”，开始退料并计时；耗材退出五通后点击“停止”，检测时间会向上取整填入前面的退料超时并自动保存。最多退料约 30 秒，不足 3 秒不保存。</div></div>`
     grid.appendChild(card)
     const sel=document.createElement('select');sel.id='cm'+i
     for(let k=0;k<CH_STATUS_NAMES.length;k++){
@@ -1717,6 +1857,14 @@ const renderChannelCards=(d)=>{
     const input=document.createElement('input');input.id='to'+i;input.type='number';input.min=3;input.max=30;input.value=d.to[i]
     input.required=true;input.step=1;input.dataset.saved=input.value
     input.onchange=e=>saveField(e.target,e.target.id);$('timeout-label-'+i).appendChild(input)
+    const detect=document.createElement('button');detect.id='pullback-test-'+i;detect.type='button';detect.textContent='检测时间'
+    detect.setAttribute('aria-describedby','pullback-elapsed-'+i)
+    detect.onclick=()=>togglePullbackTest(i);$('timeout-label-'+i).appendChild(detect)
+    $('pullback-help-'+i).onclick=e=>{
+      const expanded=e.currentTarget.getAttribute('aria-expanded')!=='true'
+      e.currentTarget.setAttribute('aria-expanded',String(expanded))
+      $('pullback-help-text-'+i).classList.toggle('hide',!expanded)
+    }
     const actions=document.createElement('div');actions.className='acts'
     for(const [dir,label] of [[1,'进料'],[-1,'退料'],[0,'停止']]){
       const button=document.createElement('button');button.textContent=label;button.dataset.motor=i;button.dataset.dir=dir
@@ -1782,17 +1930,19 @@ const postSettings=async(body,silent)=>{
  * 保存单个设置字段
  * @param {HTMLInputElement|HTMLSelectElement} el 被修改的控件
  * @param {string} key 设置项名称
- * @return {Promise<void>} 保存流程完成的 Promise
+ * @return {Promise<boolean>} 字段是否校验并保存成功
  * 先做浏览器校验，保存失败时恢复上次值，成功后更新基线并刷新通道状态
  */
 const saveField=async(el,key)=>{
-  if(!el.reportValidity()) return
+  if(!el.reportValidity()) return false
   el.disabled=true
   const value=el.value
-  if(await postSettings(key+'='+encodeURIComponent(value),false)) el.dataset.saved=value
+  const saved=await postSettings(key+'='+encodeURIComponent(value),false)
+  if(saved) el.dataset.saved=value
   else el.value=el.dataset.saved
   el.disabled=false
   updateChannelStateText()
+  return saved
 }
 /**
  * 保存单台 AMS 的序列号后缀和版本
@@ -2040,6 +2190,21 @@ const setNotify=async(v)=>{
  * 二次确认后调用 /api/reboot，并显示设备返回的提示
  */
 const doReboot=()=>{if(confirm('确定重启设备？')) api('/api/reboot').then((t)=>{toast(JSON.parse(t).msg,6000);});}
+/**
+ * 请求恢复默认配置并保留 WiFi
+ * @return {Promise<void>} 请求处理完成的 Promise
+ * 确认重置范围后提交请求，等待期间阻止重复提交，失败时显示原因并允许重试
+ */
+const doConfigReset=async()=>{
+  const button=$('btn-config-reset')
+  if(button.disabled||!confirm('确定恢复默认配置？接线、通道参数、AMS 身份和更新设置将恢复默认，WiFi 配置会保留，设备将重启。')) return
+  button.disabled=true
+  try{
+    const data=JSON.parse(await api('/api/settings/reset',{method:'POST'}))
+    toast(data.msg||(data.ok?'已恢复默认配置，设备重启中':'恢复默认配置失败，请重试'),6000)
+  }catch(e){toast('恢复默认配置请求失败，请检查连接后重试',6000)}
+  finally{button.disabled=false}
+}
 /**
  * 请求恢复出厂设置
  * 明确提示 WiFi 凭据会被清空，确认后调用 /api/factory 并显示结果

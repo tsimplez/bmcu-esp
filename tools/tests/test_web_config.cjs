@@ -42,11 +42,14 @@ const path = require('node:path');
       pcf: { configured: true, sda: 46, scl: 47, pins: gpioPins },
     };
     const posts = [];
+    let configResetPosts = 0, factoryPosts = 0, configResetFailure = 0, configResetOffline = false;
     const motorPosts = [], motorStates = [];
+    let failMotorStart = false, failMotorStop = false, queueMotorStart = false;
     const pauseTestPosts = [];
     const pauseTestState = { available: false, active: false, pending: 0, channel: -1,
       candidate_channel: -1, frames: 0, stop_seen: false, result: 'idle' };
     let failPauseTest = false, failStatus = false;
+    let statusLatency = 0, timedPullbackEndsAt = 0;
     let failSave = false;
     let failOta = false, otaChecks = 0;
     let currentChannel=-1,currentChannelState='none';
@@ -59,6 +62,18 @@ const path = require('node:path');
         return route.fulfill({ contentType: 'text/html', body: fs.readFileSync(path.join(__dirname, '../../web/index.html'), 'utf8') });
       }
       let data = {};
+      if (url.pathname === '/api/settings/reset' && req.method() === 'POST') {
+        configResetPosts++;
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (configResetOffline) return route.abort();
+        return route.fulfill({ status: configResetFailure || 200, json: {
+          ok: !configResetFailure,
+          msg: configResetFailure === 409 ? '设备忙碌，请稍后重试' : configResetFailure
+            ? '保存或回读校验失败，当前运行配置未改变，请重试'
+            : '已恢复默认配置，WiFi 已保留，设备重启中',
+        } });
+      }
+      if (url.pathname === '/api/factory') factoryPosts++;
       if (url.pathname === '/api/printer/pause-test' && req.method() === 'POST') {
         const body = new URLSearchParams(req.postData());
         pauseTestPosts.push(body);
@@ -73,7 +88,11 @@ const path = require('node:path');
         const body = new URLSearchParams(req.postData());
         motorPosts.push(body);
         const channel = Number(body.get('motor')), direction = Number(body.get('dir'));
-        motorStates[channel] = direction ? { dir: direction, source: 2, remaining_ms: 300 } : {};
+        if (direction ? failMotorStart : failMotorStop)
+          return route.fulfill({ status: 409, json: { ok: false, msg: direction ? '退料启动失败' : '停止请求失败' } });
+        motorStates[channel] = !direction ? {} : queueMotorStart
+          ? { dir: 0, queue_position: 1, queued_dir: direction, queued_source: 2 }
+          : { dir: direction, source: 2, remaining_ms: Number(body.get('duration')) };
         return route.fulfill({ status: 202, json: { ok: true, msg: direction ? '已排队' : '停止请求已提交' } });
       } else if (url.pathname === '/api/settings' && req.method() === 'POST') {
         const body = new URLSearchParams(req.postData());
@@ -100,7 +119,10 @@ const path = require('node:path');
         if (body.has('otaurl')) settings.otaurl = body.get('otaurl');
         if (body.has('feed_stop_delay_ms')) settings.feed_stop_delay_ms = Number(body.get('feed_stop_delay_ms'));
         if (body.has('io_switch')) settings.io.switch_pin = Number(body.get('io_switch'));
-        for (let i = 0; i < settings.channels; i++) if (body.has('cm' + i)) settings.cm[i] = Number(body.get('cm' + i));
+        for (let i = 0; i < settings.channels; i++) {
+          if (body.has('cm' + i)) settings.cm[i] = Number(body.get('cm' + i));
+          if (body.has('to' + i)) settings.to[i] = Number(body.get('to' + i));
+        }
         data = { ok: true, msg: '参数已保存' };
       } else if (url.pathname === '/api/settings') data = settings;
       else if (url.pathname === '/api/ota/check') {
@@ -131,19 +153,64 @@ const path = require('node:path');
       }
       else if (url.pathname === '/api/status') {
         if (failStatus) return route.abort();
-        data = {
+        if (timedPullbackEndsAt) {
+          const remaining = Math.max(0, timedPullbackEndsAt - Date.now());
+          motorStates[0] = remaining ? { dir: -1, source: 2, remaining_ms: remaining } : {};
+        }
+        data = structuredClone({
         ...settings, mode: 'STA', ip: '192.0.2.1', chip: 'ESP32-C3', rs485: 1,
         maintenance: true, printer: 0, motors: motorStates, motor_running: motorStates.filter(m => m.dir).length,
         fl: [], uptime: 10, heap: 102400, heap_total: 204800,
         i2c: i2cStatus,
         pause_test: pauseTestState,
         current_channel:currentChannel,current_channel_state:currentChannelState,
-      };
+      });
+        if (statusLatency) await new Promise(resolve => setTimeout(resolve, statusLatency));
       }
       await route.fulfill({ json: data });
     });
     await page.goto('http://bmcu.test/');
     await page.waitForFunction(() => document.querySelectorAll('#iobody tr').length === 4);
+    // 默认配置恢复需要明确确认；保留独立的出厂恢复入口，失败可重试。
+    await page.click('[data-tab="settings"]');
+    const configResetButton = page.locator('#btn-config-reset');
+    assert.equal(await configResetButton.textContent(), '恢复默认配置');
+    assert.equal(await page.getByRole('button', { name: '恢复出厂设置', exact: true }).isVisible(), true);
+    page.once('dialog', async dialog => {
+      assert.match(dialog.message(), /接线、通道参数、AMS 身份和更新设置.*WiFi 配置会保留.*重启/);
+      await dialog.dismiss();
+    });
+    await configResetButton.click();
+    assert.equal(configResetPosts, 0, '取消确认不提交恢复请求');
+    page.once('dialog', dialog => dialog.accept());
+    await page.evaluate(() => Promise.all([doConfigReset(), doConfigReset()]));
+    assert.equal(configResetPosts, 1, '连续点击只提交一次恢复请求');
+    assert.equal(factoryPosts, 0, '恢复默认配置不调用清除 WiFi 的出厂接口');
+    assert.match(await page.locator('#toast').textContent(), /WiFi 已保留.*重启/);
+    for (const failure of [409, 500]) {
+      configResetFailure = failure;
+      page.once('dialog', dialog => dialog.accept());
+      await page.evaluate(() => doConfigReset());
+      assert.equal(await configResetButton.isEnabled(), true);
+      assert.match(await page.locator('#toast').textContent(), failure === 409 ? /设备忙碌/ : /保存或回读校验失败/);
+    }
+    configResetFailure = 0; configResetOffline = true;
+    page.once('dialog', dialog => dialog.accept());
+    await page.evaluate(() => doConfigReset());
+    assert.match(await page.locator('#toast').textContent(), /请求失败.*连接.*重试/);
+    assert.equal(await configResetButton.isEnabled(), true);
+    configResetOffline = false;
+    page.once('dialog', dialog => dialog.accept());
+    await configResetButton.click();
+    await page.waitForFunction(() => !document.querySelector('#btn-config-reset').disabled);
+    assert.match(await page.locator('#toast').textContent(), /WiFi 已保留/);
+    assert.equal(configResetPosts, 5);
+    await page.setViewportSize({ width: 375, height: 812 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    if (process.env.WEB_TEST_DEVICE_SCREENSHOT) await page.locator('.card').filter({ has: page.locator('#btn-config-reset') })
+      .screenshot({ path: process.env.WEB_TEST_DEVICE_SCREENSHOT,
+        style: 'header,.toast{visibility:hidden!important;opacity:0!important;transition:none!important}' });
+    await page.setViewportSize({ width: 1000, height: 1100 });
     await page.click('[data-tab="experiments"]');
     assert.equal(await page.locator('#pause-test-start').isDisabled(), true);
     assert.equal(await page.locator('#pause-test-clear').isEnabled(), true);
@@ -533,6 +600,165 @@ const path = require('node:path');
     assert.equal(motorPosts.at(-1).get('dir'), '-1');
     assert.match(await page.locator('#run0').textContent(), /手动 · 退料/);
     assert.equal(await page.locator('#channel-state-0').textContent(),'未被打印机选中','手动电机运行与打印机选择分开描述');
+    // 退料测时复用有限时长的手动接口；设备剩余时间推进实际退料，不把排队时间写入设置。
+    await page.evaluate(() => sendMotor(0, 0));
+    assert.equal(await page.locator('#pullback-test-0').textContent(), '检测时间');
+    await page.click('#pullback-help-0');
+    assert.equal(await page.locator('#pullback-help-text-0').isVisible(), true);
+    assert.match(await page.locator('#pullback-help-text-0').textContent(), /进料成功后点击.*检测时间.*退出五通后点击.*停止/);
+    await page.click('#pullback-help-0');
+    assert.equal(await page.locator('#pullback-help-text-0').isVisible(), false, '再次点击问号收起帮助');
+    const beforePullbackStart = motorPosts.length;
+    await page.evaluate(() => Promise.all([togglePullbackTest(0), togglePullbackTest(0)]));
+    assert.equal(motorPosts.length, beforePullbackStart + 1, '重复点击检测只提交一次退料');
+    assert.equal(motorPosts.at(-1).get('motor'), '0');
+    assert.equal(motorPosts.at(-1).get('dir'), '-1');
+    assert.equal(motorPosts.at(-1).get('duration'), '29999', '检测使用现有手动接口允许的最大时长');
+    assert.equal(await page.locator('#pullback-test-0').textContent(), '停止');
+    assert.equal(await page.locator('#to0').isDisabled(), true, '检测期间锁定待回填的时间输入框');
+    await page.evaluate(() => loadPara());
+    assert.equal(await page.locator('#pullback-test-0').textContent(), '停止', '重绘设置后保留检测停止入口');
+    assert.equal(await page.locator('#to0').isDisabled(), true, '重绘不会解锁正在检测的输入框');
+    motorStates[0].remaining_ms = 24749;
+    await page.evaluate(() => refreshStatus());
+    assert.match(await page.locator('#pullback-elapsed-0').textContent(), /5\.\d/, '检测显示实际退料秒数');
+    const beforePullbackStop = motorPosts.length;
+    statusLatency = 350;
+    await page.evaluate(() => { window.pullbackStopPromise = togglePullbackTest(0); void togglePullbackTest(0); });
+    await page.waitForFunction(() => statusPending && motorPending[0] == null);
+    await page.evaluate(() => renderMotorControls());
+    assert.equal(await page.locator('#pullback-test-0').isDisabled(), true, '停止后的状态确认仍在途时保持按钮锁定');
+    await page.evaluate(() => togglePullbackTest(0));
+    statusLatency = 0;
+    await page.evaluate(() => window.pullbackStopPromise);
+    await page.waitForFunction(() => document.querySelector('#to0').dataset.saved === '6');
+    assert.equal(motorPosts.length, beforePullbackStop + 1, '即时和延迟重复点击停止均只提交一次请求');
+    assert.equal(motorPosts.at(-1).get('dir'), '0');
+    assert.equal(await page.inputValue('#to0'), '6', '5.25秒向上取整回填6秒');
+    assert.equal(posts.at(-1).get('to0'), '6');
+    assert.equal(settings.to[0], 6);
+    assert.equal(await page.locator('#pullback-test-0').textContent(), '检测时间');
+    assert.equal(await page.locator('#to0').isEnabled(), true);
+    await page.evaluate(() => loadPara());
+    assert.equal(await page.inputValue('#to0'), '6', '测量结果已保存到设备设置');
+
+    const beforeShortPullback = posts.length;
+    await page.evaluate(() => togglePullbackTest(0));
+    motorStates[0].remaining_ms = 27999;
+    await page.evaluate(() => refreshStatus());
+    await page.evaluate(() => togglePullbackTest(0));
+    assert.equal(posts.length, beforeShortPullback, '未满3秒的测量不能保存');
+    assert.equal(await page.inputValue('#to0'), '6', '过短测量保留已保存的退料超时');
+
+    queueMotorStart = true;
+    const beforeQueuedPullback = posts.length;
+    await page.evaluate(() => togglePullbackTest(0));
+    assert.match(await page.locator('#pullback-elapsed-0').textContent(), /等待|排队/);
+    await page.evaluate(() => togglePullbackTest(0));
+    assert.equal(posts.length, beforeQueuedPullback, '取消尚未启动的测量不覆盖超时');
+    assert.equal(motorPosts.at(-1).get('dir'), '0', '检测停止同时取消队列');
+    await page.evaluate(() => togglePullbackTest(0));
+    motorStates[0] = { dir: -1, source: 2, remaining_ms: 24749 };
+    queueMotorStart = false;
+    await page.evaluate(() => refreshStatus());
+    assert.match(await page.locator('#pullback-elapsed-0').textContent(), /5\.\d/);
+    await page.evaluate(() => togglePullbackTest(0));
+    await page.waitForFunction(() => !document.querySelector('#to0').disabled);
+    assert.equal(await page.inputValue('#to0'), '6', '队列启动后仅按实际退料时长回填');
+
+    failMotorStart = true;
+    const beforeFailedStart = posts.length;
+    await page.evaluate(() => togglePullbackTest(0));
+    assert.equal(await page.locator('#pullback-test-0').textContent(), '检测时间');
+    assert.equal(await page.locator('#to0').isEnabled(), true);
+    assert.equal(posts.length, beforeFailedStart, '启动失败不提交设置');
+    assert.match(await page.locator('#toast').textContent(), /退料启动失败/);
+    failMotorStart = false;
+    await page.evaluate(() => togglePullbackTest(0));
+    motorStates[0].remaining_ms = 23749;
+    await page.evaluate(() => refreshStatus());
+    failMotorStop = true;
+    const beforeFailedStop = posts.length;
+    await page.evaluate(() => togglePullbackTest(0));
+    assert.equal(await page.locator('#pullback-test-0').textContent(), '停止', '停止失败保留停止入口');
+    assert.equal(await page.locator('#pullback-test-0').isEnabled(), true);
+    assert.equal(posts.length, beforeFailedStop, '停止失败不提前保存时间');
+    assert.match(await page.locator('#toast').textContent(), /停止请求失败/);
+    failMotorStop = false;
+    failSave = true;
+    await page.evaluate(() => togglePullbackTest(0));
+    await page.waitForFunction(() => !document.querySelector('#to0').disabled);
+    assert.equal(posts.at(-1).get('to0'), '7');
+    assert.equal(settings.to[0], 6, '保存失败不改变设备超时');
+    assert.equal(await page.inputValue('#to0'), '6', '保存失败恢复原输入值');
+    assert.match(await page.locator('#toast').textContent(), /保存失败/);
+    failSave = false;
+
+    await page.evaluate(() => togglePullbackTest(0));
+    motorStates[0].remaining_ms = 19749;
+    await page.evaluate(() => refreshStatus());
+    const beforeOfflinePullback = posts.length;
+    failStatus = true;
+    await page.evaluate(() => refreshStatus());
+    assert.equal(await page.locator('#pullback-test-0').isEnabled(), true, '断线时仍可尝试停止检测');
+    failStatus = false;
+    await page.evaluate(() => refreshStatus());
+    await page.evaluate(() => togglePullbackTest(0));
+    assert.equal(posts.length, beforeOfflinePullback, '连接恢复后停止不保存中断期间的测量');
+    assert.equal(await page.inputValue('#to0'), '6');
+
+    await page.evaluate(() => togglePullbackTest(0));
+    motorStates[0].remaining_ms = 19749;
+    await page.evaluate(() => refreshStatus());
+    const beforeTakeover = posts.length;
+    motorStates[0] = { dir: -1, source: 1, remaining_ms: 15000 };
+    await page.evaluate(() => refreshStatus());
+    assert.equal(await page.locator('#pullback-test-0').textContent(), '检测时间');
+    assert.equal(posts.length, beforeTakeover, '打印机接管后不保存不完整测量');
+    assert.equal(await page.inputValue('#to0'), '6');
+    motorStates[0] = {};
+    await page.evaluate(() => refreshStatus());
+    await page.evaluate(() => togglePullbackTest(0));
+    motorStates[0].remaining_ms = 19749;
+    await page.evaluate(() => refreshStatus());
+    const beforeInterruptedPullback = posts.length;
+    motorStates[0] = {};
+    await page.evaluate(() => refreshStatus());
+    assert.equal(posts.length, beforeInterruptedPullback, '提前停止且没有点击检测停止时不保存');
+    assert.equal(await page.inputValue('#to0'), '6');
+    assert.equal(await page.locator('#pullback-test-0').textContent(), '检测时间');
+    await page.evaluate(() => togglePullbackTest(0));
+    motorStates[0].remaining_ms = 0;
+    await page.evaluate(() => refreshStatus());
+    motorStates[0] = {};
+    await page.evaluate(() => refreshStatus());
+    await page.waitForFunction(() => document.querySelector('#to0').dataset.saved === '30');
+    assert.equal(await page.inputValue('#to0'), '30', '自动结束回填最大30秒');
+    assert.equal(settings.to[0], 30);
+    assert.equal(await page.locator('#pullback-test-0').textContent(), '检测时间');
+    await page.evaluate(() => togglePullbackTest(0));
+    const beforeDelayedExpiry = posts.length;
+    timedPullbackEndsAt = Date.now() + 500;
+    statusLatency = 400;
+    await page.evaluate(() => refreshStatus());
+    statusLatency = 0;
+    await page.waitForTimeout(180);
+    await page.evaluate(() => refreshStatus());
+    await page.waitForFunction(() => pullbackTests[0].phase === 'done');
+    timedPullbackEndsAt = 0;
+    assert.equal(posts.length, beforeDelayedExpiry + 1, '响应延迟不应把已跑满的退料误判为提前停止');
+    assert.equal(posts.at(-1).get('to0'), '30');
+    assert.equal(await page.inputValue('#to0'), '30');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, '检测按钮与计时适配手机宽度');
+    const timeoutBox = await page.locator('#to0').boundingBox();
+    const testButtonBox = await page.locator('#pullback-test-0').boundingBox();
+    assert(testButtonBox.x >= timeoutBox.x + timeoutBox.width, '检测按钮位于退料超时输入框右侧');
+    if (process.env.WEB_TEST_PULLBACK_SCREENSHOT) {
+      await page.click('#pullback-help-0');
+      await page.locator('#channel-0').screenshot({ path: process.env.WEB_TEST_PULLBACK_SCREENSHOT,
+        style: 'header,.toast{visibility:hidden!important;opacity:0!important;transition:none!important}' });
+      await page.click('#pullback-help-0');
+    }
     // ADC 专用选项、冲突拒绝、通道数量草稿与保存失败后的霍尔配置保留。
     await page.click('[data-tab="settings"]');
     await page.evaluate(()=>loadPara());
@@ -659,7 +885,7 @@ const path = require('node:path');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'十六张卡片在手机端不横向溢出');
     if (process.env.WEB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.WEB_TEST_SCREENSHOT, fullPage: true });
     assert.deepEqual(errors, []);
-    console.log('PASS: Hall ADC/config/drafts/conflicts/paging/incremental/reset/clock-wrap/zero/stale/mobile, current channel/card/highlight, pause test/start/clear/duplicate/failure/offline/status/mobile, feed delay/custom/zero/rollback, total switch/pins/drafts/conflicts, motor queue source/direction/cancel/restart, per-AMS serial/version/save/isolation/drafts/counts, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
+    console.log('PASS: pullback timing/help/start/stop/duplicate/rounding/short/queue/failures/takeover/auto-stop/mobile, Hall ADC/config/drafts/conflicts/paging/incremental/reset/clock-wrap/zero/stale/mobile, current channel/card/highlight, pause test/start/clear/duplicate/failure/offline/status/mobile, feed delay/custom/zero/rollback, total switch/pins/drafts/conflicts, motor queue source/direction/cancel/restart, per-AMS serial/version/save/isolation/drafts/counts, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
   } finally {
     await browser.close();
   }

@@ -1,6 +1,7 @@
 // 仅模拟 Flash、HTTP 和设备运行状态；项目接线、CRC、校验与 handler 使用生产函数。
 static SettingsData flash_record{};
 static int writes = 0, reads = 0, restarts = 0;
+static int wifi_forgets = 0;
 static bool fail_write = false, corrupt_readback = false, busy = false;
 static bool pcf_online[PCF8575_DEVICE_COUNT] = {};
 static int response_code = 0;
@@ -51,6 +52,9 @@ static bool PCF8575_pin_is_online(uint8_t pin) {
 static bool valid_channel(int ch) { return ch >= 0 && ch < active_channel_count(); }
 /** 测试不做实际等待 */
 static void delay(int) {}
+
+/** 记录清除 WiFi 的调用，区分恢复默认配置与恢复出厂设置 */
+static void forget_wifi_creds() { ++wifi_forgets; }
 
 struct TestEsp {
     /** 只计数重启；便于验证重启前运行期设置保持不变 */

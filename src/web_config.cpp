@@ -1254,6 +1254,28 @@ static void handle_factory_reset() {
     ESP.restart();
 }
 
+/**
+ * 恢复默认配置并保留 WiFi 设置
+ * 维护状态下生成默认快照，写入并回读校验成功后重启；当前运行配置保持到重启，不清除 WiFi 凭据或 mDNS 名称
+ */
+static void handle_config_reset() {
+    if (!maintenance_required()) return;
+    const SettingsData previous = settings_snapshot();
+    settings_reset_to_defaults();
+    const SettingsData defaults = settings_snapshot();
+    settings_restore_snapshot(previous);
+    if (!settings_save_snapshot(defaults)) {
+        server.send(500, "application/json",
+                    "{\"ok\":false,\"msg\":\"保存或回读校验失败，当前运行配置未改变，请重试\"}");
+        return;
+    }
+    LOG_MAIN("[web] 已恢复默认配置（保留 WiFi），即将重启");
+    server.send(200, "application/json",
+                "{\"ok\":true,\"msg\":\"已恢复默认配置，WiFi 已保留，设备重启中\"}");
+    delay(300);
+    ESP.restart();
+}
+
 // ============================================================
 // OTA：在线检查/更新 + 本地上传
 // ============================================================
@@ -1998,7 +2020,7 @@ static void handle_not_found() {
 
 /**
  * 注册 Web 路由
- * 把首页、状态、设置、接线、电机、WiFi、日志、重启、恢复出厂和 OTA 接口绑定到处理函数
+ * 把首页、状态、设置、接线、电机、WiFi、日志、重启、恢复默认配置、恢复出厂和 OTA 接口绑定到处理函数
  */
 static void setup_routes() {
     server.on("/", HTTP_GET, handle_root);
@@ -2018,6 +2040,7 @@ static void setup_routes() {
     server.on("/api/forget", HTTP_POST, handle_wifi_forget);
     server.on("/api/log", HTTP_GET, handle_log);
     server.on("/api/reboot", HTTP_GET, handle_reboot);
+    server.on("/api/settings/reset", HTTP_POST, handle_config_reset);
     server.on("/api/factory", HTTP_POST, handle_factory_reset);
     server.on("/api/ota/check", HTTP_POST, handle_ota_check);
     server.on("/api/ota/pull", HTTP_POST, handle_ota_pull);

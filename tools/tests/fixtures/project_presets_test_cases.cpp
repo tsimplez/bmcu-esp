@@ -9,7 +9,63 @@ static void same_settings(const SettingsData &expected, const SettingsData &actu
 }
 
 /**
- * 验证项目切换、新引脚编号、NVS 长度、旧格式拒绝及当前格式配置保留
+ * 验证默认配置恢复的完整性、忙碌及保存失败保护，并区分 WiFi 清除行为
+ * 使用真实存储及 HTTP 处理函数，重启前保留运行配置，重启加载完整默认值
+ */
+static void test_config_reset() {
+    settings_reset_to_defaults();
+    const auto defaults = settings_snapshot();
+    auto custom = defaults;
+    project_preset_apply(*project_preset_find("esp32c3-tuanzi"), custom);
+    custom.io_config.hall[0] = 0;
+    custom.io_config.switch_pin = 2;
+    custom.manual_pulse_ms = 1234; custom.auto_load_ms = 2345;
+    custom.feed_stop_delay_ms = 3456; custom.motor_limit = 4;
+    custom.bus_log_enable = !DEFAULT_BUS_LOG; custom.ota_notify = !DEFAULT_OTA_NOTIFY;
+    strcpy(custom.ota_url, "https://example.test/custom-ota");
+    for (int ch = 0; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
+        custom.channel_mode[ch] = ch % 2;
+        custom.pullback_timeout[ch] = 15;
+    }
+    for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
+        memcpy(custom.custom_serial[ams], "123456ABCDEF", CUSTOM_SERIAL_LENGTH);
+        for (int part = 0; part < 4; ++part) custom.ams_version[ams][part] = 90 + ams + part;
+    }
+    settings_restore_snapshot(custom);
+    custom = settings_snapshot();
+    assert(custom.ams_count == 2 && custom.io_config.hall[0] == 0);
+    assert(settings_save_to_flash());
+    server.params.clear();
+    const int restarts_before = restarts;
+    for (int failure = 0; failure < 3; ++failure) {
+        busy = failure == 0; fail_write = failure == 1; corrupt_readback = failure == 2;
+        const int writes_before = writes;
+        handle_config_reset();
+        assert(response_code == (busy ? 409 : 500));
+        assert(restarts == restarts_before && wifi_forgets == 0);
+        assert(writes == writes_before + (busy ? 0 : 1));
+        same_settings(custom, settings_snapshot());
+        if (busy || fail_write) same_settings(custom, flash_record);
+        busy = fail_write = corrupt_readback = false;
+        assert(settings_save_to_flash());
+    }
+    const int writes_before = writes, reads_before = reads;
+    handle_config_reset();
+    assert(response_code == 200 && restarts == restarts_before + 1 && wifi_forgets == 0);
+    assert(writes == writes_before + 1 && reads == reads_before + 1);
+    assert(response_body.find("WiFi 已保留") != std::string::npos);
+    same_settings(custom, settings_snapshot());
+    same_settings(defaults, flash_record);
+    settings_storage_init();
+    same_settings(defaults, settings_snapshot());
+    assert(writes == writes_before + 1);
+    handle_factory_reset();
+    assert(response_code == 200 && restarts == restarts_before + 2 && wifi_forgets == 1);
+    std::puts("PASS config_reset: full defaults, WiFi preservation, busy/write/readback failures, restart, factory distinction");
+}
+
+/**
+ * 验证项目切换、新引脚编号、NVS 长度、旧格式拒绝、配置保留及默认配置恢复
  * @param argc 参数个数
  * @param argv 可选 --json 导出真实项目 API 响应
  * @return 0 表示全部通过
@@ -243,5 +299,6 @@ int main(int argc, char **argv) {
     test_ams_identity_http();
     test_feed_switch_http();
     test_hall_settings_http();
+    test_config_reset();
     std::puts("PASS: project defaults, sparse pin numbering/gaps, NVS exact length, old format reset, current settings, two-way switch, empty channels, HTTP busy/failure, CRC readback, per-AMS identity HTTP, feed delay and switch HTTP");
 }

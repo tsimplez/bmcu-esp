@@ -944,7 +944,8 @@ void BambuBus_init() {
     }
 
     refresh_serial_identities();
-    BambuBUS_UART_Init(1250000);
+    // BambuBUS_UART_Init(1228800); // 打印机最新版本用这个 第一次打印有效 long_packge_version_version_and_name_AMS08 需要 1.0.6.87
+    BambuBUS_UART_Init(1250000); // 旧打印机版本 long_packge_version_version_and_name_AMS08 需要 90.0.0.0
 }
 
 // ==================== 包处理辅助函数 ====================
@@ -1702,6 +1703,7 @@ static unsigned char long_packge_version_version_and_name_AMS_lite[] = {
 
 // AMS 08 版本响应中的版本号和型号名模板（"AMS08"）
 static unsigned char long_packge_version_version_and_name_AMS08[] = {
+    // 0x00, 0x00, 0x00, 0x5A, // 版本号90
     0x57, 0x06, 0x00, 0x01, // AMS 版本 1.0.6.87（发送时由设置覆盖）
     0x41, 0x4D, 0x53, 0x30, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // "AMS08"
     0x00, 0x00, 0x00, 0x00 // 填充 + AMS序号位置
