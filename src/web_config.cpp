@@ -21,6 +21,7 @@
 #include "version.h"
 #include "i2c_bus.h"
 #include "env_sensor.h"
+#include "hall_sensor.h"
 #include "PCF8575_PinMap.h"
 
 // ============================================================
@@ -304,7 +305,7 @@ static bool maintenance_required() {
 
 /**
  * 读取当前平台的项目列表与整套接线预览
- * 根据候选接线校验兼容性，不受当前项目的引脚占用影响
+ * 根据候选接线校验兼容性，预览包含进退料、微动和霍尔，不受当前项目的引脚占用影响
  */
 static void handle_projects_get() {
     String j = "{\"current\":\"" + String(project_preset_match(settings_snapshot())) + "\",\"projects\":[";
@@ -328,7 +329,7 @@ static void handle_projects_get() {
         for (int ch = 0; ch < channels; ++ch) {
             if (ch) j += ',';
             j += "[" + String(io.motor[ch][0]) + "," + String(io.motor[ch][1]) +
-                 "," + String(io.microswitch[ch]) + "]";
+                 "," + String(io.microswitch[ch]) + "," + String(io.hall[ch]) + "]";
         }
         j += "]}";
     }
@@ -392,7 +393,7 @@ static String sensor_json_value(bool valid, float value, int digits) {
 
 /**
  * 处理运行状态查询
- * 汇总 WiFi、IP、项目匹配、总线、暂停实验、通道模式、电机、耗材、传感器和版本；PCF 状态按四个地址分别输出
+ * 汇总 WiFi、项目、总线、有效当前通道、暂停实验、电机、耗材和传感器；陈旧通道不会被标为正在使用
  */
 static void handle_status() {
     IPAddress ip = ap_mode ? WiFi.softAPIP() : WiFi.localIP();
@@ -419,6 +420,9 @@ static void handle_status() {
     j += ']';
     j += ",\"maxams\":" + String(BMCU_max_ams_count());
     j += ",\"printer\":" + String(BambuBus_printer_status());
+    const auto current = BambuBus_current_channel_status();
+    j += ",\"current_channel\":" + String(current.channel) +
+         ",\"current_channel_state\":\"" + String(current.state) + "\"";
     const auto pause = BambuBus_pause_test_status();
     j += ",\"pause_test\":{\"available\":" + String(pause.available ? "true" : "false") +
          ",\"active\":" + String(pause.active ? "true" : "false") +
@@ -479,8 +483,111 @@ static void handle_status() {
 }
 
 /**
+ * 解析霍尔历史请求中的无符号游标
+ * @param key 查询参数名
+ * @param value 输出的 32 位无符号整数
+ * @return true 表示参数存在且完整落在 0..UINT32_MAX
+ * 拒绝负数、空串、尾随字符和溢出，避免错误游标被截断后当作有效位置
+ */
+static bool parse_hall_cursor(const char *key, uint32_t &value) {
+    if (!server.hasArg(key)) return false;
+    const String raw = server.arg(key);
+    if (raw.length() == 0) return false;
+    uint32_t parsed = 0;
+    for (size_t i = 0; i < raw.length(); ++i) {
+        const char c = raw[i];
+        if (c < '0' || c > '9') return false;
+        const uint32_t digit = static_cast<uint32_t>(c - '0');
+        if (parsed > (UINT32_MAX - digit) / 10u) return false;
+        parsed = parsed * 10u + digit;
+    }
+    value = parsed;
+    return true;
+}
+
+/**
+ * 向霍尔响应追加有效读数或空值
+ * @param json 待追加的 JSON 文本
+ * @param valid 是否存在有效数据
+ * @param value ADC 读数或统计值
+ * 无效值使用 null，不能把缺失样本画成零点
+ */
+static void append_hall_value(String &json, bool valid, uint16_t value) {
+    json += valid ? String(value) : String("null");
+}
+
+/**
+ * 读取霍尔当前值和最近一分钟的增量历史
+ * 每次最多返回 50 个时间桶，more 提示继续读取；纪元变化或游标失效时从现存最早数据重新分页
+ * 只读取主循环缓存，不在 HTTP 回调中采样；传输年龄相对 now_ms，毫秒和游标回绕均按无符号差值处理
+ */
+static void handle_hall() {
+    const bool has_cursor = server.hasArg("cursor");
+    const bool has_epoch = server.hasArg("epoch");
+    uint32_t requested_cursor = 0, requested_epoch = 0;
+    if (has_cursor != has_epoch ||
+        (has_cursor && (!parse_hall_cursor("cursor", requested_cursor) ||
+                        !parse_hall_cursor("epoch", requested_epoch)))) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"霍尔游标与纪元须同时提供有效的无符号整数\"}");
+        return;
+    }
+    const HallHistoryInfo info = hall_sensor_history_info();
+    const uint32_t distance = info.cursor - requested_cursor;
+    const bool reset = !has_cursor || requested_epoch != info.epoch || distance > info.count;
+    const uint32_t remaining = reset ? info.count : distance;
+    const uint32_t count = remaining > 50u ? 50u : remaining;
+    const uint32_t first = reset ? info.cursor - info.count + 1u : requested_cursor + 1u;
+    const uint32_t delivered = count ? first + count - 1u : info.cursor;
+    HallChannelStatus channels[IO_CONFIG_MAX_CHANNELS];
+    unsigned configured = 0;
+    for (int channel = 0; channel < info.channels; ++channel) {
+        channels[channel] = hall_sensor_status(channel);
+        if (channels[channel].configured) ++configured;
+    }
+    String j;
+    if (!j.reserve(256u + info.channels * 128u + configured * count * 28u)) {
+        server.send(503, "application/json", "{\"ok\":false,\"msg\":\"可用内存不足，请稍后重试\"}");
+        return;
+    }
+    j += "{\"epoch\":" + String(info.epoch) + ",\"cursor\":" + String(delivered) +
+        ",\"reset\":" + String(reset ? "true" : "false") +
+        ",\"more\":" + String(remaining > count ? "true" : "false") +
+        ",\"interval_ms\":" + String(HALL_HISTORY_INTERVAL_MS) +
+        ",\"now_ms\":" + String(info.now_ms) + ",\"channels\":[";
+    for (int channel = 0; channel < info.channels; ++channel) {
+        if (channel) j += ',';
+        const auto &status = channels[channel];
+        j += "{\"channel\":" + String(channel) + ",\"pin\":" + String(status.pin) + ",\"raw\":";
+        append_hall_value(j, status.valid, status.raw);
+        j += ",\"min\":"; append_hall_value(j, status.statistics_valid, status.minimum);
+        j += ",\"max\":"; append_hall_value(j, status.statistics_valid, status.maximum);
+        j += ",\"avg\":"; append_hall_value(j, status.statistics_valid, status.average);
+        j += ",\"points\":[";
+        if (status.configured) {
+            for (uint32_t offset = 0; offset < count; ++offset) {
+                if (offset) j += ',';
+                const uint32_t cursor = first + offset;
+                HallHistoryPoint point = {};
+                const bool valid = hall_sensor_history_point(channel, cursor, point) &&
+                                   point.average != HALL_INVALID_VALUE;
+                const uint32_t age = info.now_ms - info.end_ms +
+                                     (info.cursor - cursor) * HALL_HISTORY_INTERVAL_MS;
+                j += '['; j += String(age); j += ',';
+                append_hall_value(j, valid, point.average); j += ',';
+                append_hall_value(j, valid, point.minimum); j += ',';
+                append_hall_value(j, valid, point.maximum); j += ']';
+            }
+        }
+        j += "]}";
+    }
+    j += "]}";
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", j);
+}
+
+/**
  * 处理设置读取请求
- * 输出时长、四份 AMS 身份、通道模式、通道与总微动接线和可选引脚；完整序列号与协议共用生成函数
+ * 输出时长、AMS 身份、通道模式、微动与霍尔接线及各自可选引脚；完整序列号与协议共用生成函数
  */
 static void handle_settings_get() {
     String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
@@ -515,7 +622,14 @@ static void handle_settings_get() {
         if (i) j += ',';
         j += String(IO_CONFIG.microswitch[i]);
     }
-    j += "],\"switch_pin\":" + String(IO_CONFIG.switch_pin) + ",\"pins\":";
+    j += "],\"hall\":[";
+    for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
+        if (i) j += ',';
+        j += String(IO_CONFIG.hall[i]);
+    }
+    j += "],\"hall_pins\":";
+    io_config_append_hall_pin_options(j);
+    j += ",\"switch_pin\":" + String(IO_CONFIG.switch_pin) + ",\"pins\":";
     io_config_append_pin_options(j);
     j += "},\"pcf\":{\"configured\":" + String(i2c_bus_configured() ? "true" : "false") +
          ",\"sda\":" + String(PCF_SDA) + ",\"scl\":" + String(PCF_SCL) + ",\"pins\":";
@@ -682,8 +796,8 @@ static void handle_bus_save() {
 
 /**
  * 处理常规设置保存
- * 身份字段必须指定 AMS 编号；统一校验时长、数量、并发、逐台身份及通道/总微动接线，保存失败时回滚完整快照
- * 进料停止延迟用于后续动作；接线仅登记应用请求，由主循环执行
+ * 身份字段必须指定 AMS 编号；校验时长、数量、并发、身份及通道接线，保存失败时回滚完整快照
+ * 霍尔字段出现时须完整提交，未出现时保留原值；接线和霍尔采样由主循环应用，回调不操作硬件
  */
 static void handle_settings_save() {
     if (server.hasArg("rs485")) {
@@ -724,6 +838,7 @@ static void handle_settings_save() {
         valid = valid && valid_number("to" + String(i), 3, 30) && valid_number("cm" + String(i), 0, 2);
 
     bool io_requested = false;
+    bool hall_requested = false;
     bool io_fields_valid = true;
     // 先识别完整请求，不能在逐通道解析过程中才发现 IO 字段
     // 同时拒绝旧页面的 io-* 拼写和未知字段，避免忽略修改却返回保存成功
@@ -735,6 +850,7 @@ static void handle_settings_save() {
         for (int ch = 0; ch < candidate_channels; ch++) {
             if (key == "io_mf" + String(ch) || key == "io_mb" + String(ch) ||
                 key == "io_sw" + String(ch)) known = true;
+            if (key == "io_h" + String(ch)) { known = true; hall_requested = true; }
         }
         if (!known) io_fields_valid = false;
     }
@@ -748,6 +864,7 @@ static void handle_settings_save() {
         const String k_forward = "io_mf" + String(i);
         const String k_reverse = "io_mb" + String(i);
         const String k_switch = "io_sw" + String(i);
+        const String k_hall = "io_h" + String(i);
         int pin = 0;
         // 电机引脚也允许选「无」：切换 PCF8575 后被清空的通道可以先留空，
         // 该通道只是暂时不能进退料，接好线再来补
@@ -757,6 +874,10 @@ static void handle_settings_save() {
         else if (server.hasArg(k_reverse)) valid = false;
         if (server.hasArg(k_switch) && parse_io_pin(k_switch, pin, true)) candidate_io.microswitch[i] = pin;
         else if (server.hasArg(k_switch)) valid = false;
+        if (server.hasArg(k_hall) && parse_io_pin(k_hall, pin, true) &&
+            io_config_hall_pin_available(pin, true)) candidate_io.hall[i] = pin;
+        else if (server.hasArg(k_hall)) valid = false;
+        if (hall_requested && !server.hasArg(k_hall)) io_fields_valid = false;
         if (io_requested && (!server.hasArg(k_forward) || !server.hasArg(k_reverse) || !server.hasArg(k_switch)))
             io_fields_valid = false;
     }
@@ -1882,6 +2003,7 @@ static void handle_not_found() {
 static void setup_routes() {
     server.on("/", HTTP_GET, handle_root);
     server.on("/api/status", HTTP_GET, handle_status);
+    server.on("/api/hall", HTTP_GET, handle_hall);
     server.on("/api/settings", HTTP_GET, handle_settings_get);
     server.on("/api/settings", HTTP_POST, handle_settings_save);
     server.on("/api/projects", HTTP_GET, handle_projects_get);

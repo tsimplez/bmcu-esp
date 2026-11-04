@@ -27,6 +27,9 @@ static SettingsData custom_record() {
     }
     IO_CONFIG.motor[0][0] = 6; IO_CONFIG.motor[0][1] = 7;
     IO_CONFIG.microswitch[0] = 3;
+    IO_CONFIG.hall[0] = 0;
+    IO_CONFIG.hall[7] = 1;
+    IO_CONFIG.hall[15] = 2;
     IO_CONFIG.switch_pin = 9;
     return settings_snapshot();
 }
@@ -126,7 +129,7 @@ static void test_ams_identity_values(const SettingsData &original, const Setting
  * @param argc 必须包含场景名
  * @param argv 测试程序及场景名
  * @return 0 表示通过
- * 对完整快照逐字节比较，覆盖四份独立身份、当前格式、旧格式拒绝、坏 CRC 和保存失败回滚
+ * 对完整快照逐字节比较，覆盖独立身份、霍尔接线、当前格式、旧格式拒绝、坏 CRC 和保存失败回滚
  */
 int main(int argc, char **argv) {
     assert(argc == 2);
@@ -139,7 +142,7 @@ int main(int argc, char **argv) {
     const bool invalid = scenario == "bad_magic" || old_pcf || scenario == "bad_crc" || scenario == "empty" ||
                          scenario == "default_write_failure";
     if (scenario == "bad_magic") {
-        flash_record.magic = 0x5341542Cu;
+        flash_record.magic = 0x5341542Du;
         flash_record.checksum = calculate_crc32(&flash_record); // CRC 正确也不能加载不同格式
     }
     if (old_pcf) {
@@ -177,6 +180,8 @@ int main(int argc, char **argv) {
     assert(write_count == 0 && read_count == 1 && validation_count == 1);
     if (scenario == "current_custom") {
         assert(defaults.feed_stop_delay_ms == 1000 && defaults.io_config.switch_pin == PIN_NONE);
+        for (const auto pin : defaults.io_config.hall) assert(pin == PIN_NONE);
+        assert(IO_CONFIG.hall[0] == 0 && IO_CONFIG.hall[7] == 1 && IO_CONFIG.hall[15] == 2);
         for (int value : {-1, 0, 1, 29999, 30000}) {
             auto candidate = original;
             candidate.feed_stop_delay_ms = value;
@@ -192,6 +197,8 @@ int main(int argc, char **argv) {
         MANUAL_PULSE_MS = 987;
         FEED_STOP_DELAY_MS = 567;
         IO_CONFIG.switch_pin = PIN_NONE;
+        IO_CONFIG.hall[0] = 4;
+        IO_CONFIG.hall[15] = PIN_NONE;
         strcpy(CUSTOM_SERIAL[2], "F0F0F0F0F0F0");
         AMS_VERSION[3][0] = 123;
         auto expected = settings_snapshot();
@@ -205,6 +212,8 @@ int main(int argc, char **argv) {
         MANUAL_PULSE_MS = 987;
         FEED_STOP_DELAY_MS = 567;
         IO_CONFIG.switch_pin = PIN_NONE;
+        IO_CONFIG.hall[0] = 4;
+        IO_CONFIG.hall[15] = PIN_NONE;
         strcpy(CUSTOM_SERIAL[2], "F0F0F0F0F0F0");
         AMS_VERSION[3][0] = 123;
         assert(settings_save_to_flash());

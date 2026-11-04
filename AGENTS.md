@@ -52,6 +52,7 @@ void io_config_set_defaults(IoConfig &config) {
 | `src/platform.h` / `src/platform.cpp` | 平台适配：引脚、I2C、UART、看门狗、片内 ID、Flash/NVS 存储 | `hal_*()` |
 | `src/i2c_bus.cpp` / `.h` | I2C 配置判断、初始化和地址探测 | `i2c_bus_configured()`、`i2c_bus_begin()`、`i2c_bus_probe()` |
 | `src/env_sensor.cpp` / `.h` | AHT20 温湿度、BMP280 温度/气压采集，缺失设备定期重试 | `env_sensor_init()`、`env_sensor_run()`、`env_sensor_get_aht20()` |
+| `src/hall_sensor.cpp` / `.h` | 每通道 49E ADC 采样、200ms 统计桶及一分钟内存历史 | `hall_sensor_run()`、`hall_sensor_sync_config()`、`hall_sensor_status()`、`hall_sensor_history_point()` |
 | `src/BMCU.cpp` / `.h` | 电机、打印机与手动共用队列、微动辅助进料、AS5600 模拟、运行调度 | `BMCU_run()`、`BMCU_motion()`、`motorCmd()`、`check_microswitch_status()` |
 | `src/BambuBus.cpp` / `.h` | 协议组帧、校验、状态机、长短包回复、耗材记录 | `BambuBus_run()`、`RX_IRQ()`、`get_package_type()`、`process_motion_state_machine()` |
 | `src/settings_storage.cpp` / `.h` | 设置结构、默认值、加载/保存/快照/回滚、CRC32 | `settings_storage_init()`、`settings_save_to_flash()`、`apply_settings_values()` |
@@ -67,14 +68,14 @@ void io_config_set_defaults(IoConfig &config) {
 | `tools/tests/`、`tools/tests/fixtures/` | 主机与网页回归入口、C++ 用例、硬件桩和期望数据 | `tools/README.md`、`docs/TESTING.md` |
 | `.pio/`、`compile_commands.json` | 构建产物和生成文件 | 由构建系统维护，不手改 |
 
-专题文档：`docs/PCF8575.md`、`docs/PROJECT_PRESETS.md`、`docs/OTA_SERVER.md`、`docs/WEB_LOGS.md`、`docs/TESTING.md`。
+专题文档：`docs/PCF8575.md`、`docs/PROJECT_PRESETS.md`、`docs/OTA_SERVER.md`、`docs/WEB_LOGS.md`、`docs/HALL_SENSOR.md`、`docs/TESTING.md`。
 
 ## 关键数据流与方法
 
 ### 启动与调度
 
 - `setup()` 初始化控制台、看门狗、日志、设置、GPIO、I2C、环境传感器、BMCU 和 Web。
-- `loop()` 持续执行 `BMCU_run()`、`env_sensor_run()`、`check_microswitch_status()`、`web_config_run()` 并喂狗；运动调度后调用 `BambuBus_save_run()`。
+- `loop()` 持续执行 `BMCU_run()`、`hall_sensor_run()`、`env_sensor_run()`、`check_microswitch_status()`、`web_config_run()` 并喂狗；运动调度后调用 `BambuBus_save_run()`，霍尔每轮最多一次 ADC 转换。
 
 ### 协议收发与状态
 
@@ -90,6 +91,7 @@ void io_config_set_defaults(IoConfig &config) {
 - 控制链路：BambuBus 状态机 -> `get_filament_motion()` -> `BMCU_run()` / `BMCU_motion()` -> `motorCmd()` -> `Motor`。
 - Cxx/Dxx 共用 `process_motion_state_machine()` 和 `set_motion_response()`；计时及运动状态按 AMS、通道保存，无通道请求只影响所属 AMS，打印头仍只选中一个全局通道。
 - `set_motion_response()` 统一生成当前通道、使用标志、长度、压力和在线位图；停车清理当前运行及排队，下一条打印机动作可以重新启动。
+- `BambuBus_current_channel_status()` 只读当前通道及运动阶段，通信或运动状态过期时取消网页高亮；手动运动不代表打印机正在使用。
 - 打印机目标优先接管同通道：同方向保持，反方向切换；达到并发上限时与手动任务共用 FIFO，同通道重复请求更新目标而不重复入队。
 - 电机与通道：`BMCU_channel_motor_ready()`、`BMCU_manual_pulse()`、`BMCU_request_stop_motor()`、`BMCU_stop_motor()`、`BMCU_motor_status()`、`BMCU_can_maintain()`；网页启停只提交请求，由主循环执行。
 - 微动与自动进料：`check_microswitch_status()`、`autoload_blocked()`、`BMCU_apply_channel_modes()`。
@@ -103,6 +105,7 @@ void io_config_set_defaults(IoConfig &config) {
 - 默认项目：`hal_default_project_preset()` 在平台层选择；C3 复用 `PROJECT_PRESETS`，当前格式的有效设置优先加载。
 - 耗材保存：`BambuBus_set_need_to_save()` 标记；`BambuBus_save_run()` 确认总线静默后限频写入并回读校验，失败保留标记。
 - 网页接口：`handle_status()`、`handle_settings_get()`、`handle_settings_save()`、`handle_bus_save()`、`handle_pcf_save()`、`handle_manual_motor()`。
+- 霍尔：`IoConfig.hall` 与其他接线一起校验、保存和回滚；`handle_hall()` 按纪元与游标读取缓存，每页最多 50 个时间桶；ADC 平台差异在 `hal_adc_*()`。
 - OTA：`ota_fetch_manifest()`、`ota_flash_from_url()`、`handle_ota_check()`、`handle_ota_pull()`、`handle_ota_upload()`。
 
 ### I2C 与环境数据

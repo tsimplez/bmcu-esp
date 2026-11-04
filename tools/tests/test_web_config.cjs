@@ -37,7 +37,7 @@ const path = require('node:path');
       otaurl: '', otanotify: 0,
       io: {
         motor: Array.from({ length: 16 }, (_, i) => i < 4 ? [i * 2, i * 2 + 1] : [255, 255]),
-        microswitch: Array(16).fill(255), switch_pin: 255, pins,
+        microswitch: Array(16).fill(255), hall: Array(16).fill(255), hall_pins: gpioPins.slice(0,5), switch_pin: 255, pins,
       },
       pcf: { configured: true, sda: 46, scl: 47, pins: gpioPins },
     };
@@ -49,6 +49,9 @@ const path = require('node:path');
     let failPauseTest = false, failStatus = false;
     let failSave = false;
     let failOta = false, otaChecks = 0;
+    let currentChannel=-1,currentChannelState='none';
+    let hallEpochMock=11,hallSequence=300,hallTime=60000,failHall=false,hallLatency=0,hallInFlight=0,hallMaxInFlight=0;
+    const hallRequests=[];
     await page.route('http://bmcu.test/**', async route => {
       const req = route.request();
       const url = new URL(req.url());
@@ -83,6 +86,7 @@ const path = require('node:path');
           for (let i = 0; i < settings.channels; i++) {
             settings.io.motor[i] = [Number(body.get('io_mf' + i)), Number(body.get('io_mb' + i))];
             settings.io.microswitch[i] = Number(body.get('io_sw' + i));
+            settings.io.hall[i] = Number(body.get('io_h' + i));
           }
         }
         if (body.has('serial') || body.has('ams_version')) {
@@ -105,6 +109,26 @@ const path = require('node:path');
           ok: true, current: '26.10.25', latest: '26.10.28', has_update: true, source: 'ghfast.top', size: 1600000,
         };
       }
+      else if (url.pathname === '/api/hall') {
+        hallRequests.push(new URLSearchParams(url.search));
+        hallInFlight++;hallMaxInFlight=Math.max(hallMaxInFlight,hallInFlight);
+        if(hallLatency) await new Promise(resolve=>setTimeout(resolve,hallLatency));
+        hallInFlight--;
+        if(failHall) return route.abort();
+        const requested=Number(url.searchParams.get('cursor'));
+        const oldest=Math.max(1,hallSequence-299);
+        const reset=!url.searchParams.has('epoch')||Number(url.searchParams.get('epoch'))!==hallEpochMock||requested>hallSequence||requested<oldest-1;
+        const first=reset?oldest:requested+1,last=Math.min(hallSequence,first+49);
+        data={epoch:hallEpochMock,cursor:last,reset,more:last<hallSequence,interval_ms:200,now_ms:hallTime,
+          channels:Array.from({length:settings.channels},(_,channel)=>{
+            const pin=settings.io.hall[channel],points=[];
+            if(pin!==255) for(let seq=first;seq<=last;seq++){
+              const average=2048+Math.round(Math.sin(seq/15+channel)*60);
+              points.push([(hallSequence-seq)*200,seq===100?null:average,seq===100?null:average-12,seq===100?null:average+12]);
+            }
+            return {channel,pin,raw:pin===255?null:2048,min:pin===255?null:1976,max:pin===255?null:2120,avg:pin===255?null:2048,points};
+          })};
+      }
       else if (url.pathname === '/api/status') {
         if (failStatus) return route.abort();
         data = {
@@ -113,6 +137,7 @@ const path = require('node:path');
         fl: [], uptime: 10, heap: 102400, heap_total: 204800,
         i2c: i2cStatus,
         pause_test: pauseTestState,
+        current_channel:currentChannel,current_channel_state:currentChannelState,
       };
       }
       await route.fulfill({ json: data });
@@ -347,7 +372,7 @@ const path = require('node:path');
       assert.equal(await page.locator('.ams-identity:visible').count(), 1, '数量草稿不改变身份卡片可见数量');
       assert.equal(await page.locator('#ams-identity-enabled-1').textContent(), '未启用 · 配置保留', '数量预览不得宣称已启用');
     }
-    assert.equal(await page.locator('#chbody tr').count(), 4, 'preview must not enable manual controls');
+    assert.equal(await page.locator('#chbody .channel-card').count(), 4, 'preview must not enable manual controls');
     for (let i = 4; i < 8; i++) {
       await page.selectOption('#io-mf' + i, String(i * 2));
       await page.selectOption('#io-mb' + i, String(i * 2 + 1));
@@ -371,7 +396,7 @@ const path = require('node:path');
     assert.equal(await page.inputValue('#io-mf4'), '8', 'save failure must preserve edits');
     failSave = false;
     await page.click('#save-io');
-    await page.waitForFunction(() => document.querySelectorAll('#chbody tr').length === 8);
+    await page.waitForFunction(() => document.querySelectorAll('#chbody .channel-card').length === 8);
     assert.equal(settings.ams, 2);
     assert.equal(await page.locator('.ams-identity:visible').count(), 2, '数量保存成功后显示两台');
     assert.equal(posts.at(-1).get('io_mb7'), '15');
@@ -382,7 +407,7 @@ const path = require('node:path');
     await page.selectOption('#p-ams', '1');
     assert.equal(await page.locator('.ams-identity:visible').count(), 2, '减少数量的草稿也不提前隐藏卡片');
     await page.click('#save-io');
-    await page.waitForFunction(() => document.querySelectorAll('#chbody tr').length === 4);
+    await page.waitForFunction(() => document.querySelectorAll('#chbody .channel-card').length === 4);
     assert.equal(await page.locator('.ams-identity:visible').count(), 1, '减少数量保存后隐藏第二台');
     assert.equal(await page.inputValue('#p-serial-1'), 'ABCDEF123456', '数量保存不清除隐藏卡片草稿');
     assert.equal(posts.at(-1).has('io_mf4'), false, 'disabled channels must not be submitted');
@@ -507,9 +532,134 @@ const path = require('node:path');
     await page.waitForFunction(() => motorPending[0] == null && S.motors[0].dir === -1);
     assert.equal(motorPosts.at(-1).get('dir'), '-1');
     assert.match(await page.locator('#run0').textContent(), /手动 · 退料/);
+    assert.equal(await page.locator('#channel-state-0').textContent(),'未被打印机选中','手动电机运行与打印机选择分开描述');
+    // ADC 专用选项、冲突拒绝、通道数量草稿与保存失败后的霍尔配置保留。
+    await page.click('[data-tab="settings"]');
+    await page.evaluate(()=>loadPara());
+    assert.deepEqual(await page.locator('#io-h0 option').evaluateAll(options=>options.map(option=>Number(option.value))),[255,0,1,2,3,4]);
+    assert.equal(await page.locator('#io-h0 option[value="50"]').count(),0,'霍尔不提供 PCF8575 扩展口');
+    await page.selectOption('#io-h0','0');
+    await page.selectOption('#io-h1','0');
+    const beforeHallConflict=posts.length;
+    await page.evaluate(()=>saveIoConfig());
+    assert.equal(posts.length,beforeHallConflict,'同一 ADC 不能分给两个霍尔');
+    for(let ch=1;ch<4;ch++) await page.selectOption('#io-h'+ch,String(ch));
+    await page.selectOption('#io-switch','0');
+    await page.evaluate(()=>saveIoConfig());
+    assert.equal(posts.length,beforeHallConflict,'霍尔与总微动冲突不能提交');
+    await page.selectOption('#io-switch','255');
+    await page.selectOption('#p-ams','2');
+    await page.selectOption('#io-h4','4');
+    await page.selectOption('#p-ams','1');
+    await page.selectOption('#p-ams','2');
+    assert.equal(await page.inputValue('#io-h4'),'4','数量来回切换保留霍尔草稿');
+    failSave=true;
+    await page.evaluate(()=>saveIoConfig());
+    assert.equal(await page.inputValue('#io-h4'),'4','保存失败保留霍尔草稿');
+    assert.equal(settings.io.hall[0],255,'保存失败不改变设备配置');
+    failSave=false;
+    await page.selectOption('#p-ams','1');
+    await page.evaluate(()=>saveIoConfig());
+    assert.deepEqual(settings.io.hall.slice(0,4),[0,1,2,3]);
+    assert.equal(posts.at(-1).get('io_h3'),'3');
+    hallEpochMock++;
+    await page.click('[data-tab="status"]');
+    await page.waitForFunction(()=>!hallMore&&!hallPending&&hallChannels.get(0)?.points.length===300);
+    assert.equal(await page.locator('.channel-group').count(),1);
+    assert.equal(await page.locator('.channel-card').count(),4);
+    assert.equal(await page.locator('#hall-raw-0').textContent(),'2048');
+    assert.equal(await page.locator('#hall-min-0').textContent(),'1976');
+    assert.equal(await page.locator('#hall-max-0').textContent(),'2120');
+    assert.match(await page.locator('#hall-pin-0').textContent(),/IO0/);
+    assert(hallRequests.filter(query=>query.get('epoch')===String(hallEpochMock)).length>=5,'分批请求补齐一分钟历史');
+    assert.equal(await page.evaluate(()=>hallChannels.get(0).points.filter(point=>point.avg===null).length),1,'保留采样空档');
+    hallLatency=80;
+    await page.evaluate(()=>Promise.all([refreshHall(),refreshHall()]));
+    hallLatency=0;
+    assert.equal(hallMaxInFlight,1,'历史分页和定时轮询始终只有一个请求');
+    hallSequence+=5;hallTime+=1000;
+    await page.evaluate(()=>refreshHall());
+    assert.equal(await page.evaluate(()=>hallChannels.get(0).points.length),300,'增量更新覆盖最旧的采样');
+    assert.equal(await page.evaluate(()=>hallCursor),hallSequence);
+    currentChannel=2;currentChannelState='using';
+    await page.evaluate(()=>refreshStatus());
+    assert.equal(await page.locator('.channel-card.is-current').count(),1);
+    assert.equal(await page.locator('#channel-state-2').textContent(),'当前使用');
+    currentChannel=1;currentChannelState='feeding';
+    await page.evaluate(()=>refreshStatus());
+    assert.equal(await page.locator('.channel-card.is-current').count(),0,'准备和进料不能误称当前使用');
+    assert.equal(await page.locator('#channel-state-1').textContent(),'打印机进料');
+    currentChannel=2;currentChannelState='using';
+    await page.evaluate(()=>refreshStatus());
+    failStatus=true;failHall=true;
+    await page.evaluate(()=>Promise.all([refreshStatus(),refreshHall()]));
+    assert.equal(await page.locator('.channel-card.is-current').count(),0,'断开状态后取消旧通道高亮');
+    assert.equal(await page.locator('#channel-state-2').textContent(),'状态待确认');
+    assert.equal(await page.locator('#hall-raw-0').textContent(),'—','读取失败不继续显示旧值为当前值');
+    assert.match(await page.locator('#hall-state-0').textContent(),/数据未更新/);
+    failStatus=false;failHall=false;
+    // 新纪元及 millis 回绕：小样本直接交给真实合并与绘图函数，不能与上一轮历史连接。
+    await page.evaluate(()=>{
+      applyHallPacket({epoch:91,cursor:2,reset:true,more:false,now_ms:100,channels:[{channel:0,pin:0,raw:0,min:0,max:1,avg:0,
+        points:[[300,0,0,1],[100,null,null,null]]}]});
+      renderHallCharts();
+    });
+    assert.equal(await page.locator('#hall-raw-0').textContent(),'0','零值是合法 ADC 读数');
+    assert.equal(await page.evaluate(()=>hallChannels.get(0).points.length),2,'设备重启和配置切换清除旧历史');
+    assert.equal(await page.evaluate(()=>hallChannels.get(0).points[0].t),4294967096,'时间回绕仍保留正确采样时间');
+    await page.evaluate(()=>{
+      applyHallPacket({epoch:91,cursor:3,reset:false,more:false,now_ms:300,channels:[{channel:0,pin:0,raw:2,min:0,max:2,avg:1,
+        points:[[100,2,2,2]]}]});
+      renderHallCharts();
+    });
+    assert.equal(await page.evaluate(()=>hallChannels.get(0).points.length),3,'回绕后的增量与旧段正确合并');
+    await page.evaluate(()=>Promise.all([refreshStatus(),refreshHall()]));
+    await page.waitForFunction(()=>!hallMore&&!hallPending&&hallChannels.get(0)?.points.length===300);
+    if(process.env.WEB_TEST_HALL_SCREENSHOT_DIR){
+      fs.mkdirSync(process.env.WEB_TEST_HALL_SCREENSHOT_DIR,{recursive:true});
+      await page.setViewportSize({width:1100,height:1050});
+      await page.evaluate(()=>renderHallCharts());
+      await page.locator('#chbody').screenshot({path:path.join(process.env.WEB_TEST_HALL_SCREENSHOT_DIR,'hall-desktop.png'),
+        style:'header,.toast{visibility:hidden!important;opacity:0!important;transition:none!important}'});
+    }
+    await page.setViewportSize({width:390,height:844});
+    await page.evaluate(()=>renderHallCharts());
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'霍尔卡片适配手机');
+    const firstCard=await page.locator('#channel-0').boundingBox(),secondCard=await page.locator('#channel-1').boundingBox();
+    assert(secondCard.y>firstCard.y,'手机卡片为单列');
+    if(process.env.WEB_TEST_HALL_SCREENSHOT_DIR)
+      await page.locator('#chbody').screenshot({path:path.join(process.env.WEB_TEST_HALL_SCREENSHOT_DIR,'hall-mobile.png'),
+        style:'header,.toast{visibility:hidden!important;opacity:0!important;transition:none!important}'});
+    await page.click('[data-tab="settings"]');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'增加霍尔字段后接线配置适配手机');
+    const requestsHidden=hallRequests.length;
+    await page.evaluate(()=>refreshHall());
+    assert.equal(hallRequests.length,requestsHidden,'离开状态页暂停霍尔请求');
+    if(process.env.WEB_TEST_HALL_SCREENSHOT_DIR)
+      await page.locator('#io-config-box').screenshot({path:path.join(process.env.WEB_TEST_HALL_SCREENSHOT_DIR,'hall-settings-mobile.png'),
+        style:'header,.toast{visibility:hidden!important;opacity:0!important;transition:none!important}'});
+    await page.selectOption('#io-h0','255');
+    await page.evaluate(()=>saveIoConfig());
+    hallEpochMock++;
+    await page.click('[data-tab="status"]');
+    await page.waitForFunction(()=>!hallMore&&!hallPending&&hallChannels.get(0)?.pin===255);
+    assert.equal(await page.locator('#hall-raw-0').textContent(),'—');
+    assert.equal(await page.evaluate(()=>hallChannels.get(0).points.length),0,'关闭霍尔后不保留曲线');
+    assert.equal(await page.locator('#hall-panel-0').isVisible(),false,'关闭霍尔后隐藏读数和统计区');
+    assert.equal(await page.locator('#hall-panel-1').isVisible(),true,'已配置霍尔的通道继续显示统计');
+    await page.click('[data-tab="settings"]');
+    await page.selectOption('#p-ams','4');
+    await page.evaluate(()=>saveIoConfig());
+    hallEpochMock++;currentChannel=15;currentChannelState='using';
+    await page.click('[data-tab="status"]');
+    await page.evaluate(()=>refreshStatus());
+    assert.equal(await page.locator('.channel-group').count(),4,'十六通道按四台 AMS 分组');
+    assert.equal(await page.locator('.channel-card').count(),16,'所有启用通道都有独立卡片');
+    assert.equal(await page.locator('#channel-15.is-current').count(),1,'第四台 AMS 的通道也能正确高亮');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'十六张卡片在手机端不横向溢出');
     if (process.env.WEB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.WEB_TEST_SCREENSHOT, fullPage: true });
     assert.deepEqual(errors, []);
-    console.log('PASS: pause test/start/clear/duplicate/failure/offline/status/mobile, feed delay/custom/zero/rollback, total switch/pins/drafts/conflicts, motor queue source/direction/cancel/restart, per-AMS serial/version/save/isolation/drafts/counts, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
+    console.log('PASS: Hall ADC/config/drafts/conflicts/paging/incremental/reset/clock-wrap/zero/stale/mobile, current channel/card/highlight, pause test/start/clear/duplicate/failure/offline/status/mobile, feed delay/custom/zero/rollback, total switch/pins/drafts/conflicts, motor queue source/direction/cancel/restart, per-AMS serial/version/save/isolation/drafts/counts, channel persistence, four PCF devices/status/pins/save, OTA source display/failure, duplicate checks, mobile layout');
   } finally {
     await browser.close();
   }

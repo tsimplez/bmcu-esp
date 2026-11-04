@@ -77,13 +77,13 @@ static bool pin_invalid_after_switch(int pin, bool i2c_configured, int sda, int 
 }
 
 /**
- * 清理切换后失效的通道和总微动引脚
+ * 清理切换后失效的通道、霍尔和总微动引脚
  * @param config 待清理的 IO 配置
  * @param i2c_configured I2C 总线是否启用
  * @param sda I2C SDA 引脚
  * @param scl I2C SCL 引脚
  * @return 被清空的引脚数量，供日志使用
- * 电机任一脚失效就整对清成 PIN_NONE；通道微动和总微动单独清理，其余接线保持不变
+ * 电机任一脚失效就整对清成 PIN_NONE；通道微动、霍尔和总微动单独清理，其余接线保持不变
  */
 int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda, int scl) {
     int cleared = 0;
@@ -101,6 +101,10 @@ int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda,
         }
         if (pin_invalid_after_switch(config.microswitch[i], i2c_configured, sda, scl)) {
             config.microswitch[i] = PIN_NONE;
+            cleared++;
+        }
+        if (pin_invalid_after_switch(config.hall[i], i2c_configured, sda, scl)) {
+            config.hall[i] = PIN_NONE;
             cleared++;
         }
     }
@@ -139,6 +143,19 @@ bool io_config_pin_available(int pin, bool allow_none, const IoBusConfig *bus) {
 }
 
 /**
+ * 判断引脚能否用于线性霍尔输入
+ * @param pin 主控 ADC 引脚编号
+ * @param allow_none 是否允许未配置
+ * @param bus 可选候选总线接线，空指针使用当前配置
+ * @return true 表示支持 ADC 且未被系统、总线或 I2C 占用
+ * 通道之间的重复占用由整组接线校验检查，PCF8575 不提供模拟输入
+ */
+bool io_config_hall_pin_available(int pin, bool allow_none, const IoBusConfig *bus) {
+    if (allow_none && pin == PIN_NONE) return true;
+    return hal_adc_pin_available(pin) && io_config_pin_available(pin, false, bus);
+}
+
+/**
  * 判断引脚能否作为 I2C 引脚
  * @param pin 引脚号
  * @param sda true 表示按 SDA 校验，false 表示按 SCL 校验
@@ -163,7 +180,7 @@ static bool i2c_pin_available(int pin, bool sda) {
  * @param error 可选的错误文本输出
  * @param bus 可选候选总线接线，空指针使用当前配置
  * @return true 表示配置合法
- * 检查通道数、与总线/通道/总微动引脚的冲突、SDA/SCL 是否不同以及平台复用限制
+ * 检查通道数、与总线/通道/霍尔/总微动引脚的冲突、SDA/SCL 是否不同以及平台复用限制
  */
 bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active_channels, String *error,
                             const IoBusConfig *bus) {
@@ -184,11 +201,12 @@ bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active
         return false;
     }
     for (int ch = 0; ch < active_channels; ch++) {
-        for (int role = 0; role < 3; role++) {
-            const int pin = role < 2 ? config.motor[ch][role] : config.microswitch[ch];
+        for (int role = 0; role < 4; role++) {
+            const int pin = role < 2 ? config.motor[ch][role] :
+                role == 2 ? config.microswitch[ch] : config.hall[ch];
             if (pin == sda || pin == scl) {
                 if (error) *error = io_config_pin_label(pin) + " 已被通道 " + String(ch + 1) +
-                    (role == 0 ? " 进料" : role == 1 ? " 退料" : " 微动") + " 使用，请先修改通道配置";
+                    (role == 0 ? " 进料" : role == 1 ? " 退料" : role == 2 ? " 微动" : " 霍尔") + " 使用，请先修改通道配置";
                 return false;
             }
         }
@@ -249,7 +267,7 @@ String io_config_pin_label(int pin) {
  * @param error 可选的错误文本输出
  * @param bus 可选候选总线接线，空指针使用当前配置
  * @return true 表示配置合法
- * 检查电机、通道微动和五通总微动引脚是否可用、是否重复占用同一引脚
+ * 检查电机、通道微动、霍尔和五通总微动引脚是否可用、是否重复占用；霍尔额外要求 ADC 能力
  */
 bool io_config_validate(const IoConfig &config, int active_channels, String *error, const IoBusConfig *bus) {
     if (active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
@@ -261,18 +279,19 @@ bool io_config_validate(const IoConfig &config, int active_channels, String *err
         if (error) *error = "五通总微动引脚不可用：" + io_config_pin_label(config.switch_pin);
         return false;
     }
-    int assigned[IO_CONFIG_MAX_CHANNELS * 3 + 1] = {};
+    int assigned[IO_CONFIG_MAX_CHANNELS * 4 + 1] = {};
     int assigned_count = 0;
     if (config.switch_pin != PIN_NONE) assigned[assigned_count++] = config.switch_pin;
     for (int ch = 0; ch < active_channels; ch++) {
-        for (int role = 0; role < 3; role++) {
-            const int pin = role < 2 ? config.motor[ch][role] : config.microswitch[ch];
+        for (int role = 0; role < 4; role++) {
+            const int pin = role < 2 ? config.motor[ch][role] :
+                role == 2 ? config.microswitch[ch] : config.hall[ch];
             // "无"(PIN_NONE) 合法：切换 I2C 配置会先清空不再可用的引脚，
             // 该通道等用户在网页里补配置
-            if (!io_config_pin_available(pin, true, bus)) {
+            if (role == 3 ? !io_config_hall_pin_available(pin, true, bus) : !io_config_pin_available(pin, true, bus)) {
                 if (error)
                     *error = String("通道 ") + String(ch + 1) + " 的" +
-                             (role == 0 ? "进料" : role == 1 ? "退料" : "微动") +
+                             (role == 0 ? "进料" : role == 1 ? "退料" : role == 2 ? "微动" : "霍尔 ADC") +
                              "引脚不可用：" + io_config_pin_label(pin);
                 return false;
             }
@@ -310,6 +329,26 @@ void io_config_append_pin_options(String &json, bool i2c_only) {
     json += "]";
 }
 
+/**
+ * 生成霍尔 ADC 可选引脚 JSON 数组
+ * @param json 待追加的 JSON 字符串
+ * 使用与普通引脚相同的字段和启动风险提示，仅保留主控支持的可用模拟输入
+ */
+void io_config_append_hall_pin_options(String &json) {
+    json += "[";
+    bool first = true;
+    for (int pin = 0; pin < 255; ++pin) {
+        if (!io_config_hall_pin_available(pin)) continue;
+        if (!first) json += ',';
+        first = false;
+        json += "{\"id\":" + String(pin) +
+                ",\"label\":\"" + io_config_pin_label(pin) +
+                "\",\"warning\":" + String(io_config_pin_has_warning(pin) ? "true" : "false") +
+                ",\"warning_text\":\"" + pin_warning_text(pin) + "\"}";
+    }
+    json += "]";
+}
+
 
 /**
  * 校验 BambuBus 总线接线
@@ -323,7 +362,7 @@ void io_config_append_pin_options(String &json, bool i2c_only) {
  * @param active_channels 启用通道数
  * @param error 可选的错误文本输出
  * @return true 表示配置合法
- * 按候选 I2C、通道和总微动接线检查冲突，同时检查 RX/TX/DE 合法性、重复占用和平台复用限制
+ * 按候选 I2C、通道电机/微动/霍尔和总微动接线检查冲突，同时检查 RX/TX/DE 合法性和平台复用限制
  */
 bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
                             const IoConfig &config, int active_channels, String *error) {
@@ -361,7 +400,8 @@ bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
             return false;
         }
         for (int ch = 0; ch < active_channels; ch++) {
-            if (pin == config.motor[ch][0] || pin == config.motor[ch][1] || pin == config.microswitch[ch]) {
+            if (pin == config.motor[ch][0] || pin == config.motor[ch][1] ||
+                pin == config.microswitch[ch] || pin == config.hall[ch]) {
                 if (error) *error = io_config_pin_label(pin) + " 已被通道 " + String(ch + 1) + " 占用，请先修改并保存通道接线";
                 return false;
             }

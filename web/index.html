@@ -93,8 +93,42 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .tbl input,.tbl select{padding:6px 8px;font-size:13px}
 .tbl td:first-child{color:var(--dim);width:35px}
 .tbl button{padding:4px 10px;font-size:13px}
-.channel-table th{text-align: center}
-.channel-table th:last-child,.channel-table td:last-child{width:20%;white-space:nowrap}
+.channel-group{margin-top:18px}
+.channel-group>h3{margin:0 0 10px;font-size:13px;color:var(--dim);font-weight:500}
+.channel-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.channel-card{min-width:0;padding:14px;background:#161922;border:1px solid var(--line);border-radius:10px;transition:border-color .2s,background .2s}
+.channel-card.is-current{border-color:var(--acc);background:#192535;box-shadow:inset 3px 0 var(--acc)}
+.channel-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.channel-heading h4{font-size:15px;margin:0;font-weight:600}
+.channel-badge{padding:2px 8px;border-radius:20px;background:#252a36;color:var(--dim);font-size:12px}
+.is-current .channel-badge{color:#b5dcff;background:#244e77}
+.channel-filament{margin:6px 0 12px;color:var(--dim);font-size:12px}
+.hall-reading{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.hall-reading span{color:var(--dim);font-size:12px}
+.hall-reading b{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
+.hall-reading small{font-size:11px;color:var(--dim);margin-left:5px;font-weight:400}
+.hall-chart{display:block;width:100%;height:140px;margin-top:4px}
+.hall-stats{display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
+.hall-stats b{color:var(--fg);font-weight:500}
+.hall-state{min-height:19px;margin:5px 0 10px;font-size:11px;color:var(--dim)}
+.channel-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding-top:10px;border-top:1px solid var(--line)}
+.channel-fields label{display:block;font-size:12px;color:var(--dim)}
+.channel-fields select,.channel-fields input{margin-top:5px;padding:6px 8px;min-width:0}
+.channel-card .acts{justify-content:flex-start;margin-top:12px}
+.channel-card .acts button{flex:1;padding:7px 10px}
+.channel-card .motor-state{width:auto;min-width:0;white-space:normal;overflow:visible}
+.channel-io-table select{min-width:0;padding:7px 5px}
+.project-preview .tbl{table-layout:fixed;overflow-wrap:anywhere}
+@media(max-width:640px){
+  .channel-grid{grid-template-columns:1fr}
+  .channel-io-table,.channel-io-table tbody{display:block}
+  .channel-io-table thead{display:none}
+  .channel-io-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:8px}
+  .channel-io-table td{display:block;min-width:0;border:0;padding:0}
+  .channel-io-table td:first-child{grid-column:1/-1;width:auto;color:var(--fg)}
+  .channel-io-table td:first-child::before{content:'通道 '}
+  .channel-io-table td[data-label]::before{content:attr(data-label);display:block;margin-bottom:4px;color:var(--dim);font-size:12px}
+}
 .acts{display:flex;align-items:center;justify-content: space-around;gap:6px;min-width:110px}
 .acts button{flex-shrink:0}
 .motor-state{width:0;min-width:100%;margin-top:4px;white-space:nowrap;overflow-x:auto;scrollbar-width:none}
@@ -130,7 +164,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <h2 id="project-name">项目接线预览</h2>
     <div class="project-preview-body">
     <div id="project-summary"></div>
-    <table class="tbl"><thead><tr><th>通道</th><th>进料</th><th>退料</th><th>微动</th></tr></thead><tbody id="project-pins"></tbody></table>
+    <table class="tbl"><thead><tr><th>通道</th><th>进料</th><th>退料</th><th>微动</th><th>霍尔</th></tr></thead><tbody id="project-pins"></tbody></table>
     <div class="hint">应用会替换 RS485、I2C、AMS 数量、全部通道和五通总微动接线；未定义的输入或通道设为“无”。请确认实物接线与预览一致。</div>
     <div id="project-state" class="hint" role="status"></div>
     </div>
@@ -187,10 +221,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <input id="feed-stop-delay-ms" type="number" min="0" max="29999" step="1" required style="width:104px"
         onchange="saveField(this,'feed_stop_delay_ms')"></label>
     </div>
-    <table class="tbl channel-table">
-      <thead><tr><th>通道</th><th>状态(自动: 需要微动)</th><th>退料超时(秒)</th><th>手动进退料</th></tr></thead>
-      <tbody id="chbody"></tbody>
-    </table>
+    <div id="chbody"></div>
     <div id="manual-state" class="hint">正在读取设备状态…</div>
     <div class="hint">进料停止延迟可填 0～29999 毫秒，默认 1000；0 表示立即停车。修改后用于下一次进料结束，已开始的延迟保持原截止时间。</div>
   </div>
@@ -300,16 +331,17 @@ button:disabled{opacity:.45;cursor:not-allowed}
     </div>
     <div class="hint" id="ams-hint">每个 AMS 对应 4 个通道；新增通道请先在下方配置引脚，再保存</div>
     <div id="io-config-box" class="io-config">
-      <h3>电机与微动引脚</h3>
+      <h3>电机、微动与霍尔引脚</h3>
       <div class="hint">通道数随上方 AMS 数量联动新增通道或修改接线前请停止电机动作；引脚不能重复带警告的引脚可能影响芯片启动</div>
       <div class="row" style="margin-top:10px">
         <label for="io-switch">五通总微动</label><span id="io-switch-control"></span>
       </div>
       <div class="hint">选“无”关闭；支持主控 GPIO 和已配置 I2C 的 PCF8575 扩展脚。拉低触发时，当前选中且空闲的通道进料 200 毫秒。与下方通道接线一起保存。</div>
-      <table class="tbl">
-        <thead><tr><th>通道</th><th>进料</th><th>退料</th><th>微动</th></tr></thead>
+      <table class="tbl channel-io-table">
+        <thead><tr><th>通道</th><th>进料</th><th>退料</th><th>微动</th><th>霍尔 ADC</th></tr></thead>
         <tbody id="iobody"></tbody>
       </table>
+      <div class="hint">49E 的 OUT 接主控 ADC 引脚；选“无”关闭该通道采样。霍尔选项只列出本平台可用 ADC，不能使用 PCF8575 扩展脚；同时可接的霍尔数量受空闲 ADC 引脚限制。</div>
       <div class="row" style="margin-top:10px">
         <button id="save-io" class="primary" onclick="saveIoConfig()">保存 AMS 数量与引脚</button>
         <span id="io-state" class="hint">引脚配置未加载</span>
@@ -456,7 +488,7 @@ let TAB = 'status';
 /**
  * 切换页面标签页
  * @param {string} name 标签页名称
- * 显示目标面板并保存当前标签；首次进入日志页启动持续收集，状态和设置页按需重载参数
+ * 显示目标面板并保存当前标签；状态页补齐霍尔历史，首次进入日志页启动持续收集，参数按需重载
  */
 const showTab=(name)=>{
   if(['status','wifi','settings','update','logs','experiments'].indexOf(name)<0) name='status'
@@ -466,6 +498,7 @@ const showTab=(name)=>{
   const bs = document.querySelectorAll('nav button');
   for(let i=0; i<bs.length; i++) bs[i].classList.toggle('on',bs[i].getAttribute('data-tab')===name)
   if((name==='status'||name==='settings') && !IO_DIRTY) loadPara()
+  if(name==='status'){refreshHall();renderHallCharts()}
   if(name==='logs') startLogCollection()
 }
 
@@ -594,6 +627,7 @@ const refreshStatus=()=>{
     $('b1').classList.toggle('on', d.buslog==1)
     $('b0').classList.toggle('on', d.buslog==0)
     renderMotorControls()
+    renderChannelStatus()
     renderPauseTest()
     updateChannelStateText(true)
     $('btn-otapull').disabled=!gOtaLatest||!d.maintenance
@@ -606,6 +640,7 @@ const refreshStatus=()=>{
     $('printer').textContent='设备连接中断，打印机状态未知'
     $('printer').style.color='var(--warn)'
     renderMotorControls()
+    renderChannelStatus()
     renderPauseTest()
   }).finally(()=>{clearTimeout(timer);statusPending=false;})
 }
@@ -674,6 +709,165 @@ const sendPauseTest=async(enable)=>{
 // 只记录正在发送的请求；运行状态和并发限制以固件为准
 // 按通道记录正在发送的手动电机命令方向，避免重复点击；0 表示停止请求
 const motorPending={},CH_STATUS_NAMES=['离线','在线','自动'];
+/**
+ * 刷新各通道的打印机选择、当前使用和微动状态
+ * 仅使用后端确认的当前通道；未选中与电机运行分开描述，状态过期时清除高亮
+ */
+const renderChannelStatus=()=>{
+  const fresh=!!statusAt&&performance.now()-statusAt<3000
+  const labels={using:'当前使用',feeding:'打印机进料',retracting:'打印机退料',selected:'打印机选中'}
+  for(const card of document.querySelectorAll('.channel-card')){
+    const ch=Number(card.dataset.channel),selected=fresh&&S.current_channel===ch
+    const using=selected&&S.current_channel_state==='using'
+    card.classList.toggle('is-current',using)
+    $('channel-state-'+ch).textContent=!fresh?'状态待确认':selected?(labels[S.current_channel_state]||'打印机选中'):'未被打印机选中'
+    const filament=S.fl?.[ch]
+    $('channel-filament-'+ch).textContent=!fresh?'微动状态待确认':filament===1?'微动 · 有料':filament===0?'微动 · 无料':'微动未配置'
+  }
+}
+
+// 浏览器仅保存固件最近一分钟的副本；时间戳按 uint32 毫秒处理，支持设备时钟回绕。
+let hallEpoch=null,hallCursor=null,hallNow=0,hallAt=0,hallPending=false,hallFailed=false,hallMore=false,hallPageTimer=null
+let hallChannels=new Map()
+/**
+ * 合并霍尔历史响应并更新采样时间基准
+ * @param {Object} data 包含纪元、游标、设备时间和各通道增量点的响应
+ * 设备重启、配置改变或游标过期时替换历史；点按设备时间去重，缺失值保留为曲线断点
+ */
+const applyHallPacket=(data)=>{
+  if(!Number.isInteger(data.epoch)||!Number.isInteger(data.cursor)||!Number.isInteger(data.now_ms)||!Array.isArray(data.channels))
+    throw Error('霍尔数据格式不完整')
+  const reset=data.reset||hallEpoch!==data.epoch
+  if(reset) hallChannels=new Map()
+  hallEpoch=data.epoch;hallCursor=data.cursor;hallNow=data.now_ms>>>0;hallAt=performance.now();hallFailed=false;hallMore=!!data.more
+  const active=new Set()
+  for(const entry of data.channels){
+    const ch=entry.channel
+    if(!Number.isInteger(ch)||ch<0||ch>=16) continue
+    active.add(ch)
+    const old=hallChannels.get(ch),points=new Map(old&&old.pin===entry.pin?old.points.map(point=>[point.t,point]):[])
+    for(const values of entry.points||[]){
+      if(!Array.isArray(values)||values.length<4||!Number.isFinite(values[0])||values[0]<0||values[0]>60000) continue
+      const t=(hallNow-values[0])>>>0
+      points.set(t,{t,avg:values[1],min:values[2],max:values[3]})
+    }
+    const retained=entry.pin===255?[]:[...points.values()].filter(point=>((hallNow-point.t)>>>0)<=60000)
+    retained.sort((a,b)=>((hallNow-b.t)>>>0)-((hallNow-a.t)>>>0))
+    hallChannels.set(ch,{...entry,points:retained.slice(-300)})
+  }
+  for(const ch of hallChannels.keys()) if(!active.has(ch)) hallChannels.delete(ch)
+}
+/**
+ * 拉取所有通道的霍尔增量历史
+ * @return {Promise<void>|undefined} 请求结束的 Promise；页面隐藏或已有请求时不重复发送
+ * 每次只发送一个带三秒超时的请求；分批补齐历史，回到状态页时沿用游标，固件负责重置过期历史
+ */
+const refreshHall=()=>{
+  if(hallPending||document.hidden||TAB!=='status') return
+  if(hallPageTimer!==null){clearTimeout(hallPageTimer);hallPageTimer=null}
+  hallPending=true
+  const query=hallEpoch===null?'':'?epoch='+hallEpoch+'&cursor='+hallCursor
+  const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),3000)
+  return fetch('/api/hall'+query,{signal:ac.signal,cache:'no-store'}).then(r=>{
+    if(!r.ok) throw Error('霍尔读取失败')
+    return r.json()
+  }).then(applyHallPacket).catch(()=>{hallFailed=true;hallMore=false}).finally(()=>{
+    clearTimeout(timer);hallPending=false;renderHallCharts()
+    if(hallMore&&!document.hidden&&TAB==='status') hallPageTimer=setTimeout(()=>{hallPageTimer=null;refreshHall()},50)
+  })
+}
+/**
+ * 绘制单个通道最近一分钟的 ADC 曲线和最小最大范围
+ * @param {HTMLCanvasElement} canvas 曲线画布
+ * @param {Object|null} entry 通道历史；空值表示尚无响应
+ * @param {number} elapsed 距离最近响应经过的毫秒数
+ * @param {string} emptyText 无有效曲线时显示的说明
+ * 固定横轴为最近六十秒，纵轴按 ADC 范围留白；缺失采样及超过一个采样桶的空档不连线
+ */
+const drawHallChart=(canvas,entry,elapsed,emptyText)=>{
+  const width=canvas.clientWidth,height=canvas.clientHeight
+  if(!width||!height) return
+  const ratio=Math.min(window.devicePixelRatio||1,2)
+  if(canvas.width!==Math.round(width*ratio)||canvas.height!==Math.round(height*ratio)){
+    canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio)
+  }
+  const ctx=canvas.getContext('2d');ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,width,height)
+  const left=34,right=width-5,top=9,bottom=height-22
+  const points=(entry?.points||[]).map(point=>({...point,age:((hallNow-point.t)>>>0)+elapsed})).filter(point=>point.age<=60000)
+  const valid=points.filter(point=>Number.isFinite(point.avg)&&Number.isFinite(point.min)&&Number.isFinite(point.max))
+  let low=0,high=4095
+  if(valid.length){
+    const minimum=Math.min(...valid.map(point=>point.min)),maximum=Math.max(...valid.map(point=>point.max))
+    const span=Math.max(64,maximum-minimum),middle=(minimum+maximum)/2
+    low=Math.max(0,Math.floor(middle-span*.65));high=Math.min(4095,Math.ceil(middle+span*.65))
+  }
+  /**
+   * 将样本距当前的时间转换为画布横坐标
+   * @param {number} age 样本距当前的毫秒数
+   * @return {number} 对应的横坐标
+   */
+  const x=age=>right-(right-left)*age/60000
+  /**
+   * 将 ADC 值转换为画布纵坐标
+   * @param {number} value ADC 原始值
+   * @return {number} 对应的纵坐标
+   */
+  const y=value=>bottom-(bottom-top)*(value-low)/(high-low)
+  ctx.font='10px "Segoe UI",sans-serif';ctx.lineWidth=1
+  for(const value of [low,Math.round((low+high)/2),high]){
+    const py=y(value);ctx.strokeStyle='#2b3342';ctx.beginPath();ctx.moveTo(left,py);ctx.lineTo(right,py);ctx.stroke()
+    ctx.fillStyle='#8b93a7';ctx.textAlign='right';ctx.fillText(String(value),left-5,py+3)
+  }
+  ctx.fillStyle='#8b93a7';ctx.textAlign='left';ctx.fillText('60 秒前',left,height-5)
+  ctx.textAlign='center';ctx.fillText('30 秒前',(left+right)/2,height-5)
+  ctx.textAlign='right';ctx.fillText('现在',right,height-5)
+  if(!valid.length){ctx.fillStyle='#8b93a7';ctx.textAlign='center';ctx.fillText(emptyText,(left+right)/2,(top+bottom)/2);return}
+  const segments=[];let segment=[]
+  for(const point of points){
+    if(!Number.isFinite(point.avg)||!Number.isFinite(point.min)||!Number.isFinite(point.max)){
+      if(segment.length) segments.push(segment);segment=[];continue
+    }
+    if(segment.length&&segment.at(-1).age-point.age>250){segments.push(segment);segment=[]}
+    segment.push(point)
+  }
+  if(segment.length) segments.push(segment)
+  for(const part of segments){
+    ctx.beginPath()
+    part.forEach((point,i)=>{if(i)ctx.lineTo(x(point.age),y(point.max));else ctx.moveTo(x(point.age),y(point.max))})
+    for(let i=part.length-1;i>=0;i--) ctx.lineTo(x(part[i].age),y(part[i].min))
+    ctx.closePath();ctx.fillStyle='#4da3ff22';ctx.fill()
+    ctx.beginPath();part.forEach((point,i)=>{if(i)ctx.lineTo(x(point.age),y(point.avg));else ctx.moveTo(x(point.age),y(point.avg))})
+    ctx.strokeStyle='#68b4ff';ctx.lineWidth=1.6;ctx.stroke()
+    if(part.length===1){ctx.beginPath();ctx.arc(x(part[0].age),y(part[0].avg),2,0,Math.PI*2);ctx.fillStyle='#68b4ff';ctx.fill()}
+  }
+}
+/**
+ * 更新可见通道的霍尔读数、统计和曲线
+ * 未配置霍尔时隐藏整块读数和统计区；已配置但响应过期时隐藏当前值并让历史随时间移出窗口
+ */
+const renderHallCharts=()=>{
+  if(document.hidden||TAB!=='status') return
+  const elapsed=hallAt?Math.max(0,performance.now()-hallAt):0,fresh=!!hallAt&&!hallFailed&&elapsed<3000
+  for(const card of document.querySelectorAll('.channel-card')){
+    const ch=Number(card.dataset.channel),pin=Number(card.dataset.hallPin),received=hallChannels.get(ch)
+    const entry=received?.pin===pin?received:null,configured=pin!==255
+    $('hall-panel-'+ch).classList.toggle('hide',!configured)
+    if(!configured) continue
+    const current=fresh&&entry?.raw!=null
+    $('hall-pin-'+ch).textContent='49E 霍尔 · IO'+pin
+    $('hall-raw-'+ch).textContent=current?entry.raw:'—'
+    for(const field of ['min','max','avg']){
+      const value=fresh?entry?.[field]:null
+      $('hall-'+field+'-'+ch).textContent=Number.isFinite(value)?Math.round(value):'—'
+    }
+    const state=!fresh&&hallAt?'数据未更新，等待设备连接':
+      !entry||entry.raw==null?'等待有效采样':hallMore?'正在补齐最近一分钟的曲线…':'最近一分钟 · 折线为均值，阴影为最小至最大值'
+    $('hall-state-'+ch).textContent=state
+    const canvas=$('hall-chart-'+ch)
+    canvas.setAttribute('aria-label','通道 '+(ch+1)+' 霍尔最近一分钟曲线；'+state+(current?'；当前 ADC '+entry.raw:''))
+    drawHallChart(canvas,entry,elapsed,'等待采样')
+  }
+}
 /**
  * 更新通道模式和自动模式的有料状态文字
  * @param {boolean} syncModes 是否用本次状态响应同步通道模式
@@ -948,7 +1142,7 @@ const renderProjectPreview=()=>{
     const body=$('project-pins');body.textContent=''
     preset.pins.forEach((pins,index)=>{
       const tr=document.createElement('tr')
-      for(const value of [String(index+1),...pins.map(pinLabel)]){
+      for(const value of [String(index+1),...pins.slice(0,3).map(pinLabel),pinLabel(pins[3]??255)]){
         const td=document.createElement('td');td.textContent=value;tr.appendChild(td)
       }
       body.appendChild(tr)
@@ -1095,7 +1289,7 @@ const updateBusLabels=()=>{
 /**
  * 渲染 BambuBus 接线配置
  * @param {Object} d /api/settings 返回的完整配置
- * 建立通道、总微动和已配置 I2C 的占用表，填充 RX、TX、DE 并刷新冲突提示
+ * 建立电机、微动、霍尔、总微动和 I2C 的占用表，填充 RX、TX、DE 并刷新冲突提示
  */
 const renderBus=(d)=>{
   const b=d.bus||{};BUS_READY=!!d.bus;BUS_SAVING=false;BUS_MODE=d.rs485===2?2:1;BUS_USES={};BUS_APPLIED={}
@@ -1108,8 +1302,8 @@ const renderBus=(d)=>{
    */
   const add=(map,pin,label)=>{if(pin!=null&&pin!==255) (map[pin]??=[]).push(label)}
   for(let ch=0;ch<d.channels;ch++){
-    const pins=[...(d.io?.motor[ch]||[]),d.io?.microswitch[ch]]
-    pins.forEach((pin,role)=>add(BUS_USES,pin,'通道'+(ch+1)+['进料','退料','微动'][role]))
+    const pins=[...(d.io?.motor[ch]||[]),d.io?.microswitch[ch],d.io?.hall?.[ch]]
+    pins.forEach((pin,role)=>add(BUS_USES,pin,'通道'+(ch+1)+['进料','退料','微动','霍尔'][role]))
   }
   if(d.pcf?.configured){add(BUS_USES,d.pcf.sda,'I2C SDA');add(BUS_USES,d.pcf.scl,'I2C SCL')}
   add(BUS_USES,d.io?.switch_pin,'五通总微动')
@@ -1198,7 +1392,7 @@ const updatePcfLabels=()=>{
 /**
  * 渲染 I2C 总线配置
  * @param {Object} d /api/settings 返回的完整配置
- * 按 configured 读取 I2C 状态，载入 SDA/SCL 下拉框及通道、总微动和总线引脚占用表
+ * 按 configured 读取 I2C 状态，载入 SDA/SCL 下拉框及电机、微动、霍尔、总微动和总线占用表
  */
 const renderPcf=(d)=>{
   const p=d.pcf||{}
@@ -1207,11 +1401,11 @@ const renderPcf=(d)=>{
   if(d.io?.switch_pin!=null&&d.io.switch_pin!==255)
     (PCF_USES[d.io.switch_pin]??=[]).push('五通总微动')
   for(let ch=0;ch<d.channels;ch++){
-    const pins=[...(d.io?.motor[ch]||[]),d.io?.microswitch[ch]]
+    const pins=[...(d.io?.motor[ch]||[]),d.io?.microswitch[ch],d.io?.hall?.[ch]]
     pins.forEach((pin,role)=>{
       if(pin==null||pin===255) return
       if(!PCF_USES[pin]) PCF_USES[pin]=[]
-      PCF_USES[pin].push('通道'+(ch+1)+['进料','退料','微动'][role])
+      PCF_USES[pin].push('通道'+(ch+1)+['进料','退料','微动','霍尔'][role])
     })
   }
   for(const key of ['sda','scl']){
@@ -1253,6 +1447,7 @@ const savePcf=async()=>{
 // ---------- 通道与设置 ----------
 // 引脚下拉框可选项，元素格式为 {id, label, ...}
 let IO_PIN_OPTIONS = []
+let IO_HALL_PIN_OPTIONS = []
 // 当前启用通道数（AMS_COUNT × 4）
 let IO_CHANNELS = 0
 // 通道引脚配置的页面草稿，保存前不写回设备
@@ -1264,15 +1459,16 @@ let IO_DIRTY = false;
  * @param {string} id 控件 ID
  * @param {number|string} value 当前选中的引脚
  * @param {boolean} allowNone 是否允许选择“无”
+ * @param {Array<Object>} options 此用途允许的引脚选项，默认使用普通 GPIO 列表
  * @return {HTMLSelectElement} 新建的下拉框
  * 填充可用引脚、警告标记和已选值，并在用户修改时标记配置已变更
  */
-const ioMakeSelect=(id,value,allowNone)=>{
+const ioMakeSelect=(id,value,allowNone,options=IO_PIN_OPTIONS)=>{
   const sel = document.createElement('select');sel.id=id
   if(allowNone){
     const none = new Option('无', 255);sel.appendChild(none)}
-  for(let i=0; i<IO_PIN_OPTIONS.length; i++){
-    const p = IO_PIN_OPTIONS[i], op = new Option(p.label, p.id);
+  for(let i=0; i<options.length; i++){
+    const p = options[i], op = new Option(p.label, p.id);
     op.dataset.baseLabel=p.label
     op.dataset.warning=p.warning?'1':'0'
     op.title=p.warning_text||''
@@ -1290,14 +1486,14 @@ const ioMakeSelect=(id,value,allowNone)=>{
 /**
  * 统计当前页面中每个引脚的通道和总微动用途
  * @return {Object<number,string[]>} 引脚编号到用途名称的映射
- * 扫描进料、退料、通道微动和总微动下拉框，为重复引脚提示提供依据
+ * 扫描进料、退料、通道微动、霍尔和总微动下拉框，为重复引脚提示提供依据
  */
 const ioUsageMap=()=>{
   const uses = {};
   const sw=$('io-switch')
   if(sw&&sw.value!==''&&sw.value!=='255') uses[+sw.value]=['五通总微动']
   for(let i=0; i<IO_CHANNELS; i++){
-    const fields = [['io-mf' + i, (i + 1) + '进料'], ['io-mb' + i, (i + 1) + '退料'], ['io-sw' + i, (i + 1) + '微动']];
+    const fields = [['io-mf' + i, (i + 1) + '进料'], ['io-mb' + i, (i + 1) + '退料'], ['io-sw' + i, (i + 1) + '微动'], ['io-h' + i, (i + 1) + '霍尔']];
     for(let k=0; k<fields.length; k++){
       const el = $(fields[k][0]);if(!el) continue
       const pin = +el.value;
@@ -1336,7 +1532,7 @@ const refreshIoOptionLabels=()=>{
 }
 /**
  * 校验并显示通道引脚配置问题
- * 检查通道与总微动的空值、重复引脚及电机未配置的通道，更新提示文字和错误样式
+ * 检查电机、微动、霍尔与总微动的空值和重复引脚，提示电机未配置的通道
  */
 const updateIoWarnings=()=>{
   let seen = {}, duplicate = false, missing = false;const unset = [];
@@ -1348,7 +1544,7 @@ const updateIoWarnings=()=>{
   for(let i=0; i<IO_CHANNELS; i++){
     const f=$('io-mf'+i), b=$('io-mb'+i);
     if(f&&b&&f.value==='255'&&b.value==='255') unset.push(i+1)
-    for(const key of ['io-mf'+i,'io-mb'+i,'io-sw'+i]){
+    for(const key of ['io-mf'+i,'io-mb'+i,'io-sw'+i,'io-h'+i]){
       const el = $(key);if(!el) continue
       const pin = +el.value;
       el.classList.remove('bad')
@@ -1366,21 +1562,22 @@ const updateIoWarnings=()=>{
   $('io-state').classList.toggle('error',duplicate||missing)
 }
 /**
- * 渲染总微动输入和所有通道的引脚配置表
+ * 渲染总微动输入和所有通道的电机、微动及霍尔配置
  * @param {Object} d 包含通道数量和引脚配置的 API 数据
- * 重建总微动下拉框、表格行和通道引脚下拉框，并立即执行引脚冲突检查
+ * 霍尔只使用 ADC 专用选项；重建下拉框后立即执行引脚冲突检查
  */
 const renderIoConfig=(d)=>{
   IO_CHANNELS=d.channels||0
   IO_PIN_OPTIONS=d.io&&d.io.pins||[]
+  IO_HALL_PIN_OPTIONS=d.io?.hall_pins||[]
   $('io-switch-control').replaceChildren(ioMakeSelect('io-switch',d.io?.switch_pin??255,true))
   const body = $('iobody');body.textContent=''
   for(let i=0; i<IO_CHANNELS; i++){
     const tr = document.createElement('tr'), td = document.createElement('td');td.textContent=i+1;tr.appendChild(td)
     const values = d.io || {}, motors = values.motor || [], sw = values.microswitch || [];
     // 电机引脚允许选「无」：留空表示该通道暂时不接电机
-    const cells = [ioMakeSelect('io-mf' + i, motors[i] ? motors[i][0] : 255, true), ioMakeSelect('io-mb' + i, motors[i] ? motors[i][1] : 255, true), ioMakeSelect('io-sw' + i, sw[i] != null ? sw[i] : 255, true)];
-    for(let k=0; k<cells.length; k++){const c = document.createElement('td');c.appendChild(cells[k]);tr.appendChild(c)}
+    const cells = [ioMakeSelect('io-mf' + i, motors[i] ? motors[i][0] : 255, true), ioMakeSelect('io-mb' + i, motors[i] ? motors[i][1] : 255, true), ioMakeSelect('io-sw' + i, sw[i] != null ? sw[i] : 255, true), ioMakeSelect('io-h' + i,values.hall?.[i]??255,true,IO_HALL_PIN_OPTIONS)];
+    for(let k=0; k<cells.length; k++){const c = document.createElement('td');c.dataset.label=['进料','退料','微动','霍尔 ADC'][k];c.appendChild(cells[k]);tr.appendChild(c)}
     body.appendChild(tr)
   }
   $('io-state').textContent='配置已加载'
@@ -1388,16 +1585,18 @@ const renderIoConfig=(d)=>{
 }
 /**
  * 预览修改 AMS 数量后的通道表
- * 保留总微动和通道引脚草稿，按新数量扩展或收缩表格，并提示待保存通道数
+ * 保留总微动、电机、微动和霍尔引脚草稿，按新数量扩展或收缩表格，并提示待保存通道数
  */
 const previewAms=()=>{
   if(!IO_DRAFT) return
   IO_DIRTY=true
   IO_DRAFT.io.switch_pin=$('io-switch').value
+  IO_DRAFT.io.hall??=Array(16).fill(255)
   // 在数量来回切换时保留尚未保存的引脚选择
   for(let i=0;i<IO_CHANNELS;i++){
     IO_DRAFT.io.motor[i]=[$('io-mf'+i).value,$('io-mb'+i).value]
     IO_DRAFT.io.microswitch[i]=$('io-sw'+i).value
+    IO_DRAFT.io.hall[i]=$('io-h'+i).value
   }
   IO_DRAFT.channels=Number($('p-ams').value)*4
   renderIoConfig(IO_DRAFT)
@@ -1406,7 +1605,7 @@ const previewAms=()=>{
 /**
  * 保存 AMS 数量、总微动和全部通道引脚
  * @return {Promise<void>} 保存流程完成的 Promise
- * 检查缺项和重复引脚，提交 /api/settings，成功后重新读取并渲染配置
+ * 检查含霍尔在内的缺项和重复引脚，提交 /api/settings，成功后重新读取并渲染配置
  */
 const saveIoConfig=async()=>{
   let seen = {}, body = new URLSearchParams({ams:$('p-ams').value}), duplicate = false;
@@ -1415,7 +1614,7 @@ const saveIoConfig=async()=>{
   body.append('io_switch',sw.value)
   if(sw.value!=='255') seen[Number(sw.value)]=true
   for(let i=0;i<IO_CHANNELS;i++){
-    for(const key of ['io-mf'+i,'io-mb'+i,'io-sw'+i]){
+    for(const key of ['io-mf'+i,'io-mb'+i,'io-sw'+i,'io-h'+i]){
       const el=$(key)
       if(el.value===''){toast('请先为新增通道配置引脚');updateIoWarnings();return}
       const pin=Number(el.value)
@@ -1482,9 +1681,58 @@ const renderAmsIdentities=(d)=>{
   }
 }
 /**
+ * 按 AMS 分组创建通道卡片并填充已保存参数
+ * @param {Object} d 包含通道数量、模式、退料时间和霍尔引脚的设置响应
+ * 保留原有控制入口、当前使用提示和微动状态；仅已配置霍尔的通道显示读数和曲线
+ */
+const renderChannelCards=(d)=>{
+  const body=$('chbody');body.textContent=''
+  let grid
+  for(let i=0;i<d.channels;i++){
+    if(i%4===0){
+      const group=document.createElement('section');group.className='channel-group'
+      const heading=document.createElement('h3');heading.textContent='AMS '+(Math.floor(i/4)+1)+' · 通道 '+(i+1)+'–'+Math.min(i+4,d.channels)
+      grid=document.createElement('div');grid.className='channel-grid';group.append(heading,grid);body.appendChild(group)
+    }
+    const card=document.createElement('article');card.id='channel-'+i;card.className='channel-card'
+    card.dataset.channel=i;card.dataset.hallPin=d.io?.hall?.[i]??255
+    card.innerHTML=`<div class="channel-heading"><h4>通道 ${i+1}</h4><span class="channel-badge" id="channel-state-${i}">状态待确认</span></div>
+      <div class="channel-filament" id="channel-filament-${i}">微动状态待确认</div>
+      <div class="hall-panel${Number(card.dataset.hallPin)===255?' hide':''}" id="hall-panel-${i}">
+      <div class="hall-reading"><span id="hall-pin-${i}">49E 霍尔</span><div><b id="hall-raw-${i}">—</b><small>ADC</small></div></div>
+      <canvas class="hall-chart" id="hall-chart-${i}" role="img" aria-label="霍尔最近一分钟曲线"></canvas>
+      <div class="hall-stats"><span>最小 <b id="hall-min-${i}">—</b></span><span>平均 <b id="hall-avg-${i}">—</b></span><span>最大 <b id="hall-max-${i}">—</b></span></div>
+      <div class="hall-state" id="hall-state-${i}">等待采样</div>
+      </div>
+      <div class="channel-fields"><label id="mode-label-${i}" for="cm${i}">通道状态</label><label id="timeout-label-${i}" for="to${i}">退料超时（秒）</label></div>`
+    grid.appendChild(card)
+    const sel=document.createElement('select');sel.id='cm'+i
+    for(let k=0;k<CH_STATUS_NAMES.length;k++){
+      const option=new Option(CH_STATUS_NAMES[k],k)
+      if(k===2) sel.autoOpt=option
+      sel.appendChild(option)
+    }
+    sel.onchange=e=>saveField(e.target,e.target.id)
+    sel.value=d.cm[i];sel.dataset.saved=sel.value;$('mode-label-'+i).appendChild(sel)
+    const input=document.createElement('input');input.id='to'+i;input.type='number';input.min=3;input.max=30;input.value=d.to[i]
+    input.required=true;input.step=1;input.dataset.saved=input.value
+    input.onchange=e=>saveField(e.target,e.target.id);$('timeout-label-'+i).appendChild(input)
+    const actions=document.createElement('div');actions.className='acts'
+    for(const [dir,label] of [[1,'进料'],[-1,'退料'],[0,'停止']]){
+      const button=document.createElement('button');button.textContent=label;button.dataset.motor=i;button.dataset.dir=dir
+      if(!dir) button.className='danger hide'
+      button.onclick=e=>sendMotor(+e.currentTarget.dataset.motor,+e.currentTarget.dataset.dir)
+      actions.appendChild(button)
+    }
+    const state=document.createElement('div');state.id='run'+i;state.className='hint motor-state';state.setAttribute('role','status')
+    card.append(actions,state)
+  }
+  renderMotorControls();updateChannelStateText();renderChannelStatus();renderHallCharts()
+}
+/**
  * 读取并渲染完整参数配置
  * @return {Promise<void>} 配置加载完成的 Promise
- * 请求 /api/settings，填充设置项、各 AMS 身份、渠道和接线界面；身份编辑草稿保持不变
+ * 请求 /api/settings，填充设置项、各 AMS 身份、通道卡片和接线界面；身份编辑草稿保持不变
  */
 const loadPara=()=>{
   return fetch('/api/settings').then(r=>r.json()).then((d)=>{
@@ -1509,39 +1757,8 @@ const loadPara=()=>{
     renderIoConfig(d)
     renderBus(d)
     PCF_SAVING=false;renderPcf(d)
-    const tb = $('chbody');tb.textContent=''
-    for(let i=0; i<d.channels; i++){
-      const tr = document.createElement('tr');
-      const td0 = document.createElement('td');td0.textContent=(i+1)
-      const td1 = document.createElement('td');
-      const sel = document.createElement('select');sel.id='cm'+i
-      for(let k=0; k<CH_STATUS_NAMES.length; k++){
-        const o = document.createElement('option');o.value=k;o.textContent=CH_STATUS_NAMES[k]
-        if(k===2) sel.autoOpt=o;  /* 自动模式的选项文字要跟着微动状态变 */
-        sel.appendChild(o)
-      }
-      sel.onchange=e=>saveField(e.target,e.target.id)
-      sel.value=d.cm[i];sel.dataset.saved=sel.value;td1.appendChild(sel)
-      const td2 = document.createElement('td');
-      const inp = document.createElement('input');inp.id='to'+i;inp.type='number';inp.min=3;inp.max=30;inp.value=d.to[i]
-      inp.required=true;inp.step=1;inp.dataset.saved=inp.value
-      inp.onchange=e=>saveField(e.target,e.target.id)
-      td2.appendChild(inp)
-      const td3 = document.createElement('td'), acts = document.createElement('div');
-      acts.className='acts'
-      for(const [dir,label] of [[1,'进料'],[-1,'退料'],[0,'停止']]){
-        const button=document.createElement('button')
-        button.textContent=label;button.dataset.motor=i;button.dataset.dir=dir
-        if(!dir) button.className='danger hide'
-        button.onclick=e=>sendMotor(+e.currentTarget.dataset.motor,+e.currentTarget.dataset.dir)
-        acts.appendChild(button)
-      }
-      const state=document.createElement('div');state.id='run'+i;state.className='hint motor-state';state.setAttribute('role','status')
-      td3.appendChild(acts);td3.appendChild(state)
-      tr.appendChild(td0);tr.appendChild(td1);tr.appendChild(td2);tr.appendChild(td3);tb.appendChild(tr)
-    }
-    renderMotorControls()
-    updateChannelStateText()
+    renderChannelCards(d)
+    refreshHall()
   }).catch(()=>{toast('读取参数失败');})
 }
 /**
@@ -2386,6 +2603,11 @@ refreshStatus()
 loadPara()
 loadProjects()
 setInterval(refreshStatus,1000)
+setInterval(refreshHall,1000)
+setInterval(renderHallCharts,1000)
+setInterval(renderChannelStatus,200)
+window.addEventListener('resize',renderHallCharts)
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){refreshHall();renderChannelStatus();renderHallCharts()}})
 setInterval(renderMotorControls,200)
 setInterval(renderPauseTest,200)
 

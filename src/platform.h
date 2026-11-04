@@ -25,6 +25,20 @@ constexpr uint32_t HAL_LOG_MAIN_CAPACITY = 8192;
 constexpr uint32_t HAL_LOG_BUS_CAPACITY = 8192;
 #endif
 
+// 霍尔历史按物理 ADC 数量分配，逻辑通道可以独立选择其中任一空闲引脚。
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+constexpr uint8_t HAL_HALL_ADC_CAPACITY = 5;
+#elif defined(ARDUINO_ARCH_ESP32)
+constexpr uint8_t HAL_HALL_ADC_CAPACITY = 10;
+#else
+constexpr uint8_t HAL_HALL_ADC_CAPACITY = 4;
+#endif
+
+bool hal_adc_pin_available(int pin);
+bool hal_adc_prepare(int pin);
+bool hal_adc_read(int pin, uint16_t &raw);
+uint32_t hal_hall_epoch();
+
 #if defined(ARDUINO_ARCH_RP2040)
 #include <hardware/sync.h>
 #endif

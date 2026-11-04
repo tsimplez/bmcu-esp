@@ -51,6 +51,7 @@ const ProjectPreset &hal_default_project_preset();
         header('src/project_presets.h'), pcf, read('tools/tests/fixtures/project_presets_test_support.h'),
         extract_function(platform, 'const char *hal_project_target()'),
         extract_function(platform, 'const ProjectPreset &hal_default_project_preset()'),
+        extract_function(platform, 'bool hal_adc_pin_available('),
         extract_function(platform, 'static const char *region_ns('),
         extract_function(platform, 'void hal_storage_read('),
         extract_function(read('src/i2c_bus.cpp'), 'bool i2c_bus_configured()'),
@@ -67,6 +68,7 @@ const ProjectPreset &hal_default_project_preset();
         extract_function(read('src/BMCU.cpp'), 'bool BMCU_channel_motor_ready('),
         read('tools/tests/fixtures/ams_identity_http_test_cases.cpp'),
         read('tools/tests/fixtures/feed_switch_http_test_cases.cpp'),
+        read('tools/tests/fixtures/hall_settings_test_cases.cpp'),
         read('tools/tests/fixtures/project_presets_test_cases.cpp')))
     with tempfile.TemporaryDirectory(prefix='bmcu-project-test-') as directory:
         source = Path(directory) / 'test.cpp'

@@ -6,10 +6,11 @@
 #include "version.h"
 #include "i2c_bus.h"
 #include "env_sensor.h"
+#include "hall_sensor.h"
 
 /**
  * Arduino 启动初始化入口
- * 依次初始化控制台、看门狗、日志、设置存储、GPIO、I2C、BMCU 核心和 Web 管理服务
+ * 依次初始化控制台、看门狗、日志、设置、GPIO、I2C、BMCU、霍尔采样和 Web 管理服务
  */
 void setup(){
     hal_console_begin();  // 串口控制台：不 begin 的话下面所有 LOG_MAIN 都写不出去
@@ -25,13 +26,14 @@ void setup(){
     i2c_bus_begin();   // PCF8575 与温湿度模块共用 I2C 总线
     env_sensor_init(); // 扫描 AHT20/BMP280，未检测到则忽略
     BMCU_init();
+    hall_sensor_init();
 
     web_config_init(); // ESP32: 配网 + Web 管理页面；其它平台为空实现
 }
 
 /**
  * Arduino 主循环入口
- * 持续喂狗并轮询 BMCU 业务；先完成运动调度，再尝试总线空闲保存，随后处理传感器和 Web
+ * 持续喂狗并轮询 BMCU 业务；运动调度后尝试总线空闲保存，再分批采集霍尔并处理环境传感器和 Web
  */
 void loop(){
     while (true) {
@@ -39,6 +41,7 @@ void loop(){
         hal_watchdog_feed();
         BMCU_run();      // Handles BMCU protocol and BambuBus
         BambuBus_save_run(); // 总线空闲时限频保存离线设置和耗材记录
+        hall_sensor_run(); // 每轮最多一个 ADC 转换，持续保留最近一分钟的统计
         env_sensor_run(); // 非阻塞刷新 AHT20/BMP280 读数
 
         // 检查微动开关状态并更新自动模式下的通道状态

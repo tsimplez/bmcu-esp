@@ -1,6 +1,73 @@
 #include "platform.h"
 #include "project_presets.h"
 
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_system.h>
+#endif
+
+/**
+ * 判断主控引脚是否支持霍尔模拟采样
+ * @param pin 主控 GPIO 编号
+ * @return true 表示具有当前方案支持的 ADC 输入
+ * ESP32 仅使用 ADC1，C3 排除 ADC2 的 GPIO5；保留脚和其他功能占用由接线层继续检查
+ */
+bool hal_adc_pin_available(const int pin) {
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+    return pin >= 0 && pin <= 4;
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+    return pin >= 1 && pin <= 10;
+#elif defined(ARDUINO_ARCH_RP2040)
+    return pin >= 26 && pin <= 29;
+#else
+    return false;
+#endif
+}
+
+/**
+ * 初始化一个霍尔 ADC 输入
+ * @param pin 已通过整组接线校验的 GPIO 编号
+ * @return true 表示引脚支持 ADC 并已设置采样参数
+ * 在主循环应用接线时设置十二位分辨率和最高衰减默认值，供首次读取时初始化 ADC
+ * Arduino 3 的单引脚衰减接口要求通道已初始化，因此这里统一设置默认值且不额外触发转换
+ */
+bool hal_adc_prepare(const int pin) {
+    if (!hal_adc_pin_available(pin)) return false;
+    analogReadResolution(12);
+#if defined(ARDUINO_ARCH_ESP32)
+    analogSetAttenuation(ADC_11db);
+#endif
+    return true;
+}
+
+/**
+ * 读取一次霍尔 ADC 原始值
+ * @param pin 已初始化的主控 ADC 引脚
+ * @param raw 输出十二位原始值，范围零到四千零九十五
+ * @return true 表示引脚和读数有效，无法判断模拟传感器是否实际接入
+ */
+bool hal_adc_read(const int pin, uint16_t &raw) {
+    if (!hal_adc_pin_available(pin)) return false;
+    const int value = analogRead(pin);
+    if (value < 0 || value > 4095) return false;
+    raw = static_cast<uint16_t>(value);
+    return true;
+}
+
+/**
+ * 生成本次启动的霍尔历史标识
+ * @return 非零标识，用于使网页丢弃重启前的增量游标
+ * ESP32 使用硬件随机源；没有网页的 RP2040 使用芯片标识和启动时刻混合
+ */
+uint32_t hal_hall_epoch() {
+#if defined(ARDUINO_ARCH_ESP32)
+    const uint32_t epoch = esp_random();
+#else
+    const uint64_t id = hal_get_device_id();
+    const uint32_t epoch = static_cast<uint32_t>(id) ^ static_cast<uint32_t>(id >> 32) ^ micros();
+#endif
+    return epoch ? epoch : 1;
+}
+
 /**
  * 获取项目预设使用的芯片标识
  * @return 与项目表 target 字段对应的标识

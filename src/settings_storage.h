@@ -32,7 +32,7 @@ extern char CUSTOM_SERIAL[AMS_IDENTITY_COUNT][CUSTOM_SERIAL_LENGTH + 1]; // 各 
 extern int AMS_VERSION[AMS_IDENTITY_COUNT][4]; // 各 AMS 返回给打印机的版本，依次为 A.B.C.D，每段 0..255
 extern char OTA_URL[128];          // OTA 更新源目录（设备会去取 <目录>/manifest.json）
 extern int OTA_NOTIFY;             // 进页面时自动检查更新并提示（0=关 1=开）
-extern IoConfig IO_CONFIG;          // 电机进退料与微动开关引脚
+extern IoConfig IO_CONFIG;          // 电机进退料、微动开关和霍尔 ADC 引脚
 
 // 设置数据结构
 struct SettingsData {
@@ -50,7 +50,7 @@ struct SettingsData {
     int32_t ota_notify;              // 自动检查更新并提示
     int32_t motor_limit;             // 当前格式的同时运行电机上限
     char custom_serial[AMS_IDENTITY_COUNT][CUSTOM_SERIAL_LENGTH]; // 各 AMS 自定义后缀，空表示自动生成
-    IoConfig io_config;              // 当前平台的电机/微动引脚配置
+    IoConfig io_config;              // 当前平台的电机/微动/霍尔引脚配置
     int32_t pcf_sda;                 // I2C SDA 引脚（PCF8575/温湿度模块共用），PIN_NONE 表示未配置
     int32_t pcf_scl;                 // I2C SCL 引脚（PCF8575/温湿度模块共用），PIN_NONE 表示未配置
     int32_t bus_rx;                  // BambuBus 串口 RX 引脚
@@ -59,8 +59,8 @@ struct SettingsData {
     int32_t ams_version[AMS_IDENTITY_COUNT][4]; // 各 AMS 版本（A.B.C.D，每段 0..255）
 };
 
-// 当前布局包含四份 AMS 身份、进料停止延迟及五通总微动引脚；旧布局均恢复整份默认设置
-#define SETTINGS_MAGIC_NUMBER    0x5341542D
+// 当前布局包含四份 AMS 身份、进料停止延迟、五通总微动及每通道霍尔引脚；旧布局均恢复整份默认设置
+#define SETTINGS_MAGIC_NUMBER    0x5341542E
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**

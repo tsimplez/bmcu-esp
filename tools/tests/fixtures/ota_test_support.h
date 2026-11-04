@@ -16,6 +16,12 @@ class String : public std::string {
 public:
     using std::string::string;
     using std::string::operator=;
+    /**
+     * 模拟 Arduino 字符串的容量预留
+     * @param capacity 期望预留的字节数
+     * @return 主机成功分配时返回 true
+     */
+    bool reserve(size_t capacity) { std::string::reserve(capacity); return true; }
     /** 接收标准字符串运算结果 */
     String(const std::string &s) : std::string(s) {}
     /** 模拟 Arduino 数字格式化 */

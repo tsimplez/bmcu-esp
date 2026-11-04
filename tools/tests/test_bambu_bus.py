@@ -51,6 +51,8 @@ def main():
     atomics = platform[platform.index('/**\n * 原子读取共享的 32 位值'):]
     atomics = atomics[:atomics.index('// ============================================================')]
     support = (root / 'tools/tests/fixtures/bambu_bus_test_support.h').read_text(encoding='utf-8')
+    io_source = (root / 'src/io_config.h').read_text(encoding='utf-8')
+    support = re.search(r'^#define IO_CONFIG_MAX_CHANNELS[^\n]*', io_source, flags=re.MULTILINE).group(0) + '\n' + support
     cases = (root / 'tools/tests/fixtures/bambu_bus_test_cases.cpp').read_text(encoding='utf-8')
     settings_source = (root / 'src/settings_storage.cpp').read_text(encoding='utf-8')
     serial_function = extract_function(settings_source, 'bool settings_get_ams_serial(')
@@ -64,7 +66,7 @@ def main():
                  'zero_time', 'registration', 'responses', 'motion_sequences',
                  'motion_isolation', 'motion_timing', 'serial_identity',
                  'ams_version', 'tx_backpressure', 'tx_lifetime', 'u_compatibility', 'long_flags', 'motor_stop',
-                 'auth_logging', 'pause_test')
+                 'auth_logging', 'pause_test', 'active_channel')
     if args.motor_control:
         io_header = strip_includes((root / 'src/io_config.h').read_text(encoding='utf-8')).replace('#pragma once\n', '')
         motor_header = (root / 'src/BMCU.h').read_text(encoding='utf-8')

@@ -218,7 +218,7 @@ int main(int argc, char **argv) {
     for (int ch = 4; ch < IO_CONFIG_MAX_CHANNELS; ++ch)
         assert(IO_CONFIG.motor[ch][0] == PIN_NONE && IO_CONFIG.microswitch[ch] == PIN_NONE);
     // 旧编号或单份身份布局即使引脚值仍合法、CRC 正确，也必须拒绝旧格式。
-    for (uint32_t old_magic : {0x53415429u, 0x5341542Au, 0x5341542Bu, 0x5341542Cu}) {
+    for (uint32_t old_magic : {0x53415429u, 0x5341542Au, 0x5341542Bu, 0x5341542Cu, 0x5341542Du}) {
         flash_record = pcb_settings;
         flash_record.magic = old_magic;
         for (int ch = 0; ch < 4; ++ch) flash_record.io_config.microswitch[ch] = 60 + ch;
@@ -242,5 +242,6 @@ int main(int argc, char **argv) {
     assert(std::string(project_preset_match(settings_snapshot())) == direct->id);
     test_ams_identity_http();
     test_feed_switch_http();
+    test_hall_settings_http();
     std::puts("PASS: project defaults, sparse pin numbering/gaps, NVS exact length, old format reset, current settings, two-way switch, empty channels, HTTP busy/failure, CRC readback, per-AMS identity HTTP, feed delay and switch HTTP");
 }

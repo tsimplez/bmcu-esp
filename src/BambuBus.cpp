@@ -1998,6 +1998,32 @@ uint32_t BambuBus_last_valid_packet_age_ms() {
 }
 
 /**
+ * 读取网页展示的当前打印机通道及动作
+ * @return 有效全局通道和动作名；无选择、离线或状态过期时返回 -1 与 none
+ * 同时检查通信和本通道运动时间，准备完成不算正在使用；只读取状态，不驱动电机或改变协议反馈
+ */
+BambuBusCurrentChannelStatus BambuBus_current_channel_status() {
+    const BambuBusCurrentChannelStatus none = {-1, "none"};
+    const uint32_t now = millis();
+    if (!heartbeat_seen || heartbeat_timed_out || now - last_heartbeat_ms >= 10000u ||
+        !bus_packet_seen || bus_packet_timed_out || now - last_bus_packet_ms > 1000u) return none;
+    const int channel = get_now_filament_num();
+    if (channel < 0 || channel >= active_channel_count() || channel >= IO_CONFIG_MAX_CHANNELS ||
+        CHANNEL_MODE[channel] == CHANNEL_MODE_OFFLINE) return none;
+    const auto &ext = filament_ext[channel / 4][channel % 4];
+    if (!ext.last_time_valid || now - ext.last_time_ticks > 1000u) return none;
+    switch (ext.motion) {
+        case filament_motion_internal::on_use: return {channel, "using"};
+        case filament_motion_internal::send_out: return {channel, "feeding"};
+        case filament_motion_internal::before_pull_back:
+        case filament_motion_internal::pull_back: return {channel, "retracting"};
+        case filament_motion_internal::before_on_use:
+        case filament_motion_internal::stop_on_use: return {channel, "selected"};
+        default: return none;
+    }
+}
+
+/**
  * 查找当前允许触发暂停实验的耗材通道
  * @param now 当前毫秒时间
  * @return 正在使用的全局通道；通信或运动状态不满足时返回 -1

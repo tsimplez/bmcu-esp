@@ -39,7 +39,7 @@ int AMS_VERSION[AMS_IDENTITY_COUNT][4] = {
 char OTA_URL[OTA_URL_MAX] = DEFAULT_OTA_URL;
 // 打开网页时是否自动检查 OTA 更新（0=关，1=开）
 int OTA_NOTIFY = DEFAULT_OTA_NOTIFY;
-// 各通道电机引脚和微动开关引脚的当前映射
+// 各通道电机、微动开关和霍尔 ADC 引脚的当前映射
 IoConfig IO_CONFIG = {};
 // BambuBus 串口 RX/TX 和 RS485 DE 引脚；启动时从设置加载
 int BUS_RX = hal_default_project_preset().bus.rx;
@@ -439,7 +439,7 @@ static const char *channel_mode_name(const int mode) {
 
 /**
  * 打印当前全部设置
- * 启动和保存设置时，把总线、各 AMS 实际序列号及版本、通道、引脚、OTA 等参数分行写入主板日志
+ * 启动和保存设置时，把总线、各 AMS 身份及版本、通道电机/微动/霍尔引脚、OTA 等参数写入主板日志
  */
 void settings_log_all() {
     LOG_MAIN("[settings] 进料停止延迟=%dms，五通总微动=%s", FEED_STOP_DELAY_MS,
@@ -463,10 +463,11 @@ void settings_log_all() {
     else
         LOG_MAIN("[settings] I2C 总线未配置，PCF8575/温湿度模块不启用");
     for (int i = 0; i < active_channel_count(); i++) {
-        LOG_MAIN("[settings] 通道 %d IO=进料%s/退料%s/微动%s", i + 1,
+        LOG_MAIN("[settings] 通道 %d IO=进料%s/退料%s/微动%s/霍尔%s", i + 1,
                  io_config_pin_label(IO_CONFIG.motor[i][0]).c_str(),
                  io_config_pin_label(IO_CONFIG.motor[i][1]).c_str(),
-                 io_config_pin_label(IO_CONFIG.microswitch[i]).c_str());
+                 io_config_pin_label(IO_CONFIG.microswitch[i]).c_str(),
+                 io_config_pin_label(IO_CONFIG.hall[i]).c_str());
     }
     if (AUTO_LOAD_MS)
         LOG_MAIN("[settings] 微动辅助进料时长=%dms（自动模式：微动由无料变有料时触发）", AUTO_LOAD_MS);

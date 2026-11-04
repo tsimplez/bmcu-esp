@@ -42,13 +42,14 @@ static bool hal_storage_write(int region, const void *data, uint32_t size) {
     return true;
 }
 /**
- * 测试默认不分配电机、通道微动或总微动引脚
+ * 测试默认不分配电机、通道微动、霍尔或总微动引脚
  * @param config 待填充的配置
  */
 void io_config_set_defaults(IoConfig &config) {
     config.switch_pin = PIN_NONE;
     for (auto &motor : config.motor) motor[0] = motor[1] = PIN_NONE;
     for (auto &pin : config.microswitch) pin = PIN_NONE;
+    for (auto &pin : config.hall) pin = PIN_NONE;
 }
 /** 模拟已经通过平台验证的总线接线，不在此重复测试引脚校验实现 */
 bool io_config_bus_validate(int, int, int, int, int, int, const IoConfig &, int, String *) {

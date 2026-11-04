@@ -9,6 +9,7 @@ struct IoConfig {
     int32_t motor[IO_CONFIG_MAX_CHANNELS][2]; // [通道][0=进料引脚, 1=退料引脚]，PIN_NONE 表示未配置
     int32_t microswitch[IO_CONFIG_MAX_CHANNELS]; // 各通道微动开关引脚，PIN_NONE 表示无输入
     int32_t switch_pin; // 五通总微动输入，PIN_NONE 表示不使用
+    int32_t hall[IO_CONFIG_MAX_CHANNELS]; // 各通道 49E 模拟霍尔引脚，PIN_NONE 表示未配置
 };
 
 // 整套候选总线接线；校验项目预设时不借用或修改运行期设置
@@ -24,6 +25,7 @@ int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda,
 
 // 判断某个引脚是否可以出现在网页的选择列表中
 bool io_config_pin_available(int pin, bool allow_none = false, const IoBusConfig *bus = nullptr);
+bool io_config_hall_pin_available(int pin, bool allow_none = false, const IoBusConfig *bus = nullptr);
 bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active_channels, String *error = nullptr,
                             const IoBusConfig *bus = nullptr);
 
@@ -39,6 +41,7 @@ bool io_config_validate(const IoConfig &config, int active_channels, String *err
 
 // 生成网页需要的可选引脚 JSON 数组
 void io_config_append_pin_options(String &json, bool i2c_only = false);
+void io_config_append_hall_pin_options(String &json);
 
 // 总线接线只允许主控 GPIO；模式 1 不占用 DE
 bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,

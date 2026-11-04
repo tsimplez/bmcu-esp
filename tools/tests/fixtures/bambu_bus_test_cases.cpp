@@ -1187,6 +1187,90 @@ static void test_pause_test() {
 }
 
 /**
+ * 校验当前通道读接口并检查其没有业务副作用
+ * @param channel 预期全局通道编号，-1 表示无有效选择
+ * @param state 预期网页状态
+ */
+static void expect_current_channel(int channel, const char *state) {
+    const auto record = data_save;
+    unsigned char before_ext[sizeof(filament_ext)];
+    memcpy(before_ext, filament_ext, sizeof(filament_ext));
+    const auto tx_count = uart_tx.size();
+    const auto writes = write_count;
+    const auto heartbeat_expired = heartbeat_timed_out;
+    const auto packet_expired = bus_packet_timed_out;
+    const auto status = BambuBus_current_channel_status();
+    assert(status.channel == channel && strcmp(status.state, state) == 0);
+    assert(memcmp(&record, &data_save, sizeof(record)) == 0);
+    assert(memcmp(before_ext, filament_ext, sizeof(filament_ext)) == 0);
+    assert(uart_tx.size() == tx_count && write_count == writes);
+    assert(heartbeat_expired == heartbeat_timed_out && packet_expired == bus_packet_timed_out);
+}
+
+/**
+ * 验证当前使用提示以真实 Cxx/Dxx、通道与通信时效为依据
+ * 覆盖准备、使用、退料、跨 AMS、失联、旧选择、启用数量、离线与毫秒回绕
+ */
+static void test_active_channel() {
+    expect_current_channel(-1, "none");
+    for (uint32_t start : {0u, UINT32_MAX - 500u}) {
+        for (uint8_t command : {3, 4}) {
+            reset_pause_test_fixture(start);
+            data_save.BambuBus_now_filament_num = 6;
+            expect_current_channel(-1, "none");
+            request_motion(command, 1, 2, 9, 0x7f);
+            expect_current_channel(6, "selected");
+            request_motion(command, 1, 2, 9, 0xa5);
+            expect_current_channel(6, "selected");
+            request_motion(command, 1, 2, 7, 0x7f);
+            expect_current_channel(6, "using");
+            request_motion(command == 3 ? 4 : 3, 0, 0xff, 1, 0);
+            expect_current_channel(6, "using");
+            request_motion(command, 1, 2, 7, 0);
+            expect_current_channel(6, "selected");
+            request_motion(command, 1, 2, 9, 0x3f);
+            expect_current_channel(6, "retracting");
+            request_motion(command, 1, 0xff, 3, 0);
+            expect_current_channel(6, "retracting");
+            request_motion(command, 2, 3, 3, 0);
+            expect_current_channel(11, "feeding");
+            request_motion(command, 2, 3, 9, 0xa5);
+            request_motion(command, 2, 3, 7, 0x7f);
+            expect_current_channel(11, "using");
+            fake_ms += 1000;
+            expect_current_channel(11, "using");
+            ++fake_ms;
+            expect_current_channel(-1, "none");
+            feed(short_request(0x20, 33));
+            assert(BambuBus_run() == 1);
+            expect_current_channel(-1, "none");
+            request_motion(command, 2, 3, 7, 0x7f);
+            expect_current_channel(11, "using");
+            CHANNEL_MODE[11] = CHANNEL_MODE_OFFLINE;
+            expect_current_channel(-1, "none");
+            CHANNEL_MODE[11] = CHANNEL_MODE_AUTO;
+            expect_current_channel(11, "using");
+            AMS_COUNT = 2;
+            expect_current_channel(-1, "none");
+            AMS_COUNT = 4;
+            data_save.BambuBus_now_filament_num = 255;
+            expect_current_channel(-1, "none");
+            data_save.BambuBus_now_filament_num = 11;
+            fake_ms += 10000;
+            expect_current_channel(-1, "none");
+            request_motion(command, 2, 3, 7, 0x7f);
+            expect_current_channel(-1, "none");
+            feed(short_request(0x20, 33));
+            assert(BambuBus_run() == 1);
+            request_motion(command, 2, 3, 7, 0x7f);
+            expect_current_channel(11, "using");
+            BambuBus_init();
+            expect_current_channel(-1, "none");
+        }
+    }
+}
+
+/**
  * 执行指定回归场景
  * @param argc 参数数量，必须包含一个场景名
  * @param argv 程序名和场景名
@@ -1219,6 +1303,7 @@ int main(int argc, char **argv) {
     else if (name == "auth_logging") test_auth_logging();
     else if (name == "motor_stop") test_motor_stop();
     else if (name == "pause_test") test_pause_test();
+    else if (name == "active_channel") test_active_channel();
     else return 2;
     std::printf("PASS %s\n", name.c_str());
 }

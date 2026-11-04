@@ -66,6 +66,14 @@ extern uint32_t BambuBus_rx_dropped_count();
 
 extern uint32_t BambuBus_last_valid_packet_age_ms();
 
+// 网页所用的当前通道快照；陈旧或无效选择返回 -1，状态名只表达打印机动作。
+struct BambuBusCurrentChannelStatus {
+    int channel;
+    const char *state;
+};
+
+BambuBusCurrentChannelStatus BambuBus_current_channel_status();
+
 // 堵转按目标 AMS 锁存，退料中保存目标通道离线后自动解除；手动解除不恢复通道模式。
 struct BambuBusPauseTestStatus {
     bool available;

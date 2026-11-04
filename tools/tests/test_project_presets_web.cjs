@@ -43,6 +43,7 @@ const path = require('node:path');
         io: { pins: preset.sda !== 255 ? pins : gpioPins,
           switch_pin: preset.switch_pin,
           motor: Array.from({ length: 16 }, (_, i) => preset.pins[i]?.slice(0, 2) || [255, 255]),
+          hall: Array.from({ length: 16 }, (_, i) => preset.pins[i]?.[3] ?? 255), hall_pins: gpioPins.slice(0,5),
           microswitch: Array.from({ length: 16 }, (_, i) => preset.pins[i]?.[2] ?? 255) } });
     };
     rebootWith(direct);
@@ -91,7 +92,7 @@ const path = require('node:path');
     assert.equal(await page.locator('#project-pins tr').count(), 8);
     assert.match(await page.locator('#project-summary').textContent(), /五通总微动无/);
     assert.deepEqual(await page.locator('#project-pins tr').first().locator('td').allTextContents(),
-      ['1', '55（io扩展1 P5）', '54（io扩展1 P4）', '50（io扩展1 P0）']);
+      ['1', '55（io扩展1 P5）', '54（io扩展1 P4）', '50（io扩展1 P0）', '无']);
     const secondAmsPins = [
       ['75（io扩展2 P5）', '74（io扩展2 P4）', '70（io扩展2 P0）'],
       ['76（io扩展2 P6）', '77（io扩展2 P7）', '72（io扩展2 P2）'],
@@ -100,7 +101,7 @@ const path = require('node:path');
     ];
     for (let row = 4; row < 8; ++row)
       assert.deepEqual(await page.locator('#project-pins tr').nth(row).locator('td').allTextContents(),
-        [String(row + 1), ...secondAmsPins[row - 4]]);
+        [String(row + 1), ...secondAmsPins[row - 4], '无']);
     // 临时预览四片高低字节的边界编号，随后恢复真实项目，继续验证保存与重启。
     const previewPins = [[50, 57, 60], [67, 255, 255], [70, 77, 80], [87, 255, 255],
       [90, 97, 100], [107, 255, 255], [110, 117, 120], [127, 255, 255]];
@@ -111,7 +112,7 @@ const path = require('node:path');
     for (const [row, values] of previewPins.entries()) {
       const expected = values.map(id => id === 255 ? '无' : pins.find(pin => pin.id === id).label);
       assert.deepEqual(await page.locator('#project-pins tr').nth(row).locator('td').allTextContents(),
-        [String(row + 1), ...expected]);
+        [String(row + 1), ...expected, '无']);
     }
     await page.evaluate(({ id, pins }) => {
       PROJECTS.find(preset => preset.id === id).pins = pins;
