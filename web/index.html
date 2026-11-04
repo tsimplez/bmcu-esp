@@ -97,11 +97,12 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .channel-group>h3{margin:0 0 10px;font-size:13px;color:var(--dim);font-weight:500}
 .channel-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .channel-card{min-width:0;padding:14px;background:#161922;border:1px solid var(--line);border-radius:10px;transition:border-color .2s,background .2s}
-.channel-card.is-current{border-color:var(--acc);background:#192535;box-shadow:inset 3px 0 var(--acc)}
+.channel-card.is-online{border-color:var(--ok);background:#182b25;box-shadow:inset 3px 0 var(--ok)}
+.channel-card.is-empty{border-color:var(--acc);background:#192535;box-shadow:inset 3px 0 var(--acc)}
 .channel-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .channel-heading h4{font-size:15px;margin:0;font-weight:600}
 .channel-badge{padding:2px 8px;border-radius:20px;background:#252a36;color:var(--dim);font-size:12px}
-.is-current .channel-badge{color:#b5dcff;background:#244e77}
+.channel-badge.is-current{color:#e3ccff;background:#593880}
 .channel-filament{margin:6px 0 12px;color:var(--dim);font-size:12px}
 .hall-reading{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
 .hall-reading span{color:var(--dim);font-size:12px}
@@ -721,8 +722,8 @@ const motorPending={},CH_STATUS_NAMES=['离线','在线','自动'];
 // 检测复用手动点动上限；测时状态只保存在本页，实际启停仍由原电机接口处理。
 const PULLBACK_TEST_MS=29999,pullbackTests={}
 /**
- * 刷新各通道的打印机选择、当前使用和微动状态
- * 仅使用后端确认的当前通道；未选中与电机运行分开描述，状态过期时清除高亮
+ * 刷新通道卡片颜色、打印机状态标签和微动状态
+ * 根据后端模式及微动状态区分在线、有料和无料；当前使用仅高亮标签，未选中时隐藏标签，状态过期时清除高亮
  */
 const renderChannelStatus=()=>{
   const fresh=!!statusAt&&performance.now()-statusAt<3000
@@ -730,9 +731,12 @@ const renderChannelStatus=()=>{
   for(const card of document.querySelectorAll('.channel-card')){
     const ch=Number(card.dataset.channel),selected=fresh&&S.current_channel===ch
     const using=selected&&S.current_channel_state==='using'
-    card.classList.toggle('is-current',using)
-    $('channel-state-'+ch).textContent=!fresh?'状态待确认':selected?(labels[S.current_channel_state]||'打印机选中'):'未被打印机选中'
-    const filament=S.fl?.[ch]
+    const badge=$('channel-state-'+ch),mode=S.cm?.[ch],filament=S.fl?.[ch]
+    card.classList.toggle('is-online',fresh&&(mode===1||(mode===2&&filament===1)))
+    card.classList.toggle('is-empty',fresh&&mode===2&&filament===0)
+    badge.classList.toggle('is-current',using)
+    badge.classList.toggle('hide',fresh&&!selected)
+    badge.textContent=!fresh?'状态待确认':selected?(labels[S.current_channel_state]||'打印机选中'):''
     $('channel-filament-'+ch).textContent=!fresh?'微动状态待确认':filament===1?'微动 · 有料':filament===0?'微动 · 无料':'微动未配置'
   }
 }
