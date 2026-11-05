@@ -100,7 +100,10 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .channel-card.is-online{border-color:var(--ok);background:#182b25;box-shadow:inset 3px 0 var(--ok)}
 .channel-card.is-empty{border-color:var(--acc);background:#192535;box-shadow:inset 3px 0 var(--acc)}
 .channel-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
-.channel-heading h4{font-size:15px;margin:0;font-weight:600}
+.channel-heading h4{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:15px;margin:0;font-weight:600}
+.channel-color{display:inline-block;flex:none;width:14px;height:14px;border-radius:50%;border:1px solid #1b1e27;box-shadow:0 0 0 1px #e8eaf0}
+.channel-color.is-unknown{border:1px dashed var(--dim);box-shadow:none}
+.channel-transparency{color:var(--dim);font-size:12px;font-weight:400;font-variant-numeric:tabular-nums}
 .channel-badge{padding:2px 8px;border-radius:20px;background:#252a36;color:var(--dim);font-size:12px}
 .channel-badge.is-current{color:#e3ccff;background:#593880}
 .channel-filament{margin:6px 0 12px;color:var(--dim);font-size:12px}
@@ -583,12 +586,12 @@ const showSensorValue=(id,value,unit)=>{
 /**
  * 拉取并刷新设备运行状态
  * @return {Promise<void>|undefined} 请求完成后的 Promise；已有请求时返回 undefined
- * 带 3 秒超时读取 /api/status，同步电机及退料测时、传感器、暂停实验、项目和 OTA，首次成功时自动检查更新
+ * 带 5 秒超时读取 /api/status，同步电机及退料测时、传感器、暂停实验、项目和 OTA，首次成功时自动检查更新
  */
 const refreshStatus=()=>{
   if(statusPending) return
   statusPending=true
-  const requestedAt=performance.now(),ac=new AbortController(),timer=setTimeout(()=>ac.abort(),3000)
+  const requestedAt=performance.now(),ac=new AbortController(),timer=setTimeout(()=>ac.abort(),5000)
   return fetch('/api/status',{signal:ac.signal,cache:'no-store'}).then(r=>{
     if(!r.ok) throw Error('状态请求失败')
     return r.json()
@@ -722,8 +725,10 @@ const motorPending={},CH_STATUS_NAMES=['离线','在线','自动'];
 // 检测复用手动点动上限；测时状态只保存在本页，实际启停仍由原电机接口处理。
 const PULLBACK_TEST_MS=29999,pullbackTests={}
 /**
- * 刷新通道卡片颜色、打印机状态标签和微动状态
+ * 刷新通道卡片高亮、耗材颜色圆点与透明度、打印机状态标签和微动状态
  * 根据后端模式及微动状态区分在线、有料和无料；当前使用仅高亮标签，未选中时隐藏标签，状态过期时清除高亮
+ * 颜色缺失或无效时显示空心圆，A 分量缺失或无效时透明度显示“—”；断连或状态过期时保留最近读数并提示“上次读取”
+ * A 分量按 (255-A)/255 换算为四舍五入的透明度百分比，0% 不透明，100% 完全透明
  */
 const renderChannelStatus=()=>{
   const fresh=!!statusAt&&performance.now()-statusAt<3000
@@ -732,6 +737,17 @@ const renderChannelStatus=()=>{
     const ch=Number(card.dataset.channel),selected=fresh&&S.current_channel===ch
     const using=selected&&S.current_channel_state==='using'
     const badge=$('channel-state-'+ch),mode=S.cm?.[ch],filament=S.fl?.[ch]
+    const dot=$('channel-color-'+ch),rawColor=S.filament_colors?.[ch]
+    const color=typeof rawColor==='string'&&/^#[0-9a-f]{6}$/i.test(rawColor)?rawColor.toUpperCase():''
+    dot.classList.toggle('is-unknown',!color)
+    dot.style.backgroundColor=color
+    dot.title=color?'耗材颜色 '+color+(fresh?'':' · 上次读取'):'颜色未知'
+    dot.setAttribute('aria-label',dot.title)
+    const transparency=$('channel-transparency-'+ch),alpha=S.filament_alpha?.[ch]
+    const validAlpha=Number.isInteger(alpha)&&alpha>=0&&alpha<=255
+    transparency.textContent='透明度 '+(validAlpha?Math.round((255-alpha)*100/255)+'%':'—')
+    transparency.title=validAlpha?transparency.textContent+'（0% 不透明，100% 完全透明）'+(fresh?'':' · 上次读取'):'透明度未知'
+    transparency.setAttribute('aria-label',transparency.title)
     card.classList.toggle('is-online',fresh&&(mode===1||(mode===2&&filament===1)))
     card.classList.toggle('is-empty',fresh&&mode===2&&filament===0)
     badge.classList.toggle('is-current',using)
@@ -1824,6 +1840,7 @@ const renderAmsIdentities=(d)=>{
  * 按 AMS 分组创建通道卡片并填充已保存参数
  * @param {Object} d 包含通道数量、模式、退料时间和霍尔引脚的设置响应
  * 提供退料时间检测及说明，保留重绘前的检测状态；仅已配置霍尔的通道显示读数和曲线
+ * 标题后预留耗材颜色圆点与透明度百分比，由状态响应更新，首次获取前分别提示“颜色未知”和“透明度未知”
  */
 const renderChannelCards=(d)=>{
   const body=$('chbody');body.textContent=''
@@ -1836,7 +1853,7 @@ const renderChannelCards=(d)=>{
     }
     const card=document.createElement('article');card.id='channel-'+i;card.className='channel-card'
     card.dataset.channel=i;card.dataset.hallPin=d.io?.hall?.[i]??255
-    card.innerHTML=`<div class="channel-heading"><h4>通道 ${i+1}</h4><span class="channel-badge" id="channel-state-${i}">状态待确认</span></div>
+    card.innerHTML=`<div class="channel-heading"><h4>通道 ${i+1}<span class="channel-color is-unknown" id="channel-color-${i}" role="img" aria-label="颜色未知" title="颜色未知"></span><span class="channel-transparency" id="channel-transparency-${i}" aria-label="透明度未知" title="透明度未知">透明度 —</span></h4><span class="channel-badge" id="channel-state-${i}">状态待确认</span></div>
       <div class="channel-filament" id="channel-filament-${i}">微动状态待确认</div>
       <div class="hall-panel${Number(card.dataset.hallPin)===255?' hide':''}" id="hall-panel-${i}">
       <div class="hall-reading"><span id="hall-pin-${i}">49E 霍尔</span><div><b id="hall-raw-${i}">—</b><small>ADC</small></div></div>

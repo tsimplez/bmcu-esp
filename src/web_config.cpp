@@ -394,12 +394,14 @@ static String sensor_json_value(bool valid, float value, int digits) {
 /**
  * 处理运行状态查询
  * 汇总 WiFi、项目、总线、有效当前通道、暂停实验、电机、耗材和传感器；陈旧通道不会被标为正在使用
+ * filament_colors 按启用的全局通道顺序返回记录中的 #RRGGBB，供网页以不透明圆点显示
+ * filament_alpha 按相同顺序返回 0-255 的 A 分量，0 为完全透明，255 为不透明
  */
 static void handle_status() {
     IPAddress ip = ap_mode ? WiFi.softAPIP() : WiFi.localIP();
 
     String j;
-    j.reserve(2200);
+    j.reserve(2500);
     j  = "{\"mode\":\"" + String(ap_mode ? "AP" : "STA") + "\"";
     j += ",\"ip\":\"" + ip.toString() + "\"";
     j += ",\"ssid\":\"" + json_escape(ap_mode ? "" : sta_ssid) + "\"";
@@ -455,6 +457,21 @@ static void handle_status() {
         j += String(BMCU_channel_filament_state(i));
     }
     j += "]";
+    j += ",\"filament_colors\":[";
+    for (int i = 0; i < active_channel_count(); i++) {
+        if (i) j += ',';
+        char color[8];
+        snprintf(color, sizeof(color), "#%02X%02X%02X",
+                 get_filament_color_R(i), get_filament_color_G(i), get_filament_color_B(i));
+        j += '"'; j += color; j += '"';
+    }
+    j += ']';
+    j += ",\"filament_alpha\":[";
+    for (int i = 0; i < active_channel_count(); i++) {
+        if (i) j += ',';
+        j += String(get_filament_color_A(i));
+    }
+    j += ']';
     j += ",\"maintenance\":" + String(BMCU_can_maintain() ? "true" : "false");
     j += ",\"manual\":" + String(BMCU_manual_active() ? "true" : "false");
     j += ",\"cli\":" + String(WiFi.softAPgetStationNum());
