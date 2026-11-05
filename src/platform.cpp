@@ -1,9 +1,39 @@
 #include "platform.h"
 #include "project_presets.h"
 
+#if defined(ARDUINO_ARCH_RP2040) && defined(ARDUINO_ARCH_MBED)
+#include <new>
+#endif
+
 #if defined(ARDUINO_ARCH_ESP32)
 #include <esp_system.h>
 #endif
+
+/**
+ * 按配置引脚初始化共享 I2C 总线
+ * @param sda 已通过接线校验的 SDA 引脚
+ * @param scl 已通过接线校验的 SCL 引脚
+ * @return true 表示初始化完成并设置为 400kHz
+ * Mbed 只能在构造时指定引脚；先释放旧驱动，再原址重建 Wire，保持 PCF8575 等持有的指针有效
+ * 仅由主循环在没有 I2C 传输时调用
+ */
+bool hal_i2c_begin(const int sda, const int scl) {
+#if defined(ARDUINO_ARCH_ESP32)
+    if (!Wire.begin(sda, scl)) return false;
+#elif defined(ARDUINO_ARCH_RP2040) && defined(ARDUINO_ARCH_MBED)
+    Wire.end();
+    Wire.~MbedI2C();
+    new (&Wire) MbedI2C(sda, scl);
+    Wire.begin();
+#elif defined(ARDUINO_ARCH_RP2040)
+    if (!Wire.setSDA(sda) || !Wire.setSCL(scl)) return false;
+    Wire.begin();
+#else
+    return false;
+#endif
+    Wire.setClock(400000);
+    return true;
+}
 
 /**
  * 判断主控引脚是否支持霍尔模拟采样

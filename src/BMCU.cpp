@@ -8,10 +8,11 @@
  * 4. 状态管理：管理耗材状态和运动状态
  */
 
-#undef abs
 #include "BMCU.h"
 #include "Motor.h"
 #include <cmath>
+// Arduino Mbed 在 Arduino.h 中定义 abs 宏，须在其加载后清除，避免破坏 <random> 中的 std::abs。
+#undef abs
 #include <random>
 #include "PCF8575_PinMap.h"
 #include "settings_storage.h"

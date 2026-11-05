@@ -17,7 +17,7 @@ bool i2c_bus_configured() {
 /**
  * 按当前设置初始化 I2C 总线
  * @return true 表示总线已配置并完成初始化
- * 使用 PCF_SDA/PCF_SCL 和 400kHz 时钟；未配置时直接返回 false
+ * 使用 PCF_SDA/PCF_SCL 和 400kHz 时钟；由平台层适配 Arduino 内核，未配置或初始化失败返回 false
  */
 bool i2c_bus_begin() {
     if (!i2c_bus_configured()) {
@@ -25,17 +25,8 @@ bool i2c_bus_begin() {
         return false;
     }
 
-#if defined(ARDUINO_ARCH_ESP32)
-    Wire.begin(PCF_SDA, PCF_SCL);
-    Wire.setClock(400000);
-#elif defined(ARDUINO_ARCH_RP2040)
-    Wire.setSDA(PCF_SDA);
-    Wire.setSCL(PCF_SCL);
-    Wire.begin();
-    Wire.setClock(400000);
-#endif
-    i2c_bus_initialized = true;
-    return true;
+    i2c_bus_initialized = hal_i2c_begin(PCF_SDA, PCF_SCL);
+    return i2c_bus_initialized;
 }
 
 /**

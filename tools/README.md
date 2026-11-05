@@ -12,6 +12,12 @@ tools/
     └── fixtures/           # C++ 测试用例、硬件桩与期望数据
 ```
 
+## 固件编译
+
+日常验证在仓库根目录运行 `pio run -e esp32c3`；处理 Pico 专属问题时运行 `pio run -e pico`，需要排除旧产物影响时先运行 `pio run -e pico -t clean`。
+
+Pico 环境使用 Arduino Mbed 内核。`src/BMCU.cpp` 须在 Arduino 头文件加载后、`<random>` 之前清除 `abs` 宏；I2C 引脚初始化由 `src/platform.cpp` 的 `hal_i2c_begin()` 适配，不能直接调用其他 RP2040 内核的 `Wire.setSDA/setSCL`。总线共享方式见 [PCF8575 说明](../docs/PCF8575.md)。编译通过仅验证构建与链接，实机 I2C 和电机仍需上板验证。
+
 ## OTA 发布
 
 在仓库根目录运行 `python tools/make_ota.py --help` 查看参数。发布入口及参数保持不变，完整流程见 [OTA 发布说明](../docs/OTA_SERVER.md)。

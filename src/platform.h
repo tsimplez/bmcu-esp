@@ -147,7 +147,7 @@ const ProjectPreset &hal_default_project_preset();
   // ---------- RP2040 与 ESP32-S3 一致的引脚 ----------
   #define PIN_BUS_DE       6
   #define MOTOR_PINS_1_4   {11, 12}, {9, 10}, {7, 8}, {13, 14}
-  #define MSW_PINS_5_8     57, 56, 55, 54  // PCF8575 虚拟引脚
+  #define MSW_PINS_5_8     57, 56, 55, 54
 
   #if defined(ARDUINO_ARCH_ESP32)
     // ESP32-S3：GPIO0 是 strapping 脚且 UART0 要留给日志；26-29 被 Flash/PSRAM 占用
@@ -160,7 +160,8 @@ const ProjectPreset &hal_default_project_preset();
     #define PIN_BUS_TX  0
     #define PIN_BUS_RX  1
     #define PIN_SWITCH  PIN_NONE // GPIO0 已被 UART0 TX 占用，总微动默认不配置
-    #define MSW_PINS_1_4 26, 27, 28, 29
+    #define MSW_PINS_1_4    26, 27, 28, 29
+    #define MOTOR_PINS_5_8  67, 66, 65, 64, 63, 62, 61, 60
   #endif
 
 #endif
@@ -222,6 +223,8 @@ static void hal_prepare_gpio() {
 extern int PCF_SDA;
 // I2C 总线 SCL 引脚号（PCF8575/温湿度模块共用）
 extern int PCF_SCL;
+
+bool hal_i2c_begin(int sda, int scl);
 
 // ---------- 控制台串口 ----------
 // Arduino-ESP32 只在「USB CDC 上电启动」（ARDUINO_USB_CDC_ON_BOOT）时才自己调用
@@ -328,7 +331,6 @@ static void hal_bus_write(const uint8_t *data, const uint16_t len) {
 #else
 
 #include <hardware/flash.h>
-#include <hardware/irq.h>
 #include <hardware/uart.h>
 #include <hardware/watchdog.h>
 
@@ -344,19 +346,19 @@ static void hal_bus_write(const uint8_t *data, const uint16_t len) {
  * 初始化硬件看门狗（RP2040）
  * RP2040 平台启用 10 秒硬件看门狗
  */
-static inline void hal_watchdog_init() { watchdog_enable(10000, true); }
+static void hal_watchdog_init() { watchdog_enable(10000, true); }
 /**
  * 喂硬件看门狗（RP2040）
  * RP2040 平台刷新硬件看门狗计时
  */
-static inline void hal_watchdog_feed() { watchdog_update(); }
+static void hal_watchdog_feed() { watchdog_update(); }
 
 /**
  * 初始化 BambuBus UART（RP2040）
  * @param baud 波特率
  * RP2040 平台配置 UART0 的 TX/RX、8E1 格式和 FIFO
  */
-static inline void hal_bus_begin(uint32_t baud) {
+static void hal_bus_begin(const uint32_t baud) {
     uart_init(BUS_SERIAL, baud);
     gpio_set_function(BUS_TX, GPIO_FUNC_UART);
     gpio_set_function(BUS_RX, GPIO_FUNC_UART);
@@ -369,20 +371,20 @@ static inline void hal_bus_begin(uint32_t baud) {
  * @return 是否有可读字节
  * RP2040 平台通过 uart_is_readable() 检查接收状态
  */
-static inline bool hal_bus_available() { return uart_is_readable(BUS_SERIAL); }
+static bool hal_bus_available() { return uart_is_readable(BUS_SERIAL); }
 /**
  * 读取 UART 字节（RP2040）
  * @return 读到的字节
  * RP2040 平台从 UART0 读取一个字节
  */
-static inline int hal_bus_read() { return uart_getc(BUS_SERIAL); }
+static int hal_bus_read() { return uart_getc(BUS_SERIAL); }
 /**
  * 发送 UART 数据（RP2040）
  * @param data 待发送数据
  * @param len 发送长度
  * RP2040 平台阻塞写入并等待发送完成
  */
-static inline void hal_bus_write(const uint8_t *data, uint16_t len) {
+static void hal_bus_write(const uint8_t *data, const uint16_t len) {
     uart_write_blocking(BUS_SERIAL, data, len);
     uart_tx_wait_blocking(BUS_SERIAL);
 }
