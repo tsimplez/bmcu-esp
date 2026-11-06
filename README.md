@@ -2,78 +2,27 @@
 
 [交流群 1093447641 欢迎加入](https://qm.qq.com/q/hrK8NNwo6Y)
 
-## 有关于市面上的 bmcu 项目
-- Top ams 和 天枢TTC 相似
-- 孔明 和 怪兽 相似
+## 方案（BOM清单）
+### 必须
+| 品名 | 参考图  | 数量 | 说明 |
+|---|---|---|---|
+| esp32 | ![esp32c3](png/esp32c3.jpeg) | 1 | 简约 和 经典 都可以 | 
+| RS485模块 TTL转RS485 | ![485.png](png/485.png) ![485de](png/485de.png) | 1 | 两种都可以 |
+| PCF8575 | ![PCF8575.png](png/PCF8575.png) | 2 | 一个就是4色 两个就是8色 3个12色 4个16色 |
+| DRV8833电机驱动 | ![DRV8833.png](png/DRV8833.png) | 4 | 一个控制两个电机 |
+| TT电机 1/48黑头单轴 | ![tt电机](png/tt.png) | 8 | 白头应该也可以 几色就几个 |
+| 压板弹簧外径5*长度10*线径0.4 |  | 8 | 无所谓，长了就剪 |
+| M3沉头螺丝 |  | * | 推荐每个规格都买(平时也用的到) 一种的话推荐(M3*20) |
 
-### Ams Lite Mini 485
-[教程 https://docs.qq.com/doc/DVm9tRkhkSXF1ZGZi](https://docs.qq.com/doc/DVm9tRkhkSXF1ZGZi)
-
-### Top ams
-之前使用此方案的，可以很方便迁移到本项目（只需要加 1个ttl转485模块）
-- ***不推荐使用的是(mqtt方案)，其他项目都是使用485方案(和打印机直接通信)***
-- 功能: 微动
-- 群: 882091399
-- [教程 https://docs.qq.com/doc/DVkZIR0NtYUtsenB6](https://docs.qq.com/doc/DVkZIR0NtYUtsenB6)
-- [仓库 https://github.com/nccrrv/Top-AMS](https://github.com/nccrrv/Top-AMS)
-- [tt模型 https://makerworld.com.cn/models/1418429](https://makerworld.com.cn/models/1418429)
-
-### 天枢TTC
-之前使用此方案的，可以很方便迁移到本项目（只需要加 一个esp32 ）
-- 功能: 微动
-- 群: 981655616
-- [教程 https://my.feishu.cn/wiki/N4bXwJpWUirYBFkMr81cw0umn72](https://my.feishu.cn/wiki/N4bXwJpWUirYBFkMr81cw0umn72)
-- [仓库 https://github.com/hu504011383/Tianshu](https://github.com/hu504011383/Tianshu)
-- [tt模型 https://makerworld.com.cn/models/1418429](https://makerworld.com.cn/models/1418429)
-- [TTC模型 https://makerworld.com.cn/models/2226484](https://makerworld.com.cn/models/2226484)
-
-### 孔明(主板使用ttl烧录)
-- 功能: 霍尔 + 双微动 + 370电机
-- 群 981889040
-- [教程 https://b23.tv/zsuv8dt](https://b23.tv/zsuv8dt)
-
-### 怪兽(比孔明的主板多了typec烧录(340芯片)(烧录更简单))
-- 功能: 霍尔 + 双微动 + 370电机
-- 群 1025731130
-- [教程](https://b23.tv/F88rm5g)
-- 26-10-17: 配件包价格 185(塑料)
-
-### bmcu pro
-- 功能: 霍尔 + 双微动 + 370电机 + 回卷
-- 群 735647789
-- [教程 https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9](https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9)
-
-### NeMCU
-- 功能: esp32 + 全霍尔 + 370电机
-- 群 851019565
-
-### 波兰固件
-[仓库](https://github.com/jarczakpawel/BMCU-C-PJARCZAK)
-
-#### 和 bmcu-esp(本项目) 的区别
-本项目基于[Tianshu](https://github.com/hu504011383/Tianshu)
-然后 Tianshu 似乎是基于 BMCU-C-PJARCZAK 的 V9 PJarczak 2026/2/24 07:04 修改而来
-所以 本项目一样也是
-不过 后续会同步一些相同的地方，文件上方有标记
-
-https://github.com/RobTillaart/PCF8575
-
-### 其他
-#### 最新版本支持（第一次打印有效）
-https://github.com/Le-Maxime/BMCU-U
-https://github.com/jarczakpawel/BMCU-Flasher
-
-欢迎补充内容
-
-## 打印机ams接口
-上左 B 上右 A
-下左 GND 下右 24V
-
-固件 485模块 也是需要A接A B接B
-
-## 硬件方案
-
-支持同一 I2C 总线连接 4 片 PCF8575（`0x20～0x23`），共 64 个扩展引脚，接线与配置见 [PCF8575 扩展说明](docs/PCF8575.md)。
+### 可选
+| 品名 | 参考图  | 数量 | 说明 |
+|---|---|---|---|
+| 三脚带柄13.5mm按键微动 | ![wd.png](png/wd.png) | 8 | 可以不要 功能(可自吸和耗材在线检测) 至少一个电机一个|
+| AMS数据线（4pin公对公，原厂线序，不是延长线） | ![线](png/ams.png) | 1 | 杜邦线也不是不能用 打印机ams接口是(上左 B 上右 A 下左 GND 下右 24V)和485模块的关系是(A接A B接B) | 
+| MX3 2*2 弯针座 | ![amsm.png](png/amsm.png) | 1 | AMS数据线接口 |
+| mini 5V电源模块 | ![电源](png/dy.png) | 1 | 不用也可以 用手机数据线(type-c)接esp32 |
+| 2.54排母，要4P 5P 6P 10P 16P 可以直接买一份1x40P的自己剪断 | ![pm.png](png/pm.png) | * | 不要也可以 直接焊接到pcb上(不方便拆) 买2P和3P组合使用也可以|
+| xh2.54直针插座| ![xh.png](png/xh.png) | * | 一个电机一个 |
 
 ### 最低成本（无io扩展模块，4色（最低24元）或者8色）
 *** 必须 ***
@@ -124,6 +73,14 @@ https://github.com/jarczakpawel/BMCU-Flasher
 | 0x26 | VCC | VCC | GND |
 | 0x27 | VCC | VCC | VCC |
 
+## 烧录教程
+1. 在 [Releases](https://github.com/tsimplez/bmcu-esp/releases) 处下载适合的esp32固件
+2. 电脑使用typec连接好esp32
+3. 打开 [在线烧录网站](https://web.esphome.io)
+4. 点击连接 -> 左上角选择串行端口 -> 点击安装（在 准备首次使用 旁边） -> 选择下载好的固件安装就可以了
+5. 最后连接esp32 的 wifi（BMCU_xxxxxx）访问 [192.168.4.1](http://192.168.4.1)
+
+
 ## 项目简介
 
 团子 BMCU 是一套面向 3D 打印机的自动材料更换控制单元固件，实现了与 Bambu Lab 打印机的
@@ -136,21 +93,14 @@ BambuBus 通信协议，支持多通道耗材管理、电机控制、编码器�
 > 本固件基于社区逆向工程实现，与 Bambu Lab 官方无关，仅供学习研究，非官方支持版本
 
 ## 项目特色
-空打 掺料 检测支持
+空打 缠料 检测支持(制作中)
 需要把 离线 切换回 在线或者自动（使用电机堵转实现（打印机会退料在进料（只能直接离线）有概率提示堵转））
-
-## 烧录教程
-1. 在 [Releases](https://github.com/tsimplez/bmcu-esp/releases) 处下载适合的esp32固件
-2. 电脑使用typec连接好esp32
-3. 打开 [在线烧录网站](https://web.esphome.io)
-4. 点击连接 -> 左上角选择串行端口 -> 点击安装（在 准备首次使用 旁边） -> 选择下载好的固件安装就可以了
-5. 最后连接esp32 的 wifi（BMCU_xxxxxx）访问 [192.168.4.1](http://192.168.4.1)
 
 ## 支持的平台
 
 | PlatformIO 环境 | 主控 | 说明 |
 |---|---|---|
-| `pico` | RP2040（Raspberry Pi Pico） | 默认环境设置存片内 Flash；BambuBus 走 UART0；无网页（Web 层为空实现） |
+| `pico` | RP2040（Raspberry Pi Pico） | 默认环境设置存片内 Flash；BambuBus 走 UART0；无网页（Web 层为空实现）（考虑删除中） |
 | `esp32s3` | ESP32-S3 | 16 MB Flash + OPI PSRAM，`default_16MB.csv` 分区；日志走 UART0（GPIO43/44） |
 | `esp32c3` | ESP32-C3 | 4 MB Flash，`min_spiffs.csv` 分区（双 OTA 槽）；默认 4 通道直连 GPIO |
 | `airm2m_core_esp32c3` | 合宙 AirM2M CORE ESP32-C3 | 同上分区与引脚方案，板载 LED 在 GPIO12/13 |
@@ -163,7 +113,7 @@ BambuBus 通信协议，支持多通道耗材管理、电机控制、编码器�
 - **BambuBus 通信**：与打印机交互，支持 RS485 两种收发方式；可选原始报文日志
 - **电机控制**：进料 / 退料 / 停止，支持同时运行电机数上限与排队，超时自动停车；打印机进料结束后的停止延迟可在网页自定义
 - **微动开关检测**：自动模式按微动状态更新通道；微动辅助进料（时长可配，0=关闭）
-- **49E 霍尔与通道卡片**：每通道可配置主控 ADC 输入，网页显示当前使用通道、原始读数及最近一分钟的曲线；接线数量受主控 ADC 资源限制，见 [霍尔采样说明](docs/HALL_SENSOR.md)
+- **49E 霍尔与通道卡片**：每通道可配置主控 ADC 输入，网页显示当前使用通道、原始读数及最近一分钟的曲线；接线数量受主控 ADC 资源限制
 - **AS5600 编码器模拟**：模拟磁编码器，返回角度、磁场状态与速度
 - **引脚可配置**：电机、通道微动、五通总微动与霍尔引脚由 `io_config` 管理，可在网页里选择与校验；配置 I2C 后微动可选择 PCF8575 扩展输入，霍尔只允许主控 ADC
 - **设置存储**：使用魔数 + CRC32 校验，写入由存储后端保障（RP2040 片内 Flash / ESP32 NVS）
@@ -195,18 +145,7 @@ src/
 └── version.h           # 固件版本与 OTA 板型键名（FW_VERSION / FW_TARGET）
 
 web/index.html          # 管理页面，构建时作为二进制块编入固件
-tools/
-├── make_ota.py         # 生成 OTA 发布目录与 manifest.json
-├── README.md           # 工具用途、依赖与运行命令
-└── tests/              # 固件逻辑主机测试、网页交互测试
-    └── fixtures/       # C++ 测试用例、硬件桩和期望数据
-docs/
-├── OTA_SERVER.md       # OTA 服务器与发布流程说明
-├── TESTING.md          # 测试覆盖与验证边界
-└── PROJECT_PRESETS.md  # 项目预设扩展与保存规则
 ```
-
-工具使用见 [tools/README.md](tools/README.md)，测试覆盖见 [docs/TESTING.md](docs/TESTING.md)。
 
 ### 主循环
 
@@ -270,25 +209,6 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 - 圆点旁显示透明度百分比，0% 表示不透明，100% 表示完全透明；`GET /api/status` 的 `filament_alpha` 按与颜色相同的通道顺序返回 0–255 的 A 分量，网页按 `round((255-A)*100/255)` 换算。透明度缺失或无效时显示“透明度 —”并提示“透明度未知”；连接中断或状态过期时保留最近百分比并提示“上次读取”
 - 「状态 → 通道参数与手动进退料」可填写进料停止延迟；「设置 → 电机与微动引脚」可选择五通总微动，与通道接线一起保存。总微动下降沿让当前选中且空闲的通道进料 200 毫秒；改线后首次读数只建立基线，扩展器离线时不触发。接线由主循环应用，网页回调不驱动电机
 
-## 固件更新（OTA）
-
-- 设备从「更新源目录」拉取 `manifest.json`，按自身 `FW_TARGET` 取对应条目并下载、校验、写入 Flash
-- 清单中**每个板型条目独立带 `version` 与 `notes`**，可一块板子一块子地发布而不会误报其它板型有新版本；
-  板型键名须与 `version.h` 中的 `FW_TARGET` 一致
-- 条目字段只有：`url`、`version`、`notes`、`size`、`md5`（设备写入时校验完整性）
-- 服务器须能直接 GET 且返回 `Content-Length`；设备拒绝分块传输与长度不明的响应HTTPS 使用 `setInsecure()`，不校验证书
-- 更新前须满足维护条件：停止打印、断开打印机总线、确认无近期通信与运动、所有电机已停且通道等待；不满足时后端返回 409
-- 发布流程：
-
-```powershell
-# 1. 改 src/version.h 的 FW_VERSION
-# 2. 编译
-pio run -e esp32s3 -e esp32c3 -e airm2m_core_esp32c3
-# 3. 生成发布目录（累加，保留其它板型旧条目）
-python tools\make_ota.py esp32s3 esp32c3 airm2m_core_esp32c3 --notes "修复 XX 问题"
-# 4. 把 dist/ 传到服务器对应目录
-```
-
 ## 编译与烧录
 
 ```bash
@@ -302,6 +222,69 @@ pio run -t clean             # 清理
 - 公共依赖在 `[env]` 中声明（PCF8575），网页 `web/index.html` 通过 `board_build.embed_txtfiles` 编入固件
 - `pico` 环境需 `lib_ignore` 忽略 ESP32 专用库（WiFi/DNSServer/ESPmDNS/WebServer/Preferences）；`upload_protocol = picotool`
 - C3 默认日志走 UART0；若要用板载 USB 看日志需追加 `-DARDUINO_USB_CDC_ON_BOOT=1`
+
+## 有关于市面上的 bmcu 项目
+- Top ams 和 天枢TTC 相似
+- 孔明 和 怪兽 相似
+
+### Ams Lite Mini 485
+[教程 https://docs.qq.com/doc/DVm9tRkhkSXF1ZGZi](https://docs.qq.com/doc/DVm9tRkhkSXF1ZGZi)
+
+### Top ams
+之前使用此方案的，可以很方便迁移到本项目（只需要加 1个ttl转485模块）
+- ***不推荐使用的是(mqtt方案)，其他项目都是使用485方案(和打印机直接通信)***
+- 功能: 微动
+- 群: 882091399
+- [教程 https://docs.qq.com/doc/DVkZIR0NtYUtsenB6](https://docs.qq.com/doc/DVkZIR0NtYUtsenB6)
+- [仓库 https://github.com/nccrrv/Top-AMS](https://github.com/nccrrv/Top-AMS)
+- [tt模型 https://makerworld.com.cn/models/1418429](https://makerworld.com.cn/models/1418429)
+
+### 天枢TTC
+之前使用此方案的，可以很方便迁移到本项目（只需要加 一个esp32 ）
+- 功能: 微动
+- 群: 981655616
+- [教程 https://my.feishu.cn/wiki/N4bXwJpWUirYBFkMr81cw0umn72](https://my.feishu.cn/wiki/N4bXwJpWUirYBFkMr81cw0umn72)
+- [仓库 https://github.com/hu504011383/Tianshu](https://github.com/hu504011383/Tianshu)
+- [tt模型 https://makerworld.com.cn/models/1418429](https://makerworld.com.cn/models/1418429)
+- [TTC模型 https://makerworld.com.cn/models/2226484](https://makerworld.com.cn/models/2226484)
+
+### 孔明(主板使用ttl烧录)
+- 功能: 霍尔 + 双微动 + 370电机
+- 群 981889040
+- [教程 https://b23.tv/zsuv8dt](https://b23.tv/zsuv8dt)
+
+### 怪兽(比孔明的主板多了typec烧录(340芯片)(烧录更简单))
+- 功能: 霍尔 + 双微动 + 370电机
+- 群 1025731130
+- [教程](https://b23.tv/F88rm5g)
+- 26-10-17: 配件包价格 185(塑料)
+
+### bmcu pro
+- 功能: 霍尔 + 双微动 + 370电机 + 回卷
+- 群 735647789
+- [教程 https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9](https://www.yuque.com/yuqueyonghu-yxa2f7/uv47x9)
+
+### NeMCU
+- 功能: esp32 + 全霍尔 + 370电机
+- 群 851019565
+
+### 波兰固件
+[仓库](https://github.com/jarczakpawel/BMCU-C-PJARCZAK)
+
+#### 和 bmcu-esp(本项目) 的区别
+本项目基于[Tianshu](https://github.com/hu504011383/Tianshu)
+然后 Tianshu 似乎是基于 BMCU-C-PJARCZAK 的 V9 PJarczak 2026/2/24 07:04 修改而来
+所以 本项目一样也是
+不过 后续会同步一些相同的地方，文件上方有标记
+
+https://github.com/RobTillaart/PCF8575
+
+### 其他
+#### 最新版本支持（第一次打印有效）
+https://github.com/Le-Maxime/BMCU-U
+https://github.com/jarczakpawel/BMCU-Flasher
+
+欢迎补充内容
 
 ## 待处理
 打印机退料 -> 5秒后打印机要求停止 -> 打印机进料

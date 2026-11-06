@@ -1313,6 +1313,58 @@ static constexpr int OTA_SOURCE_COUNT = 5;
 static int g_ota_source = -1;
 // 仅纯文件名允许在官方渠道间回退；版本、大小和 MD5 始终保持不变
 static String g_ota_file;
+// 仅 progress=1 请求使用逐行 JSON 回传；普通 API 请求仍返回单个 JSON
+static bool g_ota_streaming = false;
+static String g_ota_progress_source;
+
+/**
+ * 按请求参数开启 OTA 进度响应
+ * 通过当前连接分块回传，避免同步更新期间另开轮询请求
+ */
+static void ota_progress_begin() {
+    g_ota_streaming = server.arg("progress") == "1";
+    g_ota_progress_source = "";
+    if (!g_ota_streaming) return;
+    server.sendHeader("Cache-Control", "no-store");
+    server.sendHeader("X-Accel-Buffering", "no");
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "application/x-ndjson; charset=utf-8", "");
+    server.client().setNoDelay(true);
+}
+
+/**
+ * 回传当前 OTA 阶段与实际传输字节数
+ * @param stage 阶段标识
+ * @param msg 当前操作说明
+ * @param loaded 已处理字节数
+ * @param total 总字节数；0 表示当前阶段没有可计算的百分比
+ */
+static void ota_progress(const char *stage, const String &msg, size_t loaded = 0, size_t total = 0) {
+    if (!g_ota_streaming || !server.client().connected()) return;
+    String j = "{\"event\":\"progress\",\"stage\":\"" + String(stage) + "\",\"msg\":\"" + json_escape(msg.c_str());
+    j += "\",\"source\":\"" + json_escape(g_ota_progress_source.c_str()) + "\"";
+    j += ",\"loaded\":" + String(static_cast<unsigned long>(loaded));
+    j += ",\"total\":" + String(static_cast<unsigned long>(total)) + "}\n";
+    server.sendContent(j);
+    hal_watchdog_feed();
+}
+
+/**
+ * 结束 OTA 请求并返回最终结果
+ * @param status 普通 JSON 响应的 HTTP 状态码
+ * @param data 最终结果 JSON
+ * 流式响应以 result 事件及空块结束，已发送响应头后的失败由 data.ok 表达
+ */
+static void ota_send_result(int status, const String &data) {
+    if (g_ota_streaming) {
+        server.sendContent("{\"event\":\"result\",\"data\":" + data + "}\n");
+        server.sendContent("");
+    } else {
+        server.send(status, "application/json", data);
+    }
+    g_ota_streaming = false;
+    g_ota_progress_source = "";
+}
 
 /**
  * 获取 OTA 服务基础地址
@@ -1561,16 +1613,19 @@ namespace {
  * @param client 底层网络客户端
  * @param url 清单或固件地址
  * @param err 失败原因
+ * @param resource 当前下载的资源名称
  * @return true 表示服务器返回 HTTP 200
- * 每次跳转前检查设备状态并喂狗，连接及读取各等待至多 2 秒；失败保留 TLS 诊断
+ * 回传连接与跳转阶段，每次跳转前检查设备状态并喂狗，连接及读取各等待至多 2 秒；失败保留 TLS 诊断
  */
-static bool ota_http_open(HTTPClient &http, WiFiClient &client, const String &url, String &err) {
+static bool ota_http_open(HTTPClient &http, WiFiClient &client, const String &url, String &err, const char *resource) {
     http.setConnectTimeout(2000);
     http.setTimeout(2000);
     http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     if (!http.begin(client, url)) { err = "地址无法解析"; return false; }
     for (int redirects = 0; redirects <= 4; ++redirects) {
         if (!BMCU_can_maintain()) { err = "请先停止所有电机运动"; return false; }
+        ota_progress(redirects ? "redirect" : "connect",
+                     String(redirects ? "正在连接跳转后的服务器，获取" : "正在连接更新服务器，获取") + resource);
         hal_watchdog_feed();
         const int code = http.GET();
         hal_watchdog_feed();
@@ -1598,12 +1653,12 @@ static bool ota_http_open(HTTPClient &http, WiFiClient &client, const String &ur
  * @param body 响应正文
  * @param err 错误信息
  * @return true 表示请求成功
- * 清单必须有长度且不超过 8 KB，避免代理错误页占满内存
+ * 回传清单下载阶段；清单必须有长度且不超过 8 KB，避免代理错误页占满内存
  */
 static bool ota_http_get(const String &url, String &body, String &err) {
     const OtaClientHolder client(url);
     HTTPClient http;
-    if (!ota_http_open(http, client.ref(), url, err)) {
+    if (!ota_http_open(http, client.ref(), url, err, "版本清单")) {
         http.end();
         return false;
     }
@@ -1618,6 +1673,7 @@ static bool ota_http_get(const String &url, String &body, String &err) {
         http.end();
         return false;
     }
+    ota_progress("manifest", "正在下载版本清单");
     body = http.getString();
     hal_watchdog_feed();
     http.end();
@@ -1631,7 +1687,7 @@ static bool ota_http_get(const String &url, String &body, String &err) {
  * @param source 内置渠道编号；-1 为自定义
  * @param err 错误信息
  * @return true 表示成功取得当前板型固件信息
- * 读取 manifest.json，提取目标平台的 url、md5、version、notes 和 size，并校验版本与 MD5 格式
+ * 读取 manifest.json，回传解析阶段，提取目标平台的 url、md5、version、notes 和 size，并校验版本与 MD5 格式
  */
 static bool ota_fetch_manifest_from(const String &base, int source, String &err) {
     g_ota_url = g_ota_md5 = g_ota_ver = g_ota_notes = g_ota_file = "";
@@ -1639,6 +1695,7 @@ static bool ota_fetch_manifest_from(const String &base, int source, String &err)
     g_ota_source = -1;
     String body;
     if (!ota_http_get(base + "/manifest.json", body, err)) return false;
+    ota_progress("manifest", "正在解析版本清单并核对板型");
 
     String obj;
     if (!json_get_object(body, FW_TARGET, obj)) {
@@ -1694,7 +1751,7 @@ static bool ota_fetch_manifest_from(const String &base, int source, String &err)
  * 按用户设置获取第一个有效的 OTA 清单
  * @param err 全部失败时的最后渠道及错误原因
  * @return true 表示已取得有效清单
- * 自动模式顺序回退，固定或自定义源只尝试一次，失败不保留旧下载信息
+ * 回传当前渠道和失败原因；自动模式顺序回退，固定或自定义源只尝试一次，失败不保留旧下载信息
  */
 static bool ota_fetch_manifest(String &err) {
     const String base = ota_base();
@@ -1704,6 +1761,7 @@ static bool ota_fetch_manifest(String &err) {
         const int source = selected == 0 ? i : selected;
         const String name = source >= 0 ? OTA_SOURCE_NAMES[source] : "自定义";
         const String candidate = selected == 0 ? ota_source_base(source) : base;
+        g_ota_progress_source = name;
         err = "";
         if (!candidate.length()) err = "还没有配置更新源地址";
         else if (ota_fetch_manifest_from(candidate, source, err)) {
@@ -1712,6 +1770,7 @@ static bool ota_fetch_manifest(String &err) {
         }
         LOG_MAIN("[ota] 渠道 %s 检查失败: %s", name.c_str(), err.c_str());
         err = name + "：" + err;
+        ota_progress("retry", "渠道检查失败：" + err + (i + 1 < count ? "，准备切换渠道" : ""));
         if (!BMCU_can_maintain()) break;
     }
     g_ota_url = g_ota_md5 = g_ota_ver = g_ota_notes = g_ota_file = "";
@@ -1743,7 +1802,7 @@ static bool ota_require_stopped() {
 // ---- 检查更新 ----
 /**
  * 处理检查更新请求
- * 可配置关闭自动提示；手动检查返回版本、更新说明、实际渠道和下载信息
+ * 可配置关闭自动提示；返回版本、更新说明、实际渠道和下载信息，progress=1 时同时回传执行阶段
  */
 static void handle_ota_check() {
     if (!ota_require_stopped()) return;
@@ -1754,10 +1813,12 @@ static void handle_ota_check() {
         return;
     }
 
+    ota_progress_begin();
+    ota_progress("check", "正在检查可用更新");
     String err;
     if (!ota_fetch_manifest(err)) {
         LOG_MAIN("[ota] 检查更新失败: %s", err.c_str());
-        server.send(200, "application/json", ota_json_err(err));
+        ota_send_result(200, ota_json_err(err));
         return;
     }
 
@@ -1776,7 +1837,7 @@ static void handle_ota_check() {
     j += ",\"url\":\"" + json_escape(g_ota_url.c_str()) + "\"}";
     LOG_MAIN("[ota] 检查更新: 本机 %s, 服务器 %s, %s", FW_VERSION, g_ota_ver.c_str(),
              has ? "有新版" : "已是最新");
-    server.send(200, "application/json", j);
+    ota_send_result(200, j);
 }
 
 // ---- 在线更新：下载 → 写 flash → 重启 ----
@@ -1786,13 +1847,13 @@ static void handle_ota_check() {
  * @param err 错误信息
  * @param retryable 是否允许换渠道重试
  * @return true 表示下载、校验和写入全部成功
- * 传输失败会中止本次写入；设备忙或 Flash 写入失败不换渠道重试
+ * 按实际写入字节数回传进度，并显示准备、等待数据和校验阶段；传输失败会中止本次写入，设备忙或 Flash 写入失败不换渠道重试
  */
 static bool ota_flash_attempt(const String &url, String &err, bool &retryable) {
     retryable = false;
     const OtaClientHolder client(url);
     HTTPClient http;
-    if (!ota_http_open(http, client.ref(), url, err)) {
+    if (!ota_http_open(http, client.ref(), url, err, "固件文件")) {
         retryable = BMCU_can_maintain();
         http.end();
         return false;
@@ -1817,6 +1878,7 @@ static bool ota_flash_attempt(const String &url, String &err, bool &retryable) {
         http.end();
         return false;
     }
+    ota_progress("prepare", "正在准备固件写入区域");
     if (!Update.begin(static_cast<size_t>(len))) {
         err = String("Update.begin 失败: ") + Update.errorString();
         http.end();
@@ -1833,7 +1895,9 @@ static bool ota_flash_attempt(const String &url, String &err, bool &retryable) {
     uint8_t buf[1460];
     size_t written = 0;
     uint32_t last_rx = millis();
+    uint32_t last_progress = last_rx;
     bool timeout = false;
+    ota_progress("download", "正在下载并写入固件", 0, static_cast<size_t>(len));
 
     while (true) {
         if (!BMCU_can_maintain()) {
@@ -1848,6 +1912,10 @@ static bool ota_flash_attempt(const String &url, String &err, bool &retryable) {
         int n = stream->readBytes(buf, want);
         if (n <= 0) {
             if (!http.connected() || millis() - last_rx > 15000) { timeout = true; break; }
+            if (millis() - last_progress >= 1000) {
+                ota_progress("download", "正在等待服务器发送固件数据", written, static_cast<size_t>(len));
+                last_progress = millis();
+            }
             hal_watchdog_feed();
             delay(1);  // 等待数据时让出 CPU，避免空闲任务看门狗超时
             continue;
@@ -1858,6 +1926,10 @@ static bool ota_flash_attempt(const String &url, String &err, bool &retryable) {
             break;
         }
         written += static_cast<size_t>(n);
+        if (millis() - last_progress >= 250 || written == static_cast<size_t>(len)) {
+            ota_progress("download", "正在下载并写入固件", written, static_cast<size_t>(len));
+            last_progress = millis();
+        }
         hal_watchdog_feed();
     }
 
@@ -1876,6 +1948,7 @@ static bool ota_flash_attempt(const String &url, String &err, bool &retryable) {
         err = "写入结束前检测到打印机通信或电机动作";
         return false;
     }
+    ota_progress("verify", "下载完成，正在校验固件完整性并完成写入");
     if (!Update.end()) {
         retryable = Update.getError() == UPDATE_ERROR_MD5;
         err = String("写入结束失败: ") + Update.errorString();
@@ -1889,7 +1962,7 @@ static bool ota_flash_attempt(const String &url, String &err, bool &retryable) {
  * 下载固件并在自动模式下回退渠道
  * @param err 最后一次失败原因
  * @return true 表示固件完整写入且校验通过
- * 优先使用取得清单的渠道，重试固定同一版本文件、大小和 MD5；自定义源不改写
+ * 回传每次使用的渠道和失败原因；优先使用取得清单的渠道，重试固定同一版本文件、大小和 MD5，自定义源不改写
  */
 static bool ota_flash_from_url(String &err) {
     const bool automatic = ota_source_index(ota_base()) == 0 && g_ota_file.length();
@@ -1903,6 +1976,7 @@ static bool ota_flash_from_url(String &err) {
         bool retryable = false;
         err = "";
         LOG_MAIN("[ota] 下载渠道: %s", name.c_str());
+        g_ota_progress_source = name;
         if (ota_flash_attempt(url, err, retryable)) {
             g_ota_url = url;
             g_ota_source = source;
@@ -1910,6 +1984,7 @@ static bool ota_flash_from_url(String &err) {
         }
         LOG_MAIN("[ota] 渠道 %s 下载失败: %s", name.c_str(), err.c_str());
         err = name + "：" + err;
+        ota_progress("retry", "下载失败：" + err);
         if (!retryable) break;
     }
     return false;
@@ -1917,19 +1992,23 @@ static bool ota_flash_from_url(String &err) {
 
 /**
  * 处理在线升级请求
- * 检查清单和版本，仅当服务器版本更新时下载写入，成功后重启
+ * 检查清单和版本，仅当服务器版本更新时下载写入；progress=1 时回传阶段、字节进度和最终结果，成功后重启
  */
 static void handle_ota_pull() {
     if (!ota_require_stopped()) return;
+    ota_progress_begin();
+    ota_progress("check", "正在重新检查版本与下载信息");
     String err;
     if (!ota_fetch_manifest(err)) {
-        server.send(200, "application/json", ota_json_err(err));
+        ota_send_result(200, ota_json_err(err));
         return;
     }
-    if (!ota_require_stopped()) return;
+    if (!BMCU_can_maintain()) {
+        ota_send_result(409, ota_json_err("请先停止打印、断开打印机总线并停止所有电机运动"));
+        return;
+    }
     if (!version_newer(g_ota_ver, String(FW_VERSION))) {
-        server.send(200, "application/json",
-                    ota_json_err("服务器上的版本不高于本机（" + g_ota_ver + "），已跳过"));
+        ota_send_result(200, ota_json_err("服务器上的版本不高于本机（" + g_ota_ver + "），已跳过"));
         return;
     }
 
@@ -1939,13 +2018,14 @@ static void handle_ota_pull() {
 
     if (!ok) {
         LOG_MAIN("[ota] 更新失败: %s", err.c_str());
-        server.send(200, "application/json", ota_json_err("更新失败：" + err));
+        ota_send_result(200, ota_json_err("更新失败：" + err));
         return;
     }
 
     LOG_MAIN("[ota] 更新成功（%lu ms），重启", static_cast<unsigned long>(millis() - t0));
-    server.send(200, "application/json",
-                "{\"ok\":true,\"msg\":\"已更新到 " + json_escape(g_ota_ver.c_str()) +
+    ota_progress("reboot", "固件校验通过，准备重启设备");
+    ota_send_result(200,
+                "{\"ok\":true,\"version\":\"" + json_escape(g_ota_ver.c_str()) + "\",\"msg\":\"已更新到 " + json_escape(g_ota_ver.c_str()) +
                     "，设备即将重启\"}");
     delay(1000);
     ESP.restart();

@@ -47,6 +47,9 @@ button.on{background:var(--acc);border-color:var(--acc);color:#08131f;font-weigh
 .spacer{flex:1}
 .hide{display:none!important}
 .hint{color:var(--dim);font-size:12px;margin-top:8px}
+.ota-progress{margin-top:12px}
+.ota-progress progress{display:block;width:100%;height:12px;accent-color:var(--acc)}
+.ota-steps{max-height:160px;overflow:auto;margin:8px 0 0;padding-left:24px;color:var(--dim);font-size:12px;overflow-wrap:anywhere}
 .done{background:#122a1f;border:1px solid #2b6b4a;border-radius:8px;padding:12px;margin-bottom:14px}
 .done b{color:var(--ok);word-break:break-all}
 .done a{display:inline-block;margin-top:8px;background:var(--ok);color:#08131f;border-radius:8px;padding:9px 14px;text-decoration:none;font-weight:600}
@@ -405,10 +408,15 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <button id="u-n0" onclick="setNotify(0)">提示更新：关</button>
     </div>
     <div class="row" style="margin-top:12px">
-      <button onclick="checkUpdate(1)">检查更新</button>
+      <button id="btn-otacheck" onclick="checkUpdate(1)">检查更新</button>
       <button id="btn-otapull" class="primary" onclick="pullUpdate()" disabled>在线更新</button>
     </div>
-    <div class="hint" id="u-stat">尚未检查更新</div>
+    <div class="hint" id="u-stat" role="status">尚未检查更新</div>
+    <div class="ota-progress hide" id="u-progress">
+      <progress id="u-bar" max="100" aria-label="固件更新进度" aria-describedby="u-stat u-detail"></progress>
+      <div class="hint" id="u-detail"></div>
+      <ol class="ota-steps" id="u-steps" aria-label="更新过程"></ol>
+    </div>
     <div class="hint">升级前必须停止所有电机运动固件会再次检查，不满足时拒绝升级</div>
     <div class="row" style="margin-top:12px">
       <input id="u-file" class="grow" type="file" accept=".bin">
@@ -556,6 +564,8 @@ let S;
 let otaAutoTried;
 // 渠道检查进行中时不重复提交，避免设备排队处理多个检查请求
 let otaChecking=false;
+// 检查、下载、上传与重连期间暂停普通轮询，并禁止重复提交更新
+let otaBusy=false;
 // 最近一次检查到的可用更新信息；null 表示没有可更新版本
 let gOtaLatest;
 /**
@@ -586,10 +596,10 @@ const showSensorValue=(id,value,unit)=>{
 /**
  * 拉取并刷新设备运行状态
  * @return {Promise<void>|undefined} 请求完成后的 Promise；已有请求时返回 undefined
- * 带 5 秒超时读取 /api/status，同步电机及退料测时、传感器、暂停实验、项目和 OTA，首次成功时自动检查更新
+ * OTA 期间暂停请求；其余时间带 5 秒超时读取 /api/status，同步电机及退料测时、传感器、暂停实验、项目和 OTA，首次成功时自动检查更新
  */
 const refreshStatus=()=>{
-  if(statusPending) return
+  if(statusPending||otaBusy) return
   statusPending=true
   const requestedAt=performance.now(),ac=new AbortController(),timer=setTimeout(()=>ac.abort(),5000)
   return fetch('/api/status',{signal:ac.signal,cache:'no-store'}).then(r=>{
@@ -643,8 +653,7 @@ const refreshStatus=()=>{
     renderChannelStatus()
     renderPauseTest()
     updateChannelStateText(true)
-    $('btn-otapull').disabled=!gOtaLatest||!d.maintenance
-    $('btn-otaupload').disabled=!d.maintenance;
+    updateOtaControls()
     /* 首次拿到状态后自动检查一次更新，有新版就把常驻横幅亮出来 */
     if(!otaAutoTried){otaAutoTried=true; if(d.otanotify==1 && d.otaurl) checkUpdate(0);}
   }).catch(()=>{
@@ -790,11 +799,11 @@ const applyHallPacket=(data)=>{
 }
 /**
  * 拉取所有通道的霍尔增量历史
- * @return {Promise<void>|undefined} 请求结束的 Promise；页面隐藏或已有请求时不重复发送
+ * @return {Promise<void>|undefined} 请求结束的 Promise；OTA 期间、页面隐藏或已有请求时不重复发送
  * 每次只发送一个带三秒超时的请求；分批补齐历史，回到状态页时沿用游标，固件负责重置过期历史
  */
 const refreshHall=()=>{
-  if(hallPending||document.hidden||TAB!=='status') return
+  if(hallPending||otaBusy||document.hidden||TAB!=='status') return
   if(hallPageTimer!==null){clearTimeout(hallPageTimer);hallPageTimer=null}
   hallPending=true
   const query=hallEpoch===null?'':'?epoch='+hallEpoch+'&cursor='+hallCursor
@@ -2047,7 +2056,7 @@ const gotoUpdate=()=>{showTab('update');
  */
 const setOtaUi=(d)=>{
   gOtaLatest = d.has_update ? d : null
-  $('btn-otapull').disabled = !d.has_update || !S.maintenance
+  updateOtaControls()
   $('u-source').textContent='本次检查渠道：'+(d.source||'当前更新源')
   if(d.has_update){
     $('u-stat').innerHTML='发现新版本 <b>'+esc(d.latest)+'</b>，当前 '+esc(d.current)+
@@ -2059,71 +2068,209 @@ const setOtaUi=(d)=>{
   }
 }
 
+let otaProgressKey=''
+/**
+ * 同步更新控件的禁用状态
+ * 检查、升级与重连期间锁定更新卡片；空闲时按维护条件恢复操作，状态尚未取得时保持更新按钮禁用
+ */
+const updateOtaControls=()=>{
+  for(const el of $('card-ota').querySelectorAll('button,input,select')) el.disabled=otaBusy
+  $('btn-otacheck').disabled=otaBusy||!S?.maintenance
+  $('btn-otapull').disabled=otaBusy||!gOtaLatest||!S?.maintenance
+  $('btn-otaupload').disabled=otaBusy||!S?.maintenance
+}
+/**
+ * 开始显示一次 OTA 操作
+ * @param {string} msg 起始阶段说明
+ * 清空上次过程并锁定更新控件
+ */
+const beginOtaProgress=(msg)=>{
+  otaBusy=true;otaProgressKey=''
+  $('u-steps').replaceChildren()
+  $('u-progress').classList.remove('hide')
+  $('u-bar').classList.remove('hide')
+  $('u-detail').textContent=''
+  $('u-stat').classList.remove('error')
+  updateOtaControls()
+  showOtaProgress({stage:'start',msg})
+}
+/**
+ * 显示 OTA 阶段、百分比和处理大小
+ * @param {Object} d 含 stage、msg、source、loaded 和 total 的进度事件
+ * 未知总量使用活动指示；阶段及渠道变化追加到过程列表，下载进度不重复刷列表
+ */
+const showOtaProgress=(d)=>{
+  $('u-stat').textContent=d.msg
+  if(d.source) $('u-source').textContent='当前渠道：'+d.source
+  const total=Number(d.total)||0,loaded=Math.max(0,Math.min(Number(d.loaded)||0,total))
+  if(total>0){
+    const percent=Math.floor(loaded*100/total)
+    $('u-bar').value=percent
+    $('u-detail').textContent=percent+'% · '+Math.round(loaded/1024)+' / '+Math.round(total/1024)+' KB'
+  }else{
+    $('u-bar').removeAttribute('value')
+    $('u-detail').textContent=''
+  }
+  const key=[d.stage,d.source,d.stage==='download'?'':d.msg].join('|')
+  if(key!==otaProgressKey){
+    otaProgressKey=key
+    const li=document.createElement('li'),steps=$('u-steps')
+    li.textContent=(d.source?d.source+' · ':'')+d.msg
+    steps.append(li)
+    if(steps.children.length>60) steps.firstElementChild.remove()
+    steps.scrollTop=steps.scrollHeight
+  }
+}
+/**
+ * 结束 OTA 进度展示
+ * @param {boolean} ok 是否成功
+ * @param {string} msg 最终提示
+ * 停止活动指示并保留过程；失败保留已有百分比，恢复操作按钮
+ */
+const finishOtaProgress=(ok,msg)=>{
+  if(ok) $('u-bar').value=100
+  else if(!$('u-bar').hasAttribute('value')) $('u-bar').classList.add('hide')
+  $('u-stat').textContent=msg
+  $('u-stat').classList.toggle('error',!ok)
+  otaBusy=false
+  updateOtaControls()
+}
+/**
+ * 请求 OTA 操作并逐行解析进度响应
+ * @param {string} path 检查或下载接口路径及查询参数
+ * @return {Promise<Object>} 设备明确返回的最终结果
+ * 支持跨网络分片的 JSON 行及普通 JSON 拒绝响应；HTTP 错误或缺少最终结果时不推断升级成功
+ */
+const requestOta=(path)=>new Promise((resolve,reject)=>{
+  const xhr=new XMLHttpRequest()
+  let offset=0,settled=false
+  xhr.open('POST',path+(path.includes('?')?'&':'?')+'progress=1')
+  xhr.timeout=600000
+  /**
+   * 校验 HTTP 状态及设备最终结果后完成请求
+   * @param {Object} data 设备返回的结果对象
+   */
+  const complete=(data)=>{
+    if(!data||typeof data.ok!=='boolean') throw Error('设备返回的更新结果无效')
+    if(xhr.status<200||xhr.status>=300) throw Error(data.msg||'更新请求失败（HTTP '+xhr.status+'）')
+    settled=true;resolve(data)
+  }
+  /**
+   * 消费已完整接收的 JSON 行
+   * 未结束的一行留待后续分片，最终结果收到后立即交给调用方
+   */
+  const consume=()=>{
+    if(settled||!(xhr.getResponseHeader('Content-Type')||'').includes('application/x-ndjson')) return
+    const text=xhr.responseText
+    let end
+    while((end=text.indexOf('\n',offset))>=0){
+      const line=text.slice(offset,end).trim();offset=end+1
+      if(!line) continue
+      const event=JSON.parse(line)
+      if(event.event==='progress') showOtaProgress(event)
+      else if(event.event==='result'){
+        complete(event.data);return
+      }
+    }
+  }
+  xhr.onprogress=()=>{
+    try{consume()}catch(e){settled=true;reject(e);xhr.abort()}
+  }
+  xhr.onload=()=>{
+    if(settled) return
+    try{
+      consume()
+      if(settled) return
+      if(!(xhr.getResponseHeader('Content-Type')||'').includes('application/x-ndjson')){
+        complete(JSON.parse(xhr.responseText));return
+      }
+      throw Error('设备未返回最终结果，请重新连接设备确认状态')
+    }catch(e){settled=true;reject(e)}
+  }
+  xhr.onerror=xhr.ontimeout=xhr.onabort=()=>{
+    if(settled) return
+    settled=true
+    reject(Error('连接中断或超时，更新结果尚未确认，请重新连接设备确认状态'))
+  }
+  xhr.send()
+})
+/**
+ * 等待升级后的设备重新上线
+ * @param {string} version 在线升级预期版本；本地上传留空
+ * @return {Promise<void>} 重连并刷新或等待超时后的 Promise
+ * 仅在设备已确认写入成功后调用，在线升级还需核对重启后的版本
+ */
+const waitOtaReboot=async(version='')=>{
+  showOtaProgress({stage:'reboot',msg:'固件写入成功，设备重启中，正在等待重新连接'})
+  const deadline=Date.now()+90000
+  await new Promise(resolve=>setTimeout(resolve,5000))
+  while(Date.now()<deadline){
+    const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),3000)
+    try{
+      const r=await fetch('/api/status',{signal:ac.signal,cache:'no-store'})
+      if(r.ok){
+        const d=await r.json()
+        if(d.version&&(!version||d.version===version)){
+          showOtaProgress({stage:'done',msg:'设备已重新连接，正在刷新页面'})
+          $('u-bar').value=100
+          location.reload();return
+        }
+      }
+    }catch(e){}finally{clearTimeout(timer)}
+    await new Promise(resolve=>setTimeout(resolve,1500))
+  }
+  finishOtaProgress(false,'固件已写入，但尚未确认设备重新上线，请重新连接设备后刷新页面')
+}
+
 // force=0 是进页面的静默检查（出错不打扰用户），force=1 是手动点按钮
 /**
  * 检查服务器是否存在新固件
- * @param {boolean} force 是否显示检查过程和失败提示
- * 调用 /api/ota/check，避免重复请求；失败清空旧更新结果，手动模式显示原因
+ * @param {boolean} force 是否强制检查并弹出结果提示
+ * @return {Promise<void>} 检查完成后的 Promise
+ * 逐步显示检查渠道与解析阶段，避免重复请求；失败清空旧更新结果，手动模式额外弹出提示
  */
-const checkUpdate=(force)=>{
-  if(otaChecking) return
+const checkUpdate=async(force)=>{
+  if(otaChecking||otaBusy) return
   otaChecking=true
-  if(force) $('u-stat').textContent='正在检查更新…'
-  fetch('/api/ota/check'+(force?'?force=1':''),{method:'POST'}).then(r=>r.json()).then((d)=>{
-    if(d.skipped){ if(force) $('u-stat').textContent='已在设置里关闭自动提示（仍可手动检查）'; return; }
+  beginOtaProgress('正在请求设备检查更新')
+  try{
+    const d=await requestOta('/api/ota/check'+(force?'?force=1':''))
+    if(d.skipped){finishOtaProgress(true,'已关闭自动提示，仍可手动检查');return}
     if(!d.ok){
-      gOtaLatest=null; $('btn-otapull').disabled=true; hideUpbar()
-      $('u-source').textContent='未找到可用渠道：'+d.msg
-      if(force){ $('u-stat').textContent='检查失败：'+d.msg; toast('检查失败：'+d.msg,8000); }
-      return
+      throw Error(d.msg||'未找到可用更新渠道')
     }
+    finishOtaProgress(true,'检查完成')
     setOtaUi(d)
     if(force && d.has_update) toast('发现新版本 '+d.latest+'，可以点"在线更新"',8000)
-  }).catch(()=>{
+  }catch(e){
     gOtaLatest=null; $('btn-otapull').disabled=true; hideUpbar()
-    $('u-source').textContent='无法连接设备，未取得渠道结果'
-    if(force){ $('u-stat').textContent='检查失败：设备请求中断'; toast('检查失败：设备请求中断',8000); }
-  }).finally(()=>{otaChecking=false})
+    finishOtaProgress(false,'检查失败：'+e.message)
+    if(force) toast('检查失败：'+e.message,8000)
+  }finally{otaChecking=false}
 }
 
 /**
  * 下载并安装服务器上的新固件
- * 确认设备空闲后调用 /api/ota/pull，显示等待计时，成功后延迟打开刷新后的页面
+ * @return {Promise<void>} 更新及重连流程完成后的 Promise
+ * 确认设备空闲后逐步显示渠道、实际下载进度与校验阶段，收到成功结果后等待设备上线
  */
-const pullUpdate=()=>{
+const pullUpdate=async()=>{
+  if(otaBusy||!S?.maintenance||!gOtaLatest) return
   if(!confirm('请确认打印已停止，打印机总线已断开且所有电机已停止确定下载并安装新固件？过程中请勿断电')) return
-  $('btn-otapull').disabled=true
-  $('u-stat').textContent='正在下载固件，请勿断电…（大文件可能要一两分钟）'
-  const t0 = Date.now(), tip = setInterval(() => {
-    $('u-stat').textContent = '正在下载并写入 Flash，已等待 ' + Math.round((Date.now() - t0) / 1000) + ' 秒，请勿断电…'
-  }, 1000);
-  fetch('/api/ota/pull',{method:'POST'}).then(r=>r.text()).then((txt)=>{
-    clearInterval(tip)
-    let d;
-    try{d=JSON.parse(txt);}catch(e){d={ok:false,msg:txt};}
-    $('u-stat').textContent=d.msg||'完成'
-    if(d.ok){
-      toast(d.msg,15000);
-      // 更新成功后延迟 5 秒打开新页面（设备重启后即连到新固件）
-      setTimeout(()=>{
-        const w = window.open(location.pathname, '_blank');
-        if(!w) location.href=location.pathname
-      },5000)
-    }
-    else { toast(d.msg,8000); $('btn-otapull').disabled=false; }
-  }).catch(()=>{
-    clearInterval(tip);
-    // 设备升级成功会直接重启，连接被切断属于正常现象
-    $('u-stat').textContent='连接已断开：如果设备正在重启，等一下刷新本页即可'
-    toast('连接已断开，设备可能正在重启',10000)
-  })
+  beginOtaProgress('正在请求在线更新，请勿断电')
+  try{
+    const d=await requestOta('/api/ota/pull')
+    if(!d.ok) throw Error(d.msg||'更新失败')
+    await waitOtaReboot(d.version)
+  }catch(e){finishOtaProgress(false,e.message);toast(e.message,10000)}
 }
 
 /**
  * 上传本地固件并写入设备
- * 校验 .bin 文件，通过 XMLHttpRequest 显示上传进度，并处理成功、失败和超时
+ * 校验 .bin 文件，显示上传百分比及等待校验阶段；收到设备成功结果后等待重启，失败恢复操作
  */
 const uploadFw=()=>{
+  if(otaBusy||!S?.maintenance) return
   const f = $('u-file').files[0];
   if(!f){toast('请先选择 .bin 固件文件');return;}
   if(!/\.bin$/i.test(f.name)){toast('请选择 .bin 固件文件');return;}
@@ -2134,19 +2281,25 @@ const uploadFw=()=>{
   const xhr = new XMLHttpRequest();
   xhr.open('POST','/api/ota/upload')
   xhr.timeout=300000
-  $('u-stat').textContent='正在上传固件，请勿断电…'
+  beginOtaProgress('正在连接设备，准备上传固件，请勿断电')
   xhr.upload.onprogress=(e)=>{
-    if(e.lengthComputable) $('u-stat').textContent='正在上传 '+Math.round(e.loaded*100/e.total)+'%，请勿断电…'
+    showOtaProgress({stage:'upload',msg:'正在上传固件，请勿断电',loaded:e.loaded,total:e.lengthComputable?e.total:0})
+  }
+  xhr.upload.onload=()=>{
+    showOtaProgress({stage:'verify',msg:'固件已上传，正在等待设备完成校验和写入'})
   }
   xhr.onload=()=>{
     let d;
-    try{d=JSON.parse(xhr.responseText);}catch(e){d={ok:false,msg:'设备返回异常'};}
-    $('u-stat').textContent=d.msg||'完成'
-    toast(d.msg||'完成',12000)
+    try{
+      d=JSON.parse(xhr.responseText)
+      if(!d||typeof d.ok!=='boolean') throw Error('设备返回异常')
+    }catch(e){d={ok:false,msg:'设备返回异常'};}
+    if(xhr.status>=200&&xhr.status<300&&d.ok) waitOtaReboot()
+    else {finishOtaProgress(false,d.msg||'上传失败');toast(d.msg||'上传失败',12000)}
   }
-  xhr.onerror=xhr.ontimeout=()=>{
-    $('u-stat').textContent='上传中断：如果设备正在重启，等一下刷新本页即可'
-    toast('上传中断，设备可能正在重启',10000)
+  xhr.onerror=xhr.ontimeout=xhr.onabort=()=>{
+    finishOtaProgress(false,'上传中断或超时，更新结果尚未确认，请重新连接设备确认状态')
+    toast('上传中断，更新结果尚未确认',10000)
   }
   xhr.send(fd)
 }
@@ -2706,11 +2859,12 @@ const startBusCapture=()=>{
   busCapturePending={filters:{...busLogFilters}};busCaptureVersion++;busCaptureRefresh();startLogCollection();scheduleLogPoll(0)
 }
 /**
- * 一次获取两路日志，完整校验响应后再更新对应通道的缓存与游标
+ * OTA 期间推迟请求；其余时间一次获取两路日志，完整校验响应后再更新对应通道的缓存与游标
  * 清空使用请求代次隔离；启动标识变化时保留历史并重置尾行和时间基准
  */
 const pollLogs=async()=>{
   logPollTimer=null;if(!logStarted||logPollBusy)return
+  if(otaBusy){scheduleLogPoll(1000);return}
   logPollBusy=true
   const epochs=LOGS.map(L=>L.epoch),clearMask=LOGS.reduce((mask,L)=>mask|(L.clearPending?(1<<L.ch):0),0)
   const captureVersion=busCaptureVersion,starting=busCapturePending,stopping=busCapture&&Date.now()>=busCapture.until&&busCapture.stopSeq===null
