@@ -41,6 +41,8 @@ char OTA_URL[OTA_URL_MAX] = DEFAULT_OTA_URL;
 int OTA_NOTIFY = DEFAULT_OTA_NOTIFY;
 // 各通道电机、微动开关和霍尔 ADC 引脚的当前映射
 IoConfig IO_CONFIG = {};
+// 启动时从设置加载；未校准前默认关闭霍尔停转检测
+HallDetectionConfig HALL_DETECTION[IO_CONFIG_MAX_CHANNELS] = {};
 // BambuBus 串口 RX/TX 和 RS485 DE 引脚；启动时从设置加载
 int BUS_RX = hal_default_project_preset().bus.rx;
 int BUS_TX = hal_default_project_preset().bus.tx;
@@ -191,9 +193,18 @@ static bool write_settings_to_flash(const SettingsData* data) {
 }
 
 /**
+ * 校验霍尔双阈值和无转动超时
+ * @param config 待检查的通道检测配置
+ * @return 下限小于上限、上限不超过 4095 且超时不超过一小时时返回 true
+ */
+bool settings_hall_detection_valid(const HallDetectionConfig &config) {
+    return config.lower < config.upper && config.upper <= 4095 && config.timeout_s <= MAX_HALL_TIMEOUT_S;
+}
+
+/**
  * 校验并应用设置到运行期变量
  * @param data 从存储或快照得到的设置
- * 逐项检查范围后更新全局配置；各 AMS 身份独立校验，保留未启用 AMS 的配置
+ * 逐项检查范围后更新全局配置；各 AMS 身份和霍尔检测独立校验，保留未启用通道的配置
  * I2C 仅由 SDA/SCL 决定，接线无效时恢复平台默认映射
  */
 static void apply_settings_values(const SettingsData& data) {
@@ -202,6 +213,8 @@ static void apply_settings_values(const SettingsData& data) {
                                   ? data.pullback_timeout[i] : DEFAULT_PULLBACK_TIMEOUT;
         CHANNEL_MODE[i] = data.channel_mode[i] >= 0 && data.channel_mode[i] <= 2
                               ? data.channel_mode[i] : CHANNEL_MODE_AUTO;
+        HALL_DETECTION[i] = settings_hall_detection_valid(data.hall_detection[i])
+                                ? data.hall_detection[i] : DEFAULT_HALL_DETECTION;
     }
 
     AMS_COUNT = data.ams_count >= 1 && data.ams_count <= IO_CONFIG_MAX_CHANNELS / 4
@@ -310,7 +323,7 @@ void settings_load_from_flash() {
 /**
  * 生成当前设置快照
  * @return 包含所有运行期设置及 CRC32 的 SettingsData
- * 收集当前生效参数、全部 AMS 身份和接线配置；I2C 只存两根引脚，计算 checksum 后返回副本
+ * 收集当前生效参数、全部 AMS 身份、霍尔检测和接线配置；I2C 只存两根引脚，计算 checksum 后返回副本
  */
 SettingsData settings_snapshot() {
     SettingsData data = {};
@@ -338,6 +351,7 @@ SettingsData settings_snapshot() {
     data.pcf_scl = PCF_SCL;
     data.bus_rx = BUS_RX; data.bus_tx = BUS_TX; data.bus_de = BUS_DE;
     memcpy(data.ams_version, AMS_VERSION, sizeof(AMS_VERSION));
+    memcpy(data.hall_detection, HALL_DETECTION, sizeof(HALL_DETECTION));
     data.checksum = calculate_crc32(&data);
     return data;
 }
@@ -364,9 +378,11 @@ bool settings_save_to_flash() {
  * 保存候选设置并完整回读校验
  * @param candidate 已完成范围和接线校验的候选设置
  * @return true 表示写入成功且回读完全一致
- * 重算魔数和 CRC，不修改运行期设置，供项目切换在重启后统一生效
+ * 校验全部霍尔检测参数并重算魔数和 CRC，不修改运行期设置，供项目切换在重启后统一生效
  */
 bool settings_save_snapshot(const SettingsData &candidate) {
+    for (const auto &config : candidate.hall_detection)
+        if (!settings_hall_detection_valid(config)) return false;
     SettingsData data = candidate;
     data.magic = SETTINGS_MAGIC_NUMBER;
     data.checksum = calculate_crc32(&data);
@@ -380,13 +396,14 @@ bool settings_save_snapshot(const SettingsData &candidate) {
 
 /**
  * 恢复所有设置默认值
- * 接线和 AMS 数量复用平台默认项目；全部 AMS 使用自动序列号和默认版本，OTA 恢复默认发布目录
+ * 接线和 AMS 数量复用平台默认项目；霍尔检测默认关闭，全部 AMS 使用自动序列号和默认版本，OTA 恢复默认发布目录
  * 本函数不直接写存储
  */
 void settings_reset_to_defaults() {
     for (int i = 0; i < 16; i++) {
         PULLBACK_TIMEOUT[i] = DEFAULT_PULLBACK_TIMEOUT;
         CHANNEL_MODE[i] = CHANNEL_MODE_AUTO;
+        HALL_DETECTION[i] = DEFAULT_HALL_DETECTION;
     }
     AMS_COUNT = hal_default_project_preset().ams;
     MANUAL_PULSE_MS = DEFAULT_MANUAL_PULSE_MS;
@@ -439,7 +456,7 @@ static const char *channel_mode_name(const int mode) {
 
 /**
  * 打印当前全部设置
- * 启动和保存设置时，把总线、各 AMS 身份及版本、通道电机/微动/霍尔引脚、OTA 等参数写入主板日志
+ * 启动和保存设置时，把总线、各 AMS 身份、通道接线、霍尔检测和 OTA 等参数写入主板日志
  */
 void settings_log_all() {
     LOG_MAIN("[settings] 进料停止延迟=%dms，五通总微动=%s", FEED_STOP_DELAY_MS,
@@ -468,6 +485,9 @@ void settings_log_all() {
                  io_config_pin_label(IO_CONFIG.motor[i][1]).c_str(),
                  io_config_pin_label(IO_CONFIG.microswitch[i]).c_str(),
                  io_config_pin_label(IO_CONFIG.hall[i]).c_str());
+        LOG_MAIN("[settings] 通道 %d 霍尔下限=%u，上限=%u，超时=%lu 秒（0=关闭）", i + 1,
+                 static_cast<unsigned>(HALL_DETECTION[i].lower), static_cast<unsigned>(HALL_DETECTION[i].upper),
+                 static_cast<unsigned long>(HALL_DETECTION[i].timeout_s));
     }
     if (AUTO_LOAD_MS)
         LOG_MAIN("[settings] 微动辅助进料时长=%dms（自动模式：微动由无料变有料时触发）", AUTO_LOAD_MS);

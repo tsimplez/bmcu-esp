@@ -114,10 +114,21 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .hall-reading span{color:var(--dim);font-size:12px}
 .hall-reading b{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}
 .hall-reading small{font-size:11px;color:var(--dim);margin-left:5px;font-weight:400}
+.hall-heading{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.hall-heading button{padding:3px 7px;font-size:11px}
 .hall-chart{display:block;width:100%;height:140px;margin-top:4px}
 .hall-stats{display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
 .hall-stats b{color:var(--fg);font-weight:500}
 .hall-state{min-height:19px;margin:5px 0 10px;font-size:11px;color:var(--dim)}
+.hall-detection{margin:5px 0 8px;font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
+.hall-detection.is-alarm{color:var(--err);font-weight:600}
+.hall-dialog{width:min(420px,calc(100% - 32px));max-height:calc(100% - 32px);overflow:auto;margin:auto;padding:22px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg)}
+.hall-dialog::backdrop{background:#0009}
+.hall-dialog h3{margin:0 0 12px;font-size:18px}
+.hall-dialog label{display:block;margin:12px 0;font-size:13px}
+.hall-dialog input{display:block;width:100%;margin-top:6px}
+.hall-dialog .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.hall-dialog .dialog-error{min-height:20px;color:var(--err);font-size:12px}
 .channel-fields{display:grid;grid-template-columns:minmax(70px,.75fr) minmax(0,1.5fr);gap:10px;padding-top:10px;border-top:1px solid var(--line)}
 .channel-fields label{display:block;font-size:12px;color:var(--dim)}
 .channel-fields select,.channel-fields input{margin-top:5px;padding:6px 8px;min-width:0}
@@ -450,6 +461,12 @@ button:disabled{opacity:.45;cursor:not-allowed}
       <button id="b0" onclick="setBusLog(0)">关</button>
       <span class="hint" style="margin:0;flex:1;min-width:200px">关闭后不再记录 TX/RX 十六进制报文，可降低高波特率下的 CPU 占用</span>
     </div>
+    <div class="logfilters main-only-control">
+      <span style="color:var(--dim);font-size:12px">显示类型</span>
+      <div id="main-log-filters" class="logfilters" style="margin:0"></div>
+      <button onclick="setAllMainLogFilters(true)">全选</button>
+      <button onclick="setAllMainLogFilters(false)">全不选</button>
+    </div>
     <div class="logfilters bus-only-control hide">
       <span style="color:var(--dim);font-size:12px">显示类型</span>
       <div id="bus-log-filters" class="logfilters" style="margin:0"></div>
@@ -461,12 +478,24 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div id="log-cache" class="hint" role="status"></div>
     <div class="hint">浏览器临时缓存：主板 1 MiB、BambuBus 2 MiB；写满后覆盖最早日志，刷新或关闭网页后释放。暂停只冻结显示，下载包含当前通道的全部缓存。</div>
     <div class="hint">日志行首显示浏览器本地时间；设备没有实时时钟，时间由日志里的开机毫秒数结合浏览器时钟换算</div>
+    <div class="hint main-only-control">主板日志按模块筛选，勾选结果保存在当前浏览器；霍尔每个已配置通道每秒记录一次当前 ADC 值或读取失败</div>
     <div class="hint bus-only-control hide">BambuBus 面板显示 RS485 上的原始十六进制报文：<b>RX</b> = 收到、<b>TX</b> = 发出，以及解析出的包类型「抓取 30 秒」按当前勾选的显示类型抓取未来 30 秒的报文，抓完自动下载 .log 文件</div>
   </div>
 </div>
 
 </main>
 <div id="toast" class="toast"></div>
+<dialog id="hall-dialog" class="hall-dialog" aria-labelledby="hall-dialog-title" aria-describedby="hall-dialog-help">
+  <form id="hall-detection-form">
+    <h3 id="hall-dialog-title">霍尔检测设置</h3>
+    <div id="hall-dialog-help" class="hint">数值在下限和上限之间交替穿越才视为转动，每侧连续 3 次采样确认<br>仅检测打印机确认的当前使用通道，超时后提示，暂不自动暂停打印</div>
+    <label for="hall-lower">检测下限（ADC）<input id="hall-lower" type="number" min="0" max="4094" step="1" required></label>
+    <label for="hall-upper">检测上限（ADC）<input id="hall-upper" type="number" min="1" max="4095" step="1" required></label>
+    <label for="hall-timeout">无转动超时（秒，0 表示关闭）<input id="hall-timeout" type="number" min="0" max="3600" step="1" required></label>
+    <div id="hall-dialog-error" class="dialog-error" role="alert"></div>
+    <div class="dialog-actions"><button id="hall-dialog-cancel" type="button">取消</button><button id="hall-dialog-save" type="submit">保存</button></div>
+  </form>
+</dialog>
 
 <script>
 /**
@@ -743,13 +772,13 @@ const motorPending={},CH_STATUS_NAMES=['离线','在线','自动'];
 const PULLBACK_TEST_MS=29999,pullbackTests={}
 /**
  * 刷新通道卡片高亮、耗材颜色圆点与透明度、打印机状态标签和微动状态
- * 根据后端模式及微动状态区分在线、有料和无料；当前使用仅高亮标签，未选中时隐藏标签，状态过期时清除高亮
+ * 根据后端模式及微动状态区分在线、有料和无料；当前使用仅高亮标签，重启恢复的通道显示等待确认，未选中时隐藏标签，状态过期时清除高亮
  * 颜色缺失或无效时显示空心圆，A 分量缺失或无效时透明度显示“—”；断连或状态过期时保留最近读数并提示“上次读取”
  * A 分量按 (255-A)/255 换算为四舍五入的透明度百分比，0% 不透明，100% 完全透明
  */
 const renderChannelStatus=()=>{
   const fresh=!!statusAt&&performance.now()-statusAt<3000
-  const labels={using:'当前使用',feeding:'打印机进料',retracting:'打印机退料',selected:'打印机选中'}
+  const labels={using:'当前使用',pending:'使用通道 · 等待确认',feeding:'打印机进料',retracting:'打印机退料',selected:'打印机选中'}
   for(const card of document.querySelectorAll('.channel-card')){
     const ch=Number(card.dataset.channel),selected=fresh&&S.current_channel===ch
     const using=selected&&S.current_channel_state==='using'
@@ -777,12 +806,70 @@ const renderChannelStatus=()=>{
 // 浏览器仅保存固件最近一分钟的副本；时间戳按 uint32 毫秒处理，支持设备时钟回绕。
 let hallEpoch=null,hallCursor=null,hallNow=0,hallAt=0,hallPending=false,hallFailed=false,hallMore=false,hallPageTimer=null
 let hallChannels=new Map()
+const hallConfigs=new Map()
+let hallConfigRevision=0,hallDialogChannel=-1,hallDialogPin=255,hallSaving=false
+/**
+ * 校验固件返回的霍尔检测配置
+ * @param {Object|null} config 待检查的检测参数
+ * @return {boolean} 三项参数是否均为允许范围内的整数
+ */
+const validHallConfig=config=>!!config&&Number.isInteger(config.lower)&&Number.isInteger(config.upper)&&
+  config.lower>=0&&config.lower<config.upper&&config.upper<=4095&&Number.isInteger(config.timeout_s)&&config.timeout_s>=0&&config.timeout_s<=3600
+/**
+ * 打开指定通道的霍尔设置弹框
+ * @param {number} channel 通道编号
+ * 使用已保存配置和接线快照，避免轮询覆盖输入中的草稿
+ */
+const openHallDetection=channel=>{
+  const card=$('channel-'+channel),config=hallConfigs.get(channel)
+  if(!card||!validHallConfig(config)||config.pin!==Number(card.dataset.hallPin)){toast('检测设置尚未读取，请稍后重试');return}
+  hallDialogChannel=channel;hallDialogPin=config.pin
+  $('hall-dialog-title').textContent='通道 '+(channel+1)+' · 霍尔检测'
+  $('hall-lower').value=config.lower;$('hall-upper').value=config.upper;$('hall-timeout').value=config.timeout_s
+  $('hall-dialog-error').textContent=''
+  $('hall-dialog').showModal()
+}
+/**
+ * 保存弹框中的霍尔检测参数
+ * @param {SubmitEvent} event 表单提交事件
+ * @return {Promise<void>} 校验、保存及刷新完成的 Promise
+ * 保存失败保留草稿；成功后立即更新阈值线，并阻止旧读取请求覆盖新配置
+ */
+const saveHallDetection=async event=>{
+  event.preventDefault()
+  if(hallSaving||!$('hall-detection-form').reportValidity()) return
+  const config={lower:Number($('hall-lower').value),upper:Number($('hall-upper').value),timeout_s:Number($('hall-timeout').value)}
+  if(!validHallConfig(config)){$('hall-dialog-error').textContent='下限必须小于上限，数值范围 0～4095，超时范围 0～3600 秒';$('hall-upper').focus();return}
+  hallSaving=true;$('hall-dialog-error').textContent=''
+  const controls=[...$('hall-detection-form').querySelectorAll('input,button')]
+  controls.forEach(control=>control.disabled=true);$('hall-dialog-save').textContent='保存中…'
+  const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),8000)
+  try{
+    const body=new URLSearchParams({channel:hallDialogChannel,pin:hallDialogPin,...config})
+    const response=await fetch('/api/hall/detection',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body.toString(),signal:ac.signal})
+    const data=await response.json()
+    if(!response.ok||!data.ok) throw Error(data.msg||'保存失败，请重试')
+    if(data.channel!==hallDialogChannel||data.pin!==hallDialogPin||!validHallConfig(data.detection)) throw Error('保存响应不完整，请重新读取或重试')
+    hallConfigRevision++
+    hallConfigs.set(data.channel,{...data.detection,pin:data.pin})
+    const entry=hallChannels.get(data.channel)
+    if(entry) entry.detection=null
+    $('hall-dialog').close();renderHallCharts();refreshHall();toast('霍尔检测设置已保存')
+  }catch(error){$('hall-dialog-error').textContent=error.name==='AbortError'?'请求超时，请重试确认保存结果':error.message||'保存失败，请重试'}
+  finally{
+    clearTimeout(timer);hallSaving=false;controls.forEach(control=>control.disabled=false);$('hall-dialog-save').textContent='保存'
+  }
+}
+$('hall-detection-form').addEventListener('submit',saveHallDetection)
+$('hall-dialog-cancel').onclick=()=>{if(!hallSaving)$('hall-dialog').close()}
+$('hall-dialog').addEventListener('cancel',event=>{if(hallSaving)event.preventDefault()})
 /**
  * 合并霍尔历史响应并更新采样时间基准
  * @param {Object} data 包含纪元、游标、设备时间和各通道增量点的响应
+ * @param {number} revision 发起请求时的配置版本，用于忽略保存前的旧配置和检测状态
  * 设备重启、配置改变或游标过期时替换历史；点按设备时间去重，缺失值保留为曲线断点
  */
-const applyHallPacket=(data)=>{
+const applyHallPacket=(data,revision=hallConfigRevision)=>{
   if(!Number.isInteger(data.epoch)||!Number.isInteger(data.cursor)||!Number.isInteger(data.now_ms)||!Array.isArray(data.channels))
     throw Error('霍尔数据格式不完整')
   const reset=data.reset||hallEpoch!==data.epoch
@@ -801,7 +888,8 @@ const applyHallPacket=(data)=>{
     }
     const retained=entry.pin===255?[]:[...points.values()].filter(point=>((hallNow-point.t)>>>0)<=60000)
     retained.sort((a,b)=>((hallNow-b.t)>>>0)-((hallNow-a.t)>>>0))
-    hallChannels.set(ch,{...entry,points:retained.slice(-300)})
+    if(revision===hallConfigRevision&&validHallConfig(entry.detection)) hallConfigs.set(ch,{...entry.detection,pin:entry.pin})
+    hallChannels.set(ch,{...entry,detection:revision===hallConfigRevision?entry.detection:null,points:retained.slice(-300)})
   }
   for(const ch of hallChannels.keys()) if(!active.has(ch)) hallChannels.delete(ch)
 }
@@ -814,25 +902,27 @@ const refreshHall=()=>{
   if(hallPending||otaBusy||document.hidden||TAB!=='status') return
   if(hallPageTimer!==null){clearTimeout(hallPageTimer);hallPageTimer=null}
   hallPending=true
+  const revision=hallConfigRevision
   const query=hallEpoch===null?'':'?epoch='+hallEpoch+'&cursor='+hallCursor
   const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),3000)
   return fetch('/api/hall'+query,{signal:ac.signal,cache:'no-store'}).then(r=>{
     if(!r.ok) throw Error('霍尔读取失败')
     return r.json()
-  }).then(applyHallPacket).catch(()=>{hallFailed=true;hallMore=false}).finally(()=>{
+  }).then(data=>applyHallPacket(data,revision)).catch(()=>{hallFailed=true;hallMore=false}).finally(()=>{
     clearTimeout(timer);hallPending=false;renderHallCharts()
     if(hallMore&&!document.hidden&&TAB==='status') hallPageTimer=setTimeout(()=>{hallPageTimer=null;refreshHall()},50)
   })
 }
 /**
- * 绘制单个通道最近一分钟的 ADC 曲线和最小最大范围
+ * 绘制单通道分钟 ADC 曲线、最小最大范围和两条检测阈值线
  * @param {HTMLCanvasElement} canvas 曲线画布
  * @param {Object|null} entry 通道历史；空值表示尚无响应
  * @param {number} elapsed 距离最近响应经过的毫秒数
  * @param {string} emptyText 无有效曲线时显示的说明
- * 固定横轴为最近六十秒，纵轴按 ADC 范围留白；缺失采样及超过一个采样桶的空档不连线
+ * @param {Object|null} config 已保存的上下限；无采样时也绘制阈值线
+ * 固定横轴为最近六十秒，纵轴包含采样和两条阈值；缺失采样及超过一个采样桶的空档不连线
  */
-const drawHallChart=(canvas,entry,elapsed,emptyText)=>{
+const drawHallChart=(canvas,entry,elapsed,emptyText,config)=>{
   const width=canvas.clientWidth,height=canvas.clientHeight
   if(!width||!height) return
   const ratio=Math.min(window.devicePixelRatio||1,2)
@@ -840,12 +930,13 @@ const drawHallChart=(canvas,entry,elapsed,emptyText)=>{
     canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio)
   }
   const ctx=canvas.getContext('2d');ctx.setTransform(ratio,0,0,ratio,0,0);ctx.clearRect(0,0,width,height)
-  const left=34,right=width-5,top=9,bottom=height-22
+  const left=34,right=width-5,top=14,bottom=height-25
   const points=(entry?.points||[]).map(point=>({...point,age:((hallNow-point.t)>>>0)+elapsed})).filter(point=>point.age<=60000)
   const valid=points.filter(point=>Number.isFinite(point.avg)&&Number.isFinite(point.min)&&Number.isFinite(point.max))
   let low=0,high=4095
-  if(valid.length){
-    const minimum=Math.min(...valid.map(point=>point.min)),maximum=Math.max(...valid.map(point=>point.max))
+  const thresholds=validHallConfig(config)?[config.lower,config.upper]:[]
+  if(valid.length||thresholds.length){
+    const minimum=Math.min(...valid.map(point=>point.min),...thresholds),maximum=Math.max(...valid.map(point=>point.max),...thresholds)
     const span=Math.max(64,maximum-minimum),middle=(minimum+maximum)/2
     low=Math.max(0,Math.floor(middle-span*.65));high=Math.min(4095,Math.ceil(middle+span*.65))
   }
@@ -869,7 +960,7 @@ const drawHallChart=(canvas,entry,elapsed,emptyText)=>{
   ctx.fillStyle='#8b93a7';ctx.textAlign='left';ctx.fillText('60 秒前',left,height-5)
   ctx.textAlign='center';ctx.fillText('30 秒前',(left+right)/2,height-5)
   ctx.textAlign='right';ctx.fillText('现在',right,height-5)
-  if(!valid.length){ctx.fillStyle='#8b93a7';ctx.textAlign='center';ctx.fillText(emptyText,(left+right)/2,(top+bottom)/2);return}
+  if(!valid.length){ctx.fillStyle='#8b93a7';ctx.textAlign='center';ctx.fillText(emptyText,(left+right)/2,(top+bottom)/2)}
   const segments=[];let segment=[]
   for(const point of points){
     if(!Number.isFinite(point.avg)||!Number.isFinite(point.min)||!Number.isFinite(point.max)){
@@ -888,9 +979,40 @@ const drawHallChart=(canvas,entry,elapsed,emptyText)=>{
     ctx.strokeStyle='#68b4ff';ctx.lineWidth=1.6;ctx.stroke()
     if(part.length===1){ctx.beginPath();ctx.arc(x(part[0].age),y(part[0].avg),2,0,Math.PI*2);ctx.fillStyle='#68b4ff';ctx.fill()}
   }
+  thresholds.forEach((value,index)=>{
+    const py=y(value),label=(index?'上限 ':'下限 ')+value
+    ctx.lineWidth=1;ctx.strokeStyle=index?'#ffbe70':'#b9a0ff';ctx.setLineDash([5,4])
+    ctx.beginPath();ctx.moveTo(left,py);ctx.lineTo(right,py);ctx.stroke();ctx.setLineDash([])
+    ctx.font='10px "Segoe UI",sans-serif';ctx.textAlign='right'
+    const labelY=index?py-4:py+12,labelWidth=ctx.measureText(label).width
+    ctx.fillStyle='#161922dd';ctx.fillRect(right-labelWidth-6,labelY-10,labelWidth+6,13)
+    ctx.fillStyle=ctx.strokeStyle;ctx.fillText(label,right-3,labelY)
+  })
 }
 /**
- * 更新可见通道的霍尔读数、统计和曲线
+ * 生成固件霍尔检测状态的显示文字
+ * @param {Object|null} detection 固件检测快照，不在浏览器推断超时
+ * @param {Object|null} config 已保存的参数
+ * @param {boolean} fresh 响应是否仍新鲜
+ * @return {string} 当前检测状态与超时说明
+ */
+const hallDetectionText=(detection,config,fresh)=>{
+  if(!validHallConfig(config)) return '等待读取检测设置'
+  if(!fresh) return '检测状态未更新，等待设备连接'
+  if(config.timeout_s===0) return '停转检测已关闭 · 可在检测设置中启用'
+  if(!detection) return '等待固件更新检测状态'
+  const seconds=Number.isFinite(detection.idle_ms)?Math.floor(detection.idle_ms/1000):0
+  switch(detection.state){
+    case 'pending':return '使用通道已保存 · 等待打印机确认后开始检测'
+    case 'waiting':return '等待有效采样 · 超时 '+config.timeout_s+' 秒'
+    case 'monitoring':return '检测中 · '+seconds+' 秒无有效转动 / 超时 '+config.timeout_s+' 秒'
+    case 'timeout':return '停转超时 · 已 '+seconds+' 秒无有效转动（仅提示）'
+    case 'sensor_error':return '霍尔采样异常 · 停转计时已重置'
+    default:return '待命 · 仅检测当前使用通道 / 超时 '+config.timeout_s+' 秒'
+  }
+}
+/**
+ * 更新可见通道的霍尔读数、均值、分钟曲线、阈值和固件检测状态
  * 未配置霍尔时隐藏整块读数和统计区；已配置但响应过期时隐藏当前值并让历史随时间移出窗口
  */
 const renderHallCharts=()=>{
@@ -904,16 +1026,21 @@ const renderHallCharts=()=>{
     const current=fresh&&entry?.raw!=null
     $('hall-pin-'+ch).textContent='49E 霍尔 · IO'+pin
     $('hall-raw-'+ch).textContent=current?entry.raw:'—'
-    for(const field of ['min','max','avg']){
+    for(const field of ['avg_1s','avg_5s','min','max','avg']){
       const value=fresh?entry?.[field]:null
       $('hall-'+field+'-'+ch).textContent=Number.isFinite(value)?Math.round(value):'—'
     }
     const state=!fresh&&hallAt?'数据未更新，等待设备连接':
       !entry||entry.raw==null?'等待有效采样':hallMore?'正在补齐最近一分钟的曲线…':'最近一分钟 · 折线为均值，阴影为最小至最大值'
     $('hall-state-'+ch).textContent=state
+    const saved=hallConfigs.get(ch),config=saved?.pin===pin?saved:null
+    const detection=entry?.detection,indicator=$('hall-detection-'+ch)
+    indicator.textContent=hallDetectionText(detection,config,fresh)
+    indicator.classList.toggle('is-alarm',fresh&&config?.timeout_s>0&&['timeout','sensor_error'].includes(detection?.state))
     const canvas=$('hall-chart-'+ch)
-    canvas.setAttribute('aria-label','通道 '+(ch+1)+' 霍尔最近一分钟曲线；'+state+(current?'；当前 ADC '+entry.raw:''))
-    drawHallChart(canvas,entry,elapsed,'等待采样')
+    canvas.setAttribute('aria-label','通道 '+(ch+1)+' 霍尔最近一分钟曲线；'+state+(current?'；当前 ADC '+entry.raw:'')+
+      (config?'；下限 '+config.lower+'，上限 '+config.upper:'')+'；'+indicator.textContent)
+    drawHallChart(canvas,entry,elapsed,'等待采样',config)
   }
 }
 /**
@@ -1180,28 +1307,34 @@ let handoffWin = null;
  * 保存 WiFi 凭据并触发配网
  * 校验 SSID 和 mDNS 名称，预先打开跳转标签页，提交 /api/wifi；成功后进入新地址探测流程
  */
-const saveWifi=()=>{
+const saveWifi = () => {
   const ssid = $('w-ssid').value.trim();
-  if(!ssid){toast('请填写 WiFi 名称');return;}
+  if (!ssid) {
+    toast('请填写 WiFi 名称');
+    return;
+  }
   const mdns = readMdns();
-  if(!mdns) return;
+  if (!mdns) return;
   // 必须趁点击还没结束就把新标签页开出来，等 POST 回来再 open 会被当弹窗拦掉
-  handoffWin=window.open('', '_blank')
-  if(handoffWin){
+  handoffWin = window.open('', '_blank')
+  if (handoffWin) {
     handoffWin.document.write('<title>正在连接团子 BMCU…</title><body style="font-family:sans-serif;background:#12141a;color:#e8eaf0;padding:2em">正在配置 WiFi，请稍候…</body>')
   }
-  toast('正在连接，请稍候（最多 15 秒）...',15000)
+  toast('正在连接，请稍候（最多 15 秒）...', 15000)
   const body = 'ssid=' + encodeURIComponent(ssid) + '&pass=' + encodeURIComponent($('w-pass').value) +
-    '&mdns=' + encodeURIComponent(mdns);
-  api('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
-    .then((t)=>{
-      const d = JSON.parse(t);
-      if(d.ok && d.ip) startHandoff(d.ip)
-      else { if(handoffWin&&!handoffWin.closed) handoffWin.close(); toast(d.msg||'连接失败',6000); }
-    }).catch(()=>{
-      if(handoffWin&&!handoffWin.closed) handoffWin.close()
-      toast('请求失败')
-    })
+          '&mdns=' + encodeURIComponent(mdns);
+  api('/api/wifi', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body})
+          .then((t) => {
+            const d = JSON.parse(t);
+            if (d.ok && d.ip) startHandoff(d.ip)
+            else {
+              if (handoffWin && !handoffWin.closed) handoffWin.close();
+              toast(d.msg || '连接失败', 6000);
+            }
+          }).catch(() => {
+    if (handoffWin && !handoffWin.closed) handoffWin.close()
+    toast('请求失败')
+  })
 }
 
 /* 配网成功后设备会重启并换到路由器网段：
@@ -1299,7 +1432,7 @@ const renderProjectPreview=()=>{
       if(pin<50) return 'IO'+pin
       if(pin>=130||pin%10>=8) return '无效引脚（'+pin+'）'
       const offset=pin-50
-      return pin+'（io扩展'+(1+Math.floor(offset/20))+' P'+(offset%20)+'）'
+      return pin+' 扩展'+(1+Math.floor(offset/20))+'(P'+(offset%20)+')'
     }
     const summary=$('project-summary');summary.textContent=''
     const details=[
@@ -1395,26 +1528,33 @@ const loadProjects=async()=>{
  * @return {Promise<void>} 保存请求完成的 Promise
  * 一次请求只提交项目 ID，失败保留选择；成功后重新加载设备状态
  */
-const applyProject=async()=>{
+const applyProject = async () => {
   updateProjectControls()
-  if($('apply-project').disabled) return
-  PROJECT_SAVING=true;updateProjectControls()
-  $('project-state').textContent='正在保存项目配置…'
-  const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),12000)
-  try{
-    const r=await fetch('/api/projects',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:new URLSearchParams({id:$('project-select').value}).toString(),signal:ac.signal})
-    const d=await r.json()
-    if(!r.ok||!d.ok) throw Error(d.msg||'项目保存失败')
-    $('apply-project').textContent='正在重启…'
-    $('project-state').textContent=d.msg
+  if ($('apply-project').disabled) return
+  PROJECT_SAVING = true;
+  updateProjectControls()
+  $('project-state').textContent = '正在保存项目配置…'
+  const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 12000)
+  try {
+    const r = await fetch('/api/projects', {
+      method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({id: $('project-select').value}).toString(), signal: ac.signal
+    })
+    const d = await r.json()
+    if (!r.ok || !d.ok) throw Error(d.msg || '项目保存失败')
+    $('apply-project').textContent = '正在重启…'
+    $('project-state').textContent = d.msg
     toast(d.msg)
-    setTimeout(()=>location.reload(),3500)
-  }catch(e){
-    PROJECT_SAVING=false;updateProjectControls()
-    const message=e.name==='AbortError'?'请求超时，请刷新确认设备配置':e.message||'项目保存失败'
-    $('project-state').textContent=message;toast(message,6000)
-  }finally{clearTimeout(timer)}
+    setTimeout(() => location.reload(), 3500)
+  } catch (e) {
+    PROJECT_SAVING = false;
+    updateProjectControls()
+    const message = e.name === 'AbortError' ? '请求超时，请刷新确认设备配置' : e.message || '项目保存失败'
+    $('project-state').textContent = message;
+    toast(message, 6000)
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // 当前 RS485 模式：1=仅 RXD/TXD，2=使用 DE 方向控制
@@ -1497,20 +1637,30 @@ const renderBus=(d)=>{
  * @return {Promise<void>} 请求处理完成的 Promise
  * 提交模式及 RX/TX/DE 引脚到 /api/bus，失败时恢复控件可操作状态
  */
-const saveBus=async()=>{
-  if($('save-bus').disabled) return
-  BUS_SAVING=true;updateBusLabels()
-  for(const key of ['rx','tx','de']) $('bus-'+key).disabled=true
-  try{
-    const body=new URLSearchParams({mode:BUS_MODE,rx:$('bus-rx').value,tx:$('bus-tx').value})
-    if(BUS_MODE===2) body.set('de',$('bus-de').value)
-    const r=await fetch('/api/bus',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body.toString()})
-    const d=await r.json()
-    if(!r.ok||!d.ok) throw Error(d.msg||'保存失败')
-    $('bus-state').textContent=d.msg;toast(d.msg,12000)
-  }catch(e){
-    BUS_SAVING=false;for(const key of ['rx','tx','de']) $('bus-'+key).disabled=!BUS_READY
-    updateBusLabels();$('bus-state').textContent=e.message||'连接中断，请重新读取确认是否保存';toast($('bus-state').textContent,8000)
+const saveBus = async () => {
+  if ($('save-bus').disabled) return
+  BUS_SAVING = true;
+  updateBusLabels()
+  for (const key of ['rx', 'tx', 'de']) $('bus-' + key).disabled = true
+  try {
+    const body = new URLSearchParams({mode: BUS_MODE, rx: $('bus-rx').value, tx: $('bus-tx').value})
+    if (BUS_MODE === 2) body.set('de', $('bus-de').value)
+    const r = await fetch('/api/bus', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: body.toString()
+    })
+    const d = await r.json()
+    if (!r.ok || !d.ok) throw Error(d.msg || '保存失败')
+    $('bus-state').textContent = d.msg;
+    toast(d.msg, 12000)
+    setTimeout(() => location.reload(), 3500)
+  } catch (e) {
+    BUS_SAVING = false;
+    for (const key of ['rx', 'tx', 'de']) $('bus-' + key).disabled = !BUS_READY
+    updateBusLabels();
+    $('bus-state').textContent = e.message || '连接中断，请重新读取确认是否保存';
+    toast($('bus-state').textContent, 8000)
   }
 }
 
@@ -1879,7 +2029,7 @@ const renderAmsIdentities=(d)=>{
 /**
  * 按 AMS 分组创建通道卡片并填充已保存参数
  * @param {Object} d 包含通道数量、模式、退料时间和霍尔引脚的设置响应
- * 提供退料时间检测及说明，保留重绘前的检测状态；仅已配置霍尔的通道显示读数和曲线
+ * 提供退料时间检测及说明，保留重绘前的检测状态；已配置霍尔的通道显示原始值、一秒与五秒均值、分钟曲线与统计、停转状态及设置入口
  * 标题后预留耗材颜色圆点与透明度百分比，由状态响应更新，首次获取前分别提示“颜色未知”和“透明度未知”
  */
 const renderChannelCards=(d)=>{
@@ -1896,10 +2046,12 @@ const renderChannelCards=(d)=>{
     card.innerHTML=`<div class="channel-heading"><h4>通道 ${i+1}<span class="channel-color is-unknown" id="channel-color-${i}" role="img" aria-label="颜色未知" title="颜色未知"></span><span class="channel-transparency" id="channel-transparency-${i}" aria-label="透明度未知" title="透明度未知">透明度 —</span></h4><span class="channel-badge" id="channel-state-${i}">状态待确认</span></div>
       <div class="channel-filament" id="channel-filament-${i}">微动状态待确认</div>
       <div class="hall-panel${Number(card.dataset.hallPin)===255?' hide':''}" id="hall-panel-${i}">
-      <div class="hall-reading"><span id="hall-pin-${i}">49E 霍尔</span><div><b id="hall-raw-${i}">—</b><small>ADC</small></div></div>
+      <div class="hall-reading"><div class="hall-heading"><span id="hall-pin-${i}">49E 霍尔</span><button type="button" id="hall-settings-${i}" aria-haspopup="dialog" aria-label="通道 ${i+1} 霍尔检测设置">检测设置</button></div><div><b id="hall-raw-${i}">—</b><small>ADC</small></div></div>
+      <div class="hall-stats"><span>近 1 秒平均 <b id="hall-avg_1s-${i}">—</b></span><span>近 5 秒平均 <b id="hall-avg_5s-${i}">—</b></span></div>
       <canvas class="hall-chart" id="hall-chart-${i}" role="img" aria-label="霍尔最近一分钟曲线"></canvas>
-      <div class="hall-stats"><span>最小 <b id="hall-min-${i}">—</b></span><span>平均 <b id="hall-avg-${i}">—</b></span><span>最大 <b id="hall-max-${i}">—</b></span></div>
+      <div class="hall-stats"><span>分钟最小 <b id="hall-min-${i}">—</b></span><span>分钟平均 <b id="hall-avg-${i}">—</b></span><span>分钟最大 <b id="hall-max-${i}">—</b></span></div>
       <div class="hall-state" id="hall-state-${i}">等待采样</div>
+      <div class="hall-detection" id="hall-detection-${i}" role="status">等待读取检测状态</div>
       </div>
       <div class="channel-fields"><label id="mode-label-${i}" for="cm${i}">通道状态</label>
       <div><div class="pullback-heading"><label for="to${i}">退料超时（秒）</label><button type="button" class="field-help" id="pullback-help-${i}"
@@ -1907,6 +2059,7 @@ const renderChannelCards=(d)=>{
       <div class="pullback-controls" id="timeout-label-${i}"></div><div class="pullback-elapsed" id="pullback-elapsed-${i}"></div></div>
       <div class="hint pullback-help hide" id="pullback-help-text-${i}">进料成功后点击“检测时间”，开始退料并计时；耗材退出五通后点击“停止”，检测时间会向上取整填入前面的退料超时并自动保存。最多退料约 30 秒，不足 3 秒不保存。</div></div>`
     grid.appendChild(card)
+      $('hall-settings-'+i).onclick=()=>openHallDetection(i)
     const sel=document.createElement('select');sel.id='cm'+i
     for(let k=0;k<CH_STATUS_NAMES.length;k++){
       const option=new Option(CH_STATUS_NAMES[k],k)
@@ -1941,10 +2094,14 @@ const renderChannelCards=(d)=>{
 /**
  * 读取并渲染完整参数配置
  * @return {Promise<void>} 配置加载完成的 Promise
- * 请求 /api/settings，填充设置项、各 AMS 身份、通道卡片和接线界面；身份编辑草稿保持不变
+ * 请求 /api/settings，填充设置项、各 AMS 身份、通道卡片和接线界面；身份草稿保持不变，旧请求不覆盖新保存的霍尔参数
  */
 const loadPara=()=>{
+  const revision=hallConfigRevision
   return fetch('/api/settings').then(r=>r.json()).then((d)=>{
+    if(revision===hallConfigRevision&&Array.isArray(d.hall_detection)) d.hall_detection.forEach((config,channel)=>{
+      if(validHallConfig(config)) hallConfigs.set(channel,{...config,pin:d.io?.hall?.[channel]??255})
+    })
     $('manual-ms').value=String(d.manual_ms||300)
     $('auto-ms').value=String(d.auto_ms!=null?d.auto_ms:1000)
     $('feed-stop-delay-ms').value=String(d.feed_stop_delay_ms??1000)
@@ -2400,15 +2557,19 @@ const doReboot=()=>{if(confirm('确定重启设备？')) api('/api/reboot').then
  * @return {Promise<void>} 请求处理完成的 Promise
  * 确认重置范围后提交请求，等待期间阻止重复提交，失败时显示原因并允许重试
  */
-const doConfigReset=async()=>{
-  const button=$('btn-config-reset')
-  if(button.disabled||!confirm('确定恢复默认配置？接线、通道参数、AMS 身份和更新设置将恢复默认，WiFi 配置会保留，设备将重启。')) return
-  button.disabled=true
-  try{
-    const data=JSON.parse(await api('/api/settings/reset',{method:'POST'}))
-    toast(data.msg||(data.ok?'已恢复默认配置，设备重启中':'恢复默认配置失败，请重试'),6000)
-  }catch(e){toast('恢复默认配置请求失败，请检查连接后重试',6000)}
-  finally{button.disabled=false}
+const doConfigReset = async () => {
+  const button = $('btn-config-reset')
+  if (button.disabled || !confirm('确定恢复默认配置？接线、通道参数、AMS 身份和更新设置将恢复默认，WiFi 配置会保留，设备将重启。')) return
+  button.disabled = true
+  try {
+    const data = JSON.parse(await api('/api/settings/reset', {method: 'POST'}))
+    toast(data.msg || (data.ok ? '已恢复默认配置，设备重启中' : '恢复默认配置失败，请重试'), 6000)
+    setTimeout(()=>location.reload(),3500)
+  } catch (e) {
+    toast('恢复默认配置请求失败，请检查连接后重试', 6000)
+  } finally {
+    button.disabled = false
+  }
 }
 /**
  * 请求恢复出厂设置
@@ -2460,6 +2621,23 @@ const saveTextFile=(name,text)=>{
   document.body.appendChild(a);a.click();a.remove()
   setTimeout(()=>URL.revokeObjectURL(url),10000)
 }
+// 主板日志按现有模块前缀分类，未带前缀或未识别的日志归入系统/其他
+const MAIN_LOG_TYPES = [
+  {type: 'system', label: '系统/其他', color: '#cbd5e1'},
+  {type: 'hall', label: '霍尔', color: '#67e8f9'},
+  {type: 'motor', label: '电机', color: '#4ade80'},
+  {type: 'printer', label: '打印机', color: '#60a5fa'},
+  {type: 'autoload', label: '自动进料', color: '#2dd4bf'},
+  {type: 'bus', label: 'BambuBus', color: '#facc15'},
+  {type: 'pause-test', label: '暂停实验', color: '#fb7185'},
+  {type: 'settings', label: '设置/存储', color: '#fb923c'},
+  {type: 'i2c', label: 'I2C/环境', color: '#a3e635'},
+  {type: 'web', label: '网页/配网', color: '#c084fc'},
+  {type: 'ota', label: 'OTA 升级', color: '#e879f9'}
+];
+const mainLogColors = Object.fromEntries(MAIN_LOG_TYPES.map(item=>[item.type,item.color]));
+const mainLogFilters = {};
+const mainLogFilterStorage = 'bmcu-main-log-filters';
 // BambuBus 日志类型定义：type 与固件 package_type 对应，color 用于高亮
 const BUS_LOG_TYPES = [
   {type: 0, label: 'filament_motion_short 短包动作', color: '#67e8f9'},
@@ -2561,12 +2739,13 @@ class LogRing {
     return this.slots[Math.min(slot,LOG_SLOTS-1)]||null
   }
   /**
-   * 估算自动换行高度，进入可视区后再用实际行高校正
+   * 按当前通道的类型筛选估算自动换行高度，进入可视区后再用实际行高校正
    * @param {Object} rec 日志记录
    * @return {number} 匹配记录的估算高度
    */
   estimate(rec){
-    if(this.ch===1&&busLogFilters[rec.type]===false)return 0
+    const filters=this.ch===0?mainLogFilters:busLogFilters
+    if(filters[rec.type]===false)return 0
     return Math.max(1,Math.ceil(rec.textWidth/Math.max(1,this.width)))*this.height
   }
   /**
@@ -2602,6 +2781,51 @@ class LogRing {
   }
 }
 const LOGS=[new LogRing(0),new LogRing(1)]
+
+/**
+ * 从原始主板日志行中读取模块类型，认证原始帧与总线状态归入 BambuBus
+ * @param {string} line 原始日志行
+ * @return {string} 已定义的模块类型，未识别时返回 system
+ */
+const mainLogTypeFromLine=(line)=>{
+  if(/^\[\d+\] type=-?\d+ [RT]X\b/.test(line))return 'bus'
+  const match=/^\[\d+\] \[([^\]]+)\]/.exec(line)
+  let type=match?match[1].toLowerCase():'system'
+  if(type==='bambubus')type='bus'
+  if(type==='storage')type='settings'
+  return Object.prototype.hasOwnProperty.call(mainLogColors,type)?type:'system'
+}
+/**
+ * 保存主板日志筛选条件，本地存储不可用时仍保留当前页面的筛选结果
+ */
+const saveMainLogFilters=()=>{try{localStorage.setItem(mainLogFilterStorage,JSON.stringify(mainLogFilters))}catch(e){}}
+/**
+ * 初始化主板筛选按钮，恢复独立勾选状态并在变更时更新已有记录的显示
+ */
+const initMainLogFilters=()=>{
+  let saved={};try{saved=JSON.parse(localStorage.getItem(mainLogFilterStorage)||'{}')||{}}catch(e){}
+  for(const item of MAIN_LOG_TYPES){
+    mainLogFilters[item.type]=saved[item.type]!==false
+    const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span')
+    label.className='logfilter';label.style.color=item.color;input.style.accentColor=item.color
+    input.type='checkbox';input.checked=mainLogFilters[item.type];input.dataset.mainType=item.type
+    input.onchange=()=>{mainLogFilters[item.type]=input.checked;saveMainLogFilters();renderMainLog()}
+    text.textContent=item.label;label.append(input,text);$('main-log-filters').appendChild(label)
+  }
+}
+/**
+ * 全选或取消所有主板日志类型，保存勾选状态并更新已有记录的显示
+ * @param {boolean} checked 是否显示全部类型
+ */
+const setAllMainLogFilters=(checked)=>{
+  for(const item of MAIN_LOG_TYPES)mainLogFilters[item.type]=checked
+  for(const input of document.querySelectorAll('#main-log-filters input'))input.checked=checked
+  saveMainLogFilters();renderMainLog()
+}
+/**
+ * 更新主板筛选后的高度索引，暂停时保留画面
+ */
+const renderMainLog=()=>{LOGS[0].reindex();requestLogRender()}
 
 /**
  * 判断日志类型是否已定义
@@ -2666,7 +2890,7 @@ const rememberLogAnchor=(L)=>{
   if(rec){L.anchor=rec.id;L.anchorDelta=L.el.scrollTop-L.offset(rec.id)}
 }
 /**
- * 按日志框实际内边距计算可视区，复用预留行节点并校正换行高度
+ * 按日志框实际内边距计算可视区，按所属通道的类型着色并复用行节点校正换行高度
  * @param {LogRing} L 当前显示的通道缓存
  */
 const renderLogViewport=(L)=>{
@@ -2685,7 +2909,7 @@ const renderLogViewport=(L)=>{
     if(!node){
       node=document.createElement('div');node.className='logline';node.dataset.logId=String(rec.id)
       node.textContent=rec.display||'\u200b'
-      if(L.ch===1)node.style.color=busLogColors[rec.type]||busLogColors[-1]
+      node.style.color=L.ch===0?(mainLogColors[rec.type]||mainLogColors.system):(busLogColors[rec.type]||busLogColors[-1])
       L.space.appendChild(node)
     }
     wanted.set(rec.id,node)
@@ -2735,12 +2959,13 @@ const initLogViews=()=>{
   document.addEventListener('visibilitychange',()=>{requestLogRender();if(!document.hidden&&logStarted)scheduleLogPoll(0)})
 }
 /**
- * 切换两路日志的显示及控制栏，历史缓冲保持不变
+ * 切换两路日志的显示及各自筛选控制栏，历史缓冲和勾选状态保持不变
  * @param {number} ch 主板为 0，总线为 1
  */
 const showLog=(ch)=>{
   activeLog=ch
   $('log0').classList.toggle('hide',ch!==0);$('log1').classList.toggle('hide',ch!==1)
+  for(const control of document.querySelectorAll('.main-only-control'))control.classList.toggle('hide',ch!==0)
   for(const control of document.querySelectorAll('.bus-only-control'))control.classList.toggle('hide',ch!==1)
   for(const button of document.querySelectorAll('[data-log]'))button.classList.toggle('on',Number(button.dataset.log)===ch)
   requestLogRender()
@@ -2754,7 +2979,7 @@ const togglePause=()=>{
   requestLogRender()
 }
 /**
- * 解析完整日志行并追加到缓存，时间只换算一次
+ * 按所属通道解析完整日志行的类型并追加到缓存，时间只换算一次
  * @param {LogRing} L 通道缓存
  * @param {Uint8Array} bytes 完整行原始字节
  * @param {number} startSeq 此行的设备起始游标
@@ -2762,7 +2987,8 @@ const togglePause=()=>{
  */
 const storeLogLine=(L,bytes,startSeq,endSeq)=>{
   const raw=logDecoder.decode(bytes).replace(/\r?\n$/,''),match=/^\[(\d+)\] /.exec(raw)
-  const text=fmtLogLine(raw),type=busLogTypeFromLine(raw),display=L.ch===1?text.replace(/\btype=-?\d+\s+/,''):text
+  const text=fmtLogLine(raw),type=L.ch===0?mainLogTypeFromLine(raw):busLogTypeFromLine(raw)
+  const display=L.ch===1?text.replace(/\btype=-?\d+\s+/,''):text
   L.push({text,display,bytes:bytes.length,type,boot:logBoot,uptime:match?Number(match[1]):null,startSeq,endSeq,
     textWidth:logMeasure.measureText(display.replace(/\t/g,'        ')).width})
   if(L.ch===1&&busCapture&&busCapture.firstId===null&&match&&logBoot===busCapture.boot&&
@@ -2967,6 +3193,7 @@ S = {};
 // 从 localStorage 恢复上次停留的标签页
 let savedTab = 'status';
 try{savedTab=localStorage.getItem('bmcu-tab')||'status';}catch(e){}
+initMainLogFilters()
 initBusLogFilters()
 initLogViews()
 showTab(savedTab)
@@ -2985,5 +3212,3 @@ setInterval(renderPauseTest,200)
 </script>
 </body>
 </html>
- 
- 

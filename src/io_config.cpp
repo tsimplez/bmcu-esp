@@ -162,7 +162,7 @@ bool io_config_hall_pin_available(int pin, bool allow_none, const IoBusConfig *b
  * @return true 表示可用
  * RP2040 额外校验 I2C0 的固定 SDA/SCL 复用位置
  */
-static bool i2c_pin_available(int pin, bool sda) {
+static bool i2c_pin_available(const int pin, bool sda) {
 #if defined(ARDUINO_ARCH_RP2040)
     // Wire 使用 I2C0，RP2040 的 SDA/SCL 复用位置固定
     return is_real_gpio(pin) && pin % 4 == (sda ? 0 : 1);
@@ -239,7 +239,7 @@ static const char *pin_warning_text(int pin) {
  * @return true 表示存在风险提示
  * 根据 pin_warning_text() 是否为空判断
  */
-bool io_config_pin_has_warning(int pin) {
+bool io_config_pin_has_warning(const int pin) {
     return pin_warning_text(pin)[0] != '\0';
 }
 
@@ -249,11 +249,11 @@ bool io_config_pin_has_warning(int pin) {
  * @return “无”、IOx 或带虚拟编号、扩展器序号和 Px 的名称
  * 网页和日志按扩展器序号区分四片芯片；面板名称与寄存器位序分开转换
  */
-String io_config_pin_label(int pin) {
+String io_config_pin_label(const int pin) {
     if (pin == PIN_NONE) return "无";
     if (IS_PCF8575_VIRTUAL_PIN(pin)) {
         char label[40];
-        snprintf(label, sizeof(label), "%d（io扩展%d P%d）", pin,
+        snprintf(label, sizeof(label), "%d 扩展%d(P%d)", pin,
                  VIRTUAL_TO_PCF8575_DEVICE(pin) + 1, VIRTUAL_TO_PCF8575_PIN(pin));
         return {label};
     }
@@ -269,7 +269,7 @@ String io_config_pin_label(int pin) {
  * @return true 表示配置合法
  * 检查电机、通道微动、霍尔和五通总微动引脚是否可用、是否重复占用；霍尔额外要求 ADC 能力
  */
-bool io_config_validate(const IoConfig &config, int active_channels, String *error, const IoBusConfig *bus) {
+bool io_config_validate(const IoConfig &config, const int active_channels, String *error, const IoBusConfig *bus) {
     if (active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
         if (error) *error = "通道数量无效";
         return false;
@@ -314,7 +314,7 @@ bool io_config_validate(const IoConfig &config, int active_channels, String *err
  * @param i2c_only true 时只列真实 GPIO
  * 把引脚编号、显示名称和风险提示拼接为网页下拉框需要的数组
  */
-void io_config_append_pin_options(String &json, bool i2c_only) {
+void io_config_append_pin_options(String &json, const bool i2c_only) {
     json += "[";
     bool first = true;
     for (int pin = 0; pin < 255; pin++) {
@@ -364,8 +364,8 @@ void io_config_append_hall_pin_options(String &json) {
  * @return true 表示配置合法
  * 按候选 I2C、通道电机/微动/霍尔和总微动接线检查冲突，同时检查 RX/TX/DE 合法性和平台复用限制
  */
-bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
-                            const IoConfig &config, int active_channels, String *error) {
+bool io_config_bus_validate(const int rx, const int tx, const int de, const int mode, const int sda, const int scl,
+                            const IoConfig &config, const int active_channels, String *error) {
     if ((mode != RS485_MODE_RXTX && mode != RS485_MODE_DE) ||
         active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
         if (error) *error = "总线模式或通道数量无效";

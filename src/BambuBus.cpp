@@ -141,18 +141,20 @@ namespace {
         // 4 个 AMS × 4 个通道的耗材记录
         _filament filament[4][4];
         // 当前装在打印头上的全局通道号；0-15，0xFF 表示无
-        int BambuBus_now_filament_num = 0;
+        int BambuBus_now_filament_num = 0xFF;
+        // 最近由打印机确认的唯一使用通道；重启仅作为待确认记录，不恢复运动
+        int using_filament_num = 0xFF;
         // Flash 记录有效标志
         uint32_t check = 0x40614061;
-        // 记录格式版本，用于升级兼容
-        uint32_t format_version = 1;
+        // 只接受当前记录格式，不迁移旧版本
+        uint32_t format_version = 2;
         // 整条记录的 CRC32
         uint32_t crc32 = 0;
     } data_save;
 }
 
 // 当前耗材记录格式版本
-static constexpr uint32_t FILAMENT_FORMAT_VERSION = 1u;
+static constexpr uint32_t FILAMENT_FORMAT_VERSION = 2u;
 // 是否有耗材记录等待写入 Flash
 static bool BambuBus_need_to_save = false;
 
@@ -345,6 +347,27 @@ static const char *motion_internal_name(const filament_motion_internal m) {
 }
 
 /**
+ * 检查全局通道是否仍启用且不是离线模式
+ * @param channel 全局通道编号
+ * @return 编号和模式均可用时返回 true
+ */
+static bool current_channel_enabled(const int channel) {
+    return channel >= 0 && channel < active_channel_count() && channel < IO_CONFIG_MAX_CHANNELS &&
+           CHANNEL_MODE[channel] != CHANNEL_MODE_OFFLINE;
+}
+
+/**
+ * 更新唯一使用通道的持久化记录
+ * @param channel 使用通道编号，无通道时为 255
+ * 仅在值变化时标记后台保存，不在协议处理或采样时写 Flash
+ */
+static void store_using_channel(const int channel) {
+    if (data_save.using_filament_num == channel) return;
+    data_save.using_filament_num = channel;
+    BambuBus_set_need_to_save();
+}
+
+/**
  * 更新内部运动状态
  * @param ams_num AMS 编号
  * @param ch 通道编号
@@ -352,10 +375,22 @@ static const char *motion_internal_name(const filament_motion_internal m) {
  * @param printer_request 是否由打印机请求更新，默认为 true
  * 同步状态与转换历史；离开进料时清除等待计时，进入 idle 时清除反馈和准备历史
  * 打印机请求的 idle 通知 BMCU 取消尚未启动的打印机任务，内部停车由调用方清理队列
+ * 进入使用时确保全局唯一并保存编号；打印机明确结束使用才清除记录，通信故障的本地停车保留待确认记录
  */
 static void set_motion_internal(const uint8_t ams_num, const uint8_t ch,
                                 const filament_motion_internal new_motion, const bool printer_request = true) {
     if (ams_num >= 4 || ch >= 4) return;
+    const int channel = ams_num * 4 + ch;
+    if (new_motion == filament_motion_internal::on_use) {
+        if (!current_channel_enabled(channel) || data_save.BambuBus_now_filament_num != channel) return;
+        for (int other = 0; other < IO_CONFIG_MAX_CHANNELS; ++other) {
+            if (other != channel && filament_ext[other / 4][other % 4].motion == filament_motion_internal::on_use)
+                set_motion_internal(other / 4, other % 4, filament_motion_internal::idle, false);
+        }
+        store_using_channel(channel);
+    } else if (printer_request && data_save.using_filament_num == channel) {
+        store_using_channel(0xFF);
+    }
     auto &ext = filament_ext[ams_num][ch];
     const auto previous = ext.motion;
     if (previous != new_motion) {
@@ -376,6 +411,24 @@ static void set_motion_internal(const uint8_t ams_num, const uint8_t ch,
     }
     ext.motion = new_motion;
     data_save.filament[ams_num][ch].motion_set = map_internal_to_api(new_motion);
+}
+
+/**
+ * 清理越界、停用或不一致的当前通道记录
+ * 仅在主循环和初始化调用；通道缩减或离线后清除选择与使用记录，保留正常通信中断时的待确认编号
+ */
+static void sync_current_channels() {
+    const int selected = data_save.BambuBus_now_filament_num;
+    if (selected != 0xFF && !current_channel_enabled(selected)) {
+        if (selected >= 0 && selected < IO_CONFIG_MAX_CHANNELS)
+            set_motion_internal(selected / 4, selected % 4, filament_motion_internal::idle, false);
+        data_save.BambuBus_now_filament_num = 0xFF;
+        BambuBus_set_need_to_save();
+    }
+    const int using_channel = data_save.using_filament_num;
+    if (using_channel != 0xFF &&
+        (!current_channel_enabled(using_channel) || using_channel != data_save.BambuBus_now_filament_num))
+        store_using_channel(0xFF);
 }
 
 /**
@@ -495,6 +548,7 @@ static uint8_t get_loaded_filament(const uint8_t ams_num) {
  * @return true 表示请求范围有效，可继续生成回复
  * 计时和历史按 AMS、通道隔离；无通道请求只操作本 AMS，未知组合保持原状态
  * 对齐 BMCU-U 的 09/7F、09/A5 和 15 秒送出等待；动作与反馈分开，零毫秒与回绕均有效
+ * 重启后的使用记录不被普通无通道轮询清除；明确的停止或退料请求仍可结束待确认状态
  */
 static bool process_motion_state_machine(
     const uint8_t ams_num,
@@ -506,6 +560,7 @@ static bool process_motion_state_machine(
         return false;
 
     const uint8_t loaded = get_loaded_filament(ams_num);
+    const bool remembered = loaded < 4 && data_save.using_filament_num == ams_num * 4 + loaded;
     if (filament_channel == 0xFF) {
         if (statu_flags == 0x03 && motion_flag == 0x00) {
             if (loaded < 4) {
@@ -513,7 +568,7 @@ static bool process_motion_state_machine(
                 if (ext.motion == filament_motion_internal::before_pull_back ||
                     ext.motion == filament_motion_internal::on_use ||
                     ext.motion == filament_motion_internal::before_on_use ||
-                    ext.motion == filament_motion_internal::stop_on_use) {
+                    ext.motion == filament_motion_internal::stop_on_use || remembered) {
                     set_motion_internal(ams_num, loaded, filament_motion_internal::pull_back);
                     ext.response_use_flag = 0x02;
                     ext.response_pressure = 0x4700;
@@ -521,7 +576,7 @@ static bool process_motion_state_machine(
             }
         } else if (statu_flags == 0x01) {
             // FF/01 是无指定通道轮询，不得结束打印或正在执行的回抽；本地动作完成后才释放选择
-            if (loaded < 4 && filament_ext[ams_num][loaded].motion == filament_motion_internal::idle) {
+            if (loaded < 4 && !remembered && filament_ext[ams_num][loaded].motion == filament_motion_internal::idle) {
                 set_motion_internal(ams_num, loaded, filament_motion_internal::idle);
                 data_save.BambuBus_now_filament_num = 0xFF;
             }
@@ -530,7 +585,7 @@ static bool process_motion_state_machine(
                 const auto motion = filament_ext[ams_num][loaded].motion;
                 if (motion == filament_motion_internal::on_use ||
                     motion == filament_motion_internal::before_on_use ||
-                    motion == filament_motion_internal::stop_on_use)
+                    motion == filament_motion_internal::stop_on_use || remembered)
                     return true;
             }
             for (uint8_t ch = 0; ch < 4; ++ch)
@@ -619,7 +674,7 @@ static bool process_motion_state_machine(
         ext.is_sendout_onuse_timing = false;
         const auto previous = ext.motion;
         if (previous == filament_motion_internal::on_use || previous == filament_motion_internal::before_on_use ||
-            previous == filament_motion_internal::send_out)
+            previous == filament_motion_internal::send_out || remembered)
             set_motion_internal(ams_num, filament_channel, filament_motion_internal::stop_on_use);
         ext.response_use_flag = 0x04;
         ext.response_pressure = previous == filament_motion_internal::before_on_use &&
@@ -628,7 +683,7 @@ static bool process_motion_state_machine(
         ext.is_sendout_onuse_timing = false;
         if (ext.motion == filament_motion_internal::on_use ||
             ext.motion == filament_motion_internal::before_on_use ||
-            ext.motion == filament_motion_internal::stop_on_use)
+            ext.motion == filament_motion_internal::stop_on_use || remembered)
             set_motion_internal(ams_num, filament_channel, filament_motion_internal::before_pull_back);
         ext.response_use_flag = 0x04;
         ext.response_pressure = 0x2B00;
@@ -857,7 +912,8 @@ static void BambuBUS_UART_Init(const uint32_t baud) {
 
 /**
  * 初始化 BambuBus 协议层
- * 加载耗材记录、复位运动、测试与注册状态、生成各 AMS 共用身份，再以 1.25Mbps 启动接收回调；仅在启动时调用
+ * 加载并约束唯一使用通道，复位运动、测试与注册状态、生成身份，再以 1.25Mbps 启动接收回调
+ * 使用通道仅恢复为待确认记录，不恢复电机动作；仅在启动时调用
  */
 void BambuBus_init() {
     pause_test = PauseTest();
@@ -943,6 +999,7 @@ void BambuBus_init() {
         }
     }
 
+    sync_current_channels();
     refresh_serial_identities();
     // BambuBUS_UART_Init(1228800); // 打印机最新版本用这个 第一次打印有效 long_packge_version_version_and_name_AMS08 需要 1.0.6.87
     BambuBUS_UART_Init(1250000); // 旧打印机版本 long_packge_version_version_and_name_AMS08 需要 90.0.0.0
@@ -2001,28 +2058,42 @@ uint32_t BambuBus_last_valid_packet_age_ms() {
 
 /**
  * 读取网页展示的当前打印机通道及动作
- * @return 有效全局通道和动作名；无选择、离线或状态过期时返回 -1 与 none
- * 同时检查通信和本通道运动时间，准备完成不算正在使用；只读取状态，不驱动电机或改变协议反馈
+ * @return 有效全局通道和动作名；使用记录等待新报文确认时返回 pending，无有效选择时返回 -1 与 none
+ * 同时检查通信和本通道运动时间，准备完成不算正在使用；重启或断线保留待确认显示，不驱动电机或改变协议反馈
  */
 BambuBusCurrentChannelStatus BambuBus_current_channel_status() {
-    const BambuBusCurrentChannelStatus none = {-1, "none"};
+    constexpr BambuBusCurrentChannelStatus none = {.channel = -1, .state = "none"};
+    const int remembered = data_save.using_filament_num;
+    const BambuBusCurrentChannelStatus pending = current_channel_enabled(remembered) &&
+        remembered == data_save.BambuBus_now_filament_num
+        ? BambuBusCurrentChannelStatus{.channel = remembered, .state = "pending"} : none;
     const uint32_t now = millis();
     if (!heartbeat_seen || heartbeat_timed_out || now - last_heartbeat_ms >= 10000u ||
-        !bus_packet_seen || bus_packet_timed_out || now - last_bus_packet_ms > 1000u) return none;
+        !bus_packet_seen || bus_packet_timed_out || now - last_bus_packet_ms > 1000u) return pending;
     const int channel = get_now_filament_num();
     if (channel < 0 || channel >= active_channel_count() || channel >= IO_CONFIG_MAX_CHANNELS ||
         CHANNEL_MODE[channel] == CHANNEL_MODE_OFFLINE) return none;
     const auto &ext = filament_ext[channel / 4][channel % 4];
-    if (!ext.last_time_valid || now - ext.last_time_ticks > 1000u) return none;
+    if (!ext.last_time_valid || now - ext.last_time_ticks > 1000u) return pending;
     switch (ext.motion) {
-        case filament_motion_internal::on_use: return {channel, "using"};
-        case filament_motion_internal::send_out: return {channel, "feeding"};
+        case filament_motion_internal::on_use: return {.channel = channel, .state = "using"};
+        case filament_motion_internal::send_out: return {.channel = channel, .state = "feeding"};
         case filament_motion_internal::before_pull_back:
-        case filament_motion_internal::pull_back: return {channel, "retracting"};
+        case filament_motion_internal::pull_back: return {.channel = channel, .state = "retracting"};
         case filament_motion_internal::before_on_use:
-        case filament_motion_internal::stop_on_use: return {channel, "selected"};
-        default: return none;
+        case filament_motion_internal::stop_on_use: return {.channel = channel, .state = "selected"};
+        default: return pending;
     }
+}
+
+/**
+ * 读取当前允许霍尔检测的唯一使用通道
+ * @return 已由新鲜打印机报文确认使用的通道；待确认、离线或其他动作返回 -1
+ * 复用网页状态的通信与通道时效检查，持久化记录不能单独启动检测
+ */
+int BambuBus_active_using_channel() {
+    const auto [channel, state] = BambuBus_current_channel_status();
+    return strcmp(state, "using") == 0 ? channel : -1;
 }
 
 /**
@@ -2210,12 +2281,14 @@ static void log_auth_request(uint8_t *frame, const uint16_t length, const int ty
 
 /**
  * BambuBus 主处理循环
+ * 先清理停用或不一致的当前通道记录，保持使用通道全局唯一
  * @return 0=无帧、发送忙或忽略其它设备帧，1=处理了本机合法帧，2=错误帧，-1=合法通信超时
  * 发送槽空闲时才预占并解析队首，每轮最多处理一帧；全部回复及日志完成后释放请求和缓冲
  * 发送忙时不消费请求、不改变业务状态，仍更新通信超时；保存由独立后台入口执行
  * 每轮维护暂停实验的请求和故障锁存；有效 0x040D/0x040E 请求独立写入主板日志，不执行认证应答
  */
 int BambuBus_run() {
+    sync_current_channels();
     int stu = 0;
     const uint32_t now = millis();
     if (!bus_request_active) pause_test_run(now);

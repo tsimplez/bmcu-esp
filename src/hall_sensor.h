@@ -31,8 +31,27 @@ struct HallChannelStatus {
     uint16_t minimum;
     uint16_t maximum;
     uint16_t average;
+    uint16_t average_1s;
+    uint16_t average_5s;
     uint32_t age_ms;
 };
+
+struct HallDetectionStatus {
+    int channel;                    // 唯一检测通道；-1 表示没有检测目标
+    const char *state;              // inactive / waiting / monitoring / timeout / sensor_error
+    uint32_t idle_ms;
+    uint32_t timeout_ms;
+};
+
+struct HallDetectionEvent {
+    uint32_t sequence;              // 本次启动内的事件序号；0 表示尚无事件
+    int channel;
+    const char *type;               // timeout / recovered / sensor_error / sensor_restored
+};
+
+HallDetectionStatus hall_sensor_detection_status();
+
+HallDetectionEvent hall_sensor_last_event();
 
 void hall_sensor_init();
 

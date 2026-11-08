@@ -564,13 +564,13 @@ static void handle_status() {
 }
 
 /**
- * 解析霍尔历史请求中的无符号游标
- * @param key 查询参数名
+ * 严格解析霍尔接口中的无符号整数
+ * @param key 查询或表单参数名
  * @param value 输出的 32 位无符号整数
  * @return true 表示参数存在且完整落在 0..UINT32_MAX
- * 拒绝负数、空串、尾随字符和溢出，避免错误游标被截断后当作有效位置
+ * 拒绝负数、空串、尾随字符和溢出，供历史游标与检测设置共用
  */
-static bool parse_hall_cursor(const char *key, uint32_t &value) {
+static bool parse_hall_uint(const char *key, uint32_t &value) {
     if (!server.hasArg(key)) return false;
     const String raw = server.arg(key);
     if (raw.length() == 0) return false;
@@ -598,7 +598,58 @@ static void append_hall_value(String &json, bool valid, uint16_t value) {
 }
 
 /**
- * 读取霍尔当前值和最近一分钟的增量历史
+ * 追加霍尔检测配置的 JSON 字段
+ * @param json 待追加的 JSON 对象文本，不包含花括号
+ * @param config 已保存的通道检测参数
+ */
+static void append_hall_detection_config(String &json, const HallDetectionConfig &config) {
+    json += "\"lower\":" + String(config.lower) + ",\"upper\":" + String(config.upper) +
+            ",\"timeout_s\":" + String(config.timeout_s);
+}
+
+/**
+ * 保存单个通道的霍尔双阈值与超时设置
+ * 校验通道和打开弹框时的引脚，写入并回读成功后才应用；失败时保留原运行配置
+ * 主循环在下一次检测时重新计时，HTTP 回调不执行检测或电机动作
+ */
+static void handle_hall_detection_save() {
+    uint32_t channel = 0, pin = 0, lower = 0, upper = 0, timeout = 0;
+    if (!parse_hall_uint("channel", channel) || channel >= static_cast<uint32_t>(active_channel_count()) ||
+        channel >= IO_CONFIG_MAX_CHANNELS || !parse_hall_uint("pin", pin) ||
+        !parse_hall_uint("lower", lower) || !parse_hall_uint("upper", upper) ||
+        !parse_hall_uint("timeout_s", timeout) || lower >= upper || upper > 4095u ||
+        timeout > MAX_HALL_TIMEOUT_S) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"msg\":\"请提供有效通道、引脚及整数参数：0 ≤ 下限 < 上限 ≤ 4095，超时 0～36 秒\"}");
+        return;
+    }
+    if (pin != static_cast<uint32_t>(IO_CONFIG.hall[channel]) ||
+        !io_config_hall_pin_available(IO_CONFIG.hall[channel])) {
+        server.send(409, "application/json", "{\"ok\":false,\"msg\":\"霍尔接线已变更或未配置，请刷新页面后重试\"}");
+        return;
+    }
+    const HallDetectionConfig config = {static_cast<uint16_t>(lower), static_cast<uint16_t>(upper), timeout};
+    const auto &previous = HALL_DETECTION[channel];
+    if (previous.lower != config.lower || previous.upper != config.upper || previous.timeout_s != config.timeout_s) {
+        SettingsData candidate = settings_snapshot();
+        candidate.hall_detection[channel] = config;
+        if (!settings_save_snapshot(candidate)) {
+            server.send(500, "application/json", "{\"ok\":false,\"msg\":\"保存或回读校验失败，原检测设置仍生效，请重新保存\"}");
+            return;
+        }
+        HALL_DETECTION[channel] = config;
+        LOG_MAIN("[hall] 通道 %u 检测设置已保存：下限=%u，上限=%u，超时=%lu 秒（0=关闭）",
+                 static_cast<unsigned>(channel + 1), static_cast<unsigned>(config.lower), static_cast<unsigned>(config.upper),
+                 static_cast<unsigned long>(config.timeout_s));
+    }
+    String j = "{\"ok\":true,\"channel\":" + String(channel) + ",\"pin\":" + String(pin) + ",\"detection\":{";
+    append_hall_detection_config(j, config);
+    j += "}}";
+    server.send(200, "application/json", j);
+}
+
+/**
+ * 读取霍尔当前值、短期均值、分钟增量历史及固件检测状态和最新事件
  * 每次最多返回 50 个时间桶，more 提示继续读取；纪元变化或游标失效时从现存最早数据重新分页
  * 只读取主循环缓存，不在 HTTP 回调中采样；传输年龄相对 now_ms，毫秒和游标回绕均按无符号差值处理
  */
@@ -607,12 +658,15 @@ static void handle_hall() {
     const bool has_epoch = server.hasArg("epoch");
     uint32_t requested_cursor = 0, requested_epoch = 0;
     if (has_cursor != has_epoch ||
-        (has_cursor && (!parse_hall_cursor("cursor", requested_cursor) ||
-                        !parse_hall_cursor("epoch", requested_epoch)))) {
+        (has_cursor && (!parse_hall_uint("cursor", requested_cursor) ||
+                        !parse_hall_uint("epoch", requested_epoch)))) {
         server.send(400, "application/json", "{\"ok\":false,\"msg\":\"霍尔游标与纪元须同时提供有效的无符号整数\"}");
         return;
     }
     const HallHistoryInfo info = hall_sensor_history_info();
+    const HallDetectionStatus detection = hall_sensor_detection_status();
+    const HallDetectionEvent event = hall_sensor_last_event();
+    const auto current = BambuBus_current_channel_status();
     const uint32_t distance = info.cursor - requested_cursor;
     const bool reset = !has_cursor || requested_epoch != info.epoch || distance > info.count;
     const uint32_t remaining = reset ? info.count : distance;
@@ -626,7 +680,7 @@ static void handle_hall() {
         if (channels[channel].configured) ++configured;
     }
     String j;
-    if (!j.reserve(256u + info.channels * 128u + configured * count * 28u)) {
+    if (!j.reserve(384u + info.channels * 320u + configured * count * 28u)) {
         server.send(503, "application/json", "{\"ok\":false,\"msg\":\"可用内存不足，请稍后重试\"}");
         return;
     }
@@ -634,7 +688,9 @@ static void handle_hall() {
         ",\"reset\":" + String(reset ? "true" : "false") +
         ",\"more\":" + String(remaining > count ? "true" : "false") +
         ",\"interval_ms\":" + String(HALL_HISTORY_INTERVAL_MS) +
-        ",\"now_ms\":" + String(info.now_ms) + ",\"channels\":[";
+        ",\"now_ms\":" + String(info.now_ms) +
+        ",\"event\":{\"sequence\":" + String(event.sequence) + ",\"channel\":" + String(event.channel) +
+        ",\"type\":\"" + String(event.type) + "\"},\"channels\":[";
     for (int channel = 0; channel < info.channels; ++channel) {
         if (channel) j += ',';
         const auto &status = channels[channel];
@@ -643,6 +699,14 @@ static void handle_hall() {
         j += ",\"min\":"; append_hall_value(j, status.statistics_valid, status.minimum);
         j += ",\"max\":"; append_hall_value(j, status.statistics_valid, status.maximum);
         j += ",\"avg\":"; append_hall_value(j, status.statistics_valid, status.average);
+        j += ",\"avg_1s\":"; append_hall_value(j, status.average_1s != HALL_INVALID_VALUE, status.average_1s);
+        j += ",\"avg_5s\":"; append_hall_value(j, status.average_5s != HALL_INVALID_VALUE, status.average_5s);
+        j += ",\"detection\":{";
+        append_hall_detection_config(j, HALL_DETECTION[channel]);
+        const bool monitored = detection.channel == channel;
+        const char *state = monitored ? detection.state :
+            current.channel == channel && strcmp(current.state, "pending") == 0 ? "pending" : "inactive";
+        j += ",\"state\":\"" + String(state) + "\",\"idle_ms\":" + String(monitored ? detection.idle_ms : 0u) + "}";
         j += ",\"points\":[";
         if (status.configured) {
             for (uint32_t offset = 0; offset < count; ++offset) {
@@ -668,7 +732,7 @@ static void handle_hall() {
 
 /**
  * 处理设置读取请求
- * 输出时长、AMS 身份、通道模式、微动与霍尔接线及各自可选引脚；完整序列号与协议共用生成函数
+ * 输出时长、AMS 身份、通道模式、霍尔检测参数及接线和可选引脚；完整序列号与协议共用生成函数
  */
 static void handle_settings_get() {
     String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
@@ -692,6 +756,13 @@ static void handle_settings_get() {
     for (int i = 0; i < BMCU_motor_count(); i++) { if (i) j += ','; j += String(PULLBACK_TIMEOUT[i]); }
     j += "],\"cm\":[";
     for (int i = 0; i < BMCU_motor_count(); i++) { if (i) j += ','; j += String(CHANNEL_MODE[i]); }
+    j += "],\"hall_detection\":[";
+    for (int i = 0; i < active_channel_count(); ++i) {
+        if (i) j += ',';
+        j += '{';
+        append_hall_detection_config(j, HALL_DETECTION[i]);
+        j += '}';
+    }
     j += "],\"otaurl\":\"" + json_escape(OTA_URL) + "\",\"otanotify\":" + String(OTA_NOTIFY);
     j += ",\"io\":{\"motor\":[";
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
@@ -2191,6 +2262,7 @@ static void setup_routes() {
     server.on("/", HTTP_GET, handle_root);
     server.on("/api/status", HTTP_GET, handle_status);
     server.on("/api/hall", HTTP_GET, handle_hall);
+    server.on("/api/hall/detection", HTTP_POST, handle_hall_detection_save);
     server.on("/api/settings", HTTP_GET, handle_settings_get);
     server.on("/api/settings", HTTP_POST, handle_settings_save);
     server.on("/api/projects", HTTP_GET, handle_projects_get);

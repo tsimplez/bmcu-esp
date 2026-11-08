@@ -34,6 +34,20 @@ extern char OTA_URL[128];          // OTA 更新源目录（设备会去取 <目
 extern int OTA_NOTIFY;             // 进页面时自动检查更新并提示（0=关 1=开）
 extern IoConfig IO_CONFIG;          // 电机进退料、微动开关和霍尔 ADC 引脚
 
+struct HallDetectionConfig {
+    uint16_t lower;
+    uint16_t upper;
+    uint32_t timeout_s;             // 0 表示关闭停转检测
+};
+
+// 5v 默认 3350
+// 3v 默认 2250
+constexpr HallDetectionConfig DEFAULT_HALL_DETECTION = {.lower = 2900, .upper = 3800, .timeout_s = 3};
+constexpr uint32_t MAX_HALL_TIMEOUT_S = 36;
+extern HallDetectionConfig HALL_DETECTION[IO_CONFIG_MAX_CHANNELS];
+
+bool settings_hall_detection_valid(const HallDetectionConfig &config);
+
 // 设置数据结构
 struct SettingsData {
     int32_t pullback_timeout[16];    // 16个电机的退料时间（秒）
@@ -57,10 +71,11 @@ struct SettingsData {
     int32_t bus_tx;                  // BambuBus 串口 TX 引脚
     int32_t bus_de;                  // RS485 DE 方向控制引脚；RXTX 模式下不使用
     int32_t ams_version[AMS_IDENTITY_COUNT][4]; // 各 AMS 版本（A.B.C.D，每段 0..255）
+    HallDetectionConfig hall_detection[IO_CONFIG_MAX_CHANNELS]; // 各通道的双阈值与无转动超时
 };
 
-// 当前布局包含四份 AMS 身份、进料停止延迟、五通总微动及每通道霍尔引脚；旧布局均恢复整份默认设置
-#define SETTINGS_MAGIC_NUMBER    0x5341542E
+// 当前布局包含霍尔检测参数；旧布局均恢复整份默认设置，不迁移
+#define SETTINGS_MAGIC_NUMBER    0x5341542F
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**
