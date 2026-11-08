@@ -6,11 +6,11 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
+#include <mdns.h>
 #include <Preferences.h>
 #include <Update.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <esp_system.h>
 
 #include "log_bus.h"
 #include "platform.h"
@@ -33,6 +33,7 @@
 #define DEFAULT_MDNS_NAME "bmcu"   // 默认 mDNS 主机名
 #define MDNS_NAME_MAX   32         // mDNS 主机名最大长度
 #define STA_TIMEOUT_MS  15000      // 连接路由器超时（毫秒）
+#define STA_RETRY_MS    30000      // 连接失败后再次尝试的间隔（毫秒）
 #define LOG_PULL_MAX    16384      // 单次拉取日志的最大字节数
 
 // ESP32 内置 HTTP 服务器，监听 80 端口并提供状态、设置、日志和 OTA 接口
@@ -42,19 +43,25 @@ static DNSServer   dns;
 // NVS 访问对象，保存 STA 的 SSID、密码和 mDNS 名称
 static Preferences wprefs;
 
-enum { ST_IDLE = 0, ST_CONNECTING };
-// WiFi 连接状态：ST_IDLE=空闲/已连接，ST_CONNECTING=正在连接保存的路由器
+enum { ST_IDLE = 0, ST_CONNECTING, ST_RETRY_WAIT };
+// WiFi 连接状态：ST_IDLE=未配置/已连接，ST_CONNECTING=正在连接，ST_RETRY_WAIT=等待重试
 static int      wifi_state = ST_IDLE;
-// 本次 STA 连接的超时截止时间（millis），超过后启动配网热点
+// 本次 STA 连接的超时截止时间（millis），超过后保持配网热点并等待重试
 static uint32_t connect_deadline = 0;
+// 下次重连已保存网络的时间（millis），仅 ST_RETRY_WAIT 状态使用
+static uint32_t retry_deadline = 0;
 // 当前是否运行在 AP 配网模式
 static bool     ap_mode = false;
 // 已保存的路由器 SSID（最多 63 个可见字符 + NUL）
 static char     sta_ssid[64] = {};
 // 已保存的路由器密码
 static char     sta_pass[64] = {};
-// 当前 mDNS 主机名（不含 .local 后缀）
+// 已配置的 mDNS 主机名（不含 .local 后缀），自动避让重名不覆盖此配置
 static char     mdns_name[MDNS_NAME_MAX + 1] = DEFAULT_MDNS_NAME;
+// mDNS 协议栈当前使用的名称，重名时自动追加或递增 -2、-3 等编号
+static char     mdns_active_name[MDNS_NAME_BUF_LEN] = {};
+// mDNS 服务是否已成功启动
+static bool     mdns_started = false;
 // 根据芯片 ID 生成的配网热点名，例如 BMCU_1A2B3C
 static char     ap_ssid[16] = {};
 
@@ -244,10 +251,37 @@ static void wifi_set_mode(wifi_mode_t m) {
 }
 
 /**
+ * 发起已保存 WiFi 的异步连接
+ * 保留正在运行的配网热点，由主循环检查连接结果与超时，不等待路由器响应
+ */
+static void start_sta_connect() {
+    wifi_set_mode(ap_mode ? WIFI_AP_STA : WIFI_STA);
+    WiFi.begin(sta_ssid, sta_pass);
+    wifi_state = ST_CONNECTING;
+    connect_deadline = millis() + STA_TIMEOUT_MS;
+    LOG_MAIN("[web] 正在连接已保存的 WiFi '%s' ...", sta_ssid);
+}
+
+/**
+ * 结束失败的 STA 连接并安排下次重试
+ * 保留配网热点和已保存凭据；未配置网络时保持空闲，不安排重连
+ */
+static void schedule_sta_retry() {
+    WiFi.disconnect();
+    wifi_state = sta_ssid[0] ? ST_RETRY_WAIT : ST_IDLE;
+    retry_deadline = millis() + STA_RETRY_MS;
+    if (sta_ssid[0])
+        LOG_MAIN("[web] %u 秒后重试已保存的 WiFi '%s'", STA_RETRY_MS / 1000, sta_ssid);
+}
+
+/**
  * 启动配网热点
- * 创建固定网段的 AP，并把 DNS 通配请求指向自身，实现强制门户
+ * 停止离线 mDNS，创建固定网段的 AP，并把 DNS 通配请求指向自身，实现强制门户
  */
 static void start_config_ap() {
+    MDNS.end();
+    mdns_started = false;
+    mdns_active_name[0] = 0;
     wifi_set_mode(WIFI_AP_STA);
     const char *ssid = build_ap_ssid();
     // 固定 AP 网段，并把网关/DNS 都指向自己，客户端才能被强制门户接管
@@ -255,37 +289,65 @@ static void start_config_ap() {
     WiFi.softAP(ssid, AP_PASS);
     dns.start(53, "*", WiFi.softAPIP());
     ap_mode = true;
-    wifi_state = ST_IDLE;
     LOG_MAIN("[web] 未连接 WiFi，配网热点 '%s' 已开启：连上后访问 http://%s/",
              ssid, WiFi.softAPIP().toString().c_str());
 }
 
 /**
+ * 同步 mDNS 协议栈实际使用的主机名
+ * 每秒读取一次本地状态，跟随协议栈的重名自动编号并记录访问地址；离线时清空地址，不改写 NVS
+ */
+static void sync_mdns_name() {
+    if (!mdns_started || ap_mode || WiFi.status() != WL_CONNECTED) {
+        mdns_active_name[0] = 0;
+        return;
+    }
+
+    static uint32_t last_check = 0;
+    const uint32_t now = millis();
+    if (static_cast<uint32_t>(now - last_check) < 1000) return;
+    last_check = now;
+
+    char actual[MDNS_NAME_BUF_LEN] = {};
+    if (mdns_hostname_get(actual) != ESP_OK || !actual[0]) return;
+    if (strcmp(actual, mdns_active_name) == 0) return;
+    copy_str(mdns_active_name, sizeof(mdns_active_name), actual);
+    if (strcmp(actual, mdns_name) != 0)
+        LOG_MAIN("[web] mDNS 重名自动避让：%s -> %s", mdns_name, actual);
+    LOG_MAIN("[web] mDNS 当前访问地址：http://%s.local/", actual);
+}
+
+/**
  * 启动或重载 mDNS 服务
- * @return true 表示 mDNS 启动成功
- * 使用当前 mdns_name 重启 mDNS 并发布 HTTP 服务，供 http://<名称>.local/ 访问
+ * @return true 表示 mDNS 已启动，名称冲突检测由协议栈异步完成
+ * 使用配置名称发布 HTTP 服务；重名时由协议栈自动编号，主循环同步实际名称供网页和日志显示
  */
 static bool start_mdns() {
+    mdns_started = false;
+    mdns_active_name[0] = 0;
     MDNS.end();
     if (!MDNS.begin(mdns_name)) {
+        MDNS.end();
         LOG_MAIN("[web] mDNS 启动失败：%s.local", mdns_name);
         return false;
     }
     MDNS.addService("http", "tcp", 80);
-    LOG_MAIN("[web] mDNS 已启动：http://%s.local/", mdns_name);
+    mdns_started = true;
+    LOG_MAIN("[web] mDNS 正在检测名称：%s.local，重名时自动递增编号", mdns_name);
     return true;
 }
 
 /**
  * 处理 STA 连接成功
- * 退出连接状态、关闭 AP 模式并按当前配置启动 mDNS 服务
+ * 退出连接状态、停止强制门户 DNS 和配网热点，切回 STA 并按当前配置启动 mDNS 服务
  */
 static void on_sta_connected() {
     wifi_state = ST_IDLE;
+    if (ap_mode) dns.stop();
+    wifi_set_mode(WIFI_STA);
     ap_mode = false;
     start_mdns();
-    LOG_MAIN("[web] 已连接 WiFi '%s'：http://%s/ 或 http://%s.local/",
-             sta_ssid, WiFi.localIP().toString().c_str(), mdns_name);
+    LOG_MAIN("[web] 已连接 WiFi '%s'：http://%s/", sta_ssid, WiFi.localIP().toString().c_str());
 }
 
 // ============================================================
@@ -394,6 +456,7 @@ static String sensor_json_value(bool valid, float value, int digits) {
 /**
  * 处理运行状态查询
  * 汇总 WiFi、项目、总线、有效当前通道、暂停实验、电机、耗材和传感器；陈旧通道不会被标为正在使用
+ * mdns 保留配置名称，mdns_active 返回重名避让后的实际名称，离线或尚未读取时为空
  * filament_colors 按启用的全局通道顺序返回记录中的 #RRGGBB，供网页以不透明圆点显示
  * filament_alpha 按相同顺序返回 0-255 的 A 分量，0 为完全透明，255 为不透明
  */
@@ -406,6 +469,7 @@ static void handle_status() {
     j += ",\"ip\":\"" + ip.toString() + "\"";
     j += ",\"ssid\":\"" + json_escape(ap_mode ? "" : sta_ssid) + "\"";
     j += ",\"mdns\":\"" + json_escape(mdns_name) + "\"";
+    j += ",\"mdns_active\":\"" + json_escape(mdns_active_name) + "\"";
     j += ",\"rssi\":" + String(ap_mode ? 0 : WiFi.RSSI());
     j += ",\"mac\":\"" + WiFi.macAddress() + "\"";
     j += ",\"uptime\":" + String(millis() / 1000);
@@ -1045,7 +1109,7 @@ static void handle_pause_test() {
 
 /**
  * 处理 WiFi 配网请求
- * 保留 AP 的同时尝试连接目标路由；成功后保存凭据并重启，失败则恢复原网络
+ * 保留 AP 的同时尝试连接目标路由；成功后保存凭据并重启，失败则恢复原网络或在 AP 模式安排重试
  */
 static void handle_wifi_save() {
     if (!maintenance_required()) return;
@@ -1099,9 +1163,13 @@ static void handle_wifi_save() {
         return;
     }
 
-    // 失败：退回原网络（如果原来就在 STA 且保存过凭据）
-    WiFi.disconnect();
-    if (!ap_mode && sta_ssid[0]) WiFi.begin(sta_ssid, sta_pass);
+    // 失败：STA 模式立即恢复原网络，AP 模式继续按间隔重试已保存的网络
+    if (!ap_mode && sta_ssid[0]) {
+        WiFi.disconnect();
+        start_sta_connect();
+    } else {
+        schedule_sta_retry();
+    }
 
     LOG_MAIN("[web] WiFi 连接失败: %s", ssid.c_str());
     server.send(200, "application/json",
@@ -1110,7 +1178,7 @@ static void handle_wifi_save() {
 
 /**
  * 处理 mDNS 名称保存请求
- * 校验并写入 WiFi NVS；STA 在线时立即重载 mDNS，AP 模式下联网后生效
+ * 校验并写入 WiFi NVS；STA 在线时重载 mDNS 并异步检测重名，实际地址由状态接口更新，AP 模式下联网后生效
  */
 static void handle_mdns_save() {
     String normalized;
@@ -1126,12 +1194,12 @@ static void handle_mdns_save() {
 
     const bool active = !ap_mode && WiFi.status() == WL_CONNECTED;
     const bool started = !active || start_mdns();
-    const String url = "http://" + normalized + ".local/";
+    const String url = mdns_active_name[0] ? "http://" + String(mdns_active_name) + ".local/" : "";
     const String msg = active
-        ? (started ? "mDNS 名称已保存并生效" : "mDNS 名称已保存，但服务启动失败，请重启设备")
+        ? (started ? "mDNS 名称已保存，正在检测重名，请查看下方当前访问地址" : "mDNS 名称已保存，但服务启动失败，请重启设备")
         : "mDNS 名称已保存，联网后生效";
     server.send(200, "application/json",
-                "{\"ok\":true,\"mdns\":\"" + normalized + "\",\"url\":\"" + url +
+                "{\"ok\":true,\"mdns\":\"" + normalized + "\",\"mdns_active\":\"" + json_escape(mdns_active_name) + "\",\"url\":\"" + url +
                 "\",\"msg\":\"" + msg + "\"}");
 }
 
@@ -2147,18 +2215,15 @@ static void setup_routes() {
 
 /**
  * 初始化 Web 管理服务
- * 读取 WiFi 凭据，优先连接已保存网络，失败或未配置时启动配网热点，然后注册路由并启动 HTTP 服务
+ * 读取 WiFi 凭据并异步连接已保存网络，未配置时启动配网热点；重连由主循环统一调度，随后启动 HTTP 服务
  */
 void web_config_init() {
     load_wifi_creds();
     WiFi.persistent(false);
+    WiFi.setAutoReconnect(false);
 
     if (sta_ssid[0]) {
-        wifi_state = ST_CONNECTING;
-        connect_deadline = millis() + STA_TIMEOUT_MS;
-        wifi_set_mode(WIFI_STA);
-        WiFi.begin(sta_ssid, sta_pass);
-        LOG_MAIN("[web] 正在连接已保存的 WiFi '%s' ...", sta_ssid);
+        start_sta_connect();
     } else {
         start_config_ap();
     }
@@ -2170,18 +2235,28 @@ void web_config_init() {
 
 /**
  * 轮询 Web 与 WiFi 状态
- * 处理 STA 连接成功/超时切换，调用 WebServer 处理请求，并在 AP 模式处理 DNS 强制门户请求
+ * 处理 STA 连接、掉线和超时，保留配网热点并定时重试已保存网络；同步 mDNS 实际名称并处理 HTTP 与强制门户 DNS
  */
 void web_config_run() {
-    if (wifi_state == ST_CONNECTING) {
+    if (sta_ssid[0]) {
+        const uint32_t now = millis();
         if (WiFi.status() == WL_CONNECTED) {
-            on_sta_connected();
-        } else if (static_cast<int32_t>(millis() - connect_deadline) >= 0) {
-            LOG_MAIN("[web] 连接 WiFi 超时，转入配网模式");
-            start_config_ap();
+            if (wifi_state != ST_IDLE || ap_mode) on_sta_connected();
+        } else if (wifi_state == ST_CONNECTING) {
+            if (static_cast<int32_t>(now - connect_deadline) >= 0) {
+                LOG_MAIN("[web] 连接 WiFi 超时，开启或保留配网热点");
+                if (!ap_mode) start_config_ap();
+                schedule_sta_retry();
+            }
+        } else if (wifi_state == ST_RETRY_WAIT) {
+            if (static_cast<int32_t>(now - retry_deadline) >= 0) start_sta_connect();
+        } else if (!ap_mode) {
+            LOG_MAIN("[web] WiFi 已断开，尝试重新连接");
+            start_sta_connect();
         }
     }
 
+    sync_mdns_name();
     server.handleClient();
     if (ap_mode) dns.processNextRequest();
 }

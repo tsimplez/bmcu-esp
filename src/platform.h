@@ -129,8 +129,8 @@ const ProjectPreset &hal_default_project_preset();
   // GPIO17  未引出 不用 SPIQ    ← 外置4MB Flash D1
   // GPIO18  排针05 不用 USB_D-（FSPICLK）         -                 经典款可用；新款被原生USB占用
   // GPIO19  排针06 不用 USB_D+（FSPICS0）         -                 经典款可用；新款被原生USB占用
-  // GPIO20  排针08 可用 U0RXD            -                UART0，接板载USB转TTL（日志口，921600）
-  // GPIO21  排针09 可用 U0TXD            -                UART0，接板载USB转TTL（日志口，921600）
+  // GPIO20  排针08 可用 U0RXD            -                UART0 接板载USB转TTL 日志口
+  // GPIO21  排针09 可用 U0TXD            -                UART0 接板载USB转TTL 日志口
 
   // C3 项目接线统一定义在 project_presets.h；这里仅保留板型信息。
 

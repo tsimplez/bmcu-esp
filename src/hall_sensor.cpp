@@ -5,76 +5,74 @@
 #include <cstring>
 
 namespace {
+    struct HallSlot {
+        HallHistoryPoint history[HALL_HISTORY_CAPACITY];
+        uint32_t last_sample_ms;
+        uint32_t raw_ms;
+        uint32_t sum;
+        uint16_t samples;
+        uint16_t minimum;
+        uint16_t maximum;
+        uint16_t raw;
+        bool has_raw;
+        bool last_read_ok;
+    };
 
-struct HallSlot {
-    HallHistoryPoint history[HALL_HISTORY_CAPACITY];
-    uint32_t last_sample_ms;
-    uint32_t raw_ms;
-    uint32_t sum;
-    uint16_t samples;
-    uint16_t minimum;
-    uint16_t maximum;
-    uint16_t raw;
-    bool has_raw;
-    bool last_read_ok;
-};
+    // 每个 ADC 最多对应一个通道，C3 只预留五份历史，避免按十六通道浪费常驻内存。
+    HallSlot slots[HAL_HALL_ADC_CAPACITY];
+    int runtime_pins[IO_CONFIG_MAX_CHANNELS];
+    int8_t channel_slots[IO_CONFIG_MAX_CHANNELS];
+    uint8_t channel_count = 0;
+    uint8_t slot_count = 0;
+    uint8_t next_channel = 0;
+    uint16_t history_count = 0;
+    uint16_t next_history_index = 0;
+    uint32_t history_cursor = 0;
+    uint32_t history_end_ms = 0;
+    uint32_t history_epoch = 0;
+    bool initialized = false;
 
-// 每个 ADC 最多对应一个通道，C3 只预留五份历史，避免按十六通道浪费常驻内存。
-HallSlot slots[HAL_HALL_ADC_CAPACITY];
-int runtime_pins[IO_CONFIG_MAX_CHANNELS];
-int8_t channel_slots[IO_CONFIG_MAX_CHANNELS];
-uint8_t channel_count = 0;
-uint8_t slot_count = 0;
-uint8_t next_channel = 0;
-uint16_t history_count = 0;
-uint16_t next_history_index = 0;
-uint32_t history_cursor = 0;
-uint32_t history_end_ms = 0;
-uint32_t history_epoch = 0;
-bool initialized = false;
-
-/**
- * 清空当前统计桶的累加值
- * @param slot 待清空的 ADC 槽
- */
-void clear_accumulator(HallSlot &slot) {
-    slot.sum = 0;
-    slot.samples = 0;
-    slot.minimum = HALL_INVALID_VALUE;
-    slot.maximum = 0;
-}
-
-/**
- * 结算已结束的统计桶并补齐采样空缺
- * @param now 当前毫秒时刻
- * 长时间未调度时最多写三百个桶；空缺以无效值保存，不复制上一读数
- */
-void complete_buckets(const uint32_t now) {
-    const uint32_t elapsed = (now - history_end_ms) / HALL_HISTORY_INTERVAL_MS;
-    if (!elapsed) return;
-    const uint32_t retained = elapsed > HALL_HISTORY_CAPACITY ? HALL_HISTORY_CAPACITY : elapsed;
-    history_cursor += elapsed - retained;
-    if (elapsed > HALL_HISTORY_CAPACITY) history_count = 0;
-    for (uint32_t bucket = 0; bucket < retained; ++bucket) {
-        for (uint8_t index = 0; index < slot_count; ++index) {
-            auto &slot = slots[index];
-            HallHistoryPoint point = {HALL_INVALID_VALUE, HALL_INVALID_VALUE, HALL_INVALID_VALUE};
-            if (bucket == 0 && elapsed <= HALL_HISTORY_CAPACITY && slot.samples) {
-                point.average = static_cast<uint16_t>((slot.sum + slot.samples / 2u) / slot.samples);
-                point.minimum = slot.minimum;
-                point.maximum = slot.maximum;
-            }
-            slot.history[next_history_index] = point;
-        }
-        next_history_index = (next_history_index + 1u) % HALL_HISTORY_CAPACITY;
-        if (history_count < HALL_HISTORY_CAPACITY) ++history_count;
-        ++history_cursor;
+    /**
+     * 清空当前统计桶的累加值
+     * @param slot 待清空的 ADC 槽
+     */
+    void clear_accumulator(HallSlot &slot) {
+        slot.sum = 0;
+        slot.samples = 0;
+        slot.minimum = HALL_INVALID_VALUE;
+        slot.maximum = 0;
     }
-    history_end_ms += elapsed * HALL_HISTORY_INTERVAL_MS;
-    for (uint8_t index = 0; index < slot_count; ++index) clear_accumulator(slots[index]);
-}
 
-} // namespace
+    /**
+     * 结算已结束的统计桶并补齐采样空缺
+     * @param now 当前毫秒时刻
+     * 长时间未调度时最多写三百个桶；空缺以无效值保存，不复制上一读数
+     */
+    void complete_buckets(const uint32_t now) {
+        const uint32_t elapsed = (now - history_end_ms) / HALL_HISTORY_INTERVAL_MS;
+        if (!elapsed) return;
+        const uint32_t retained = elapsed > HALL_HISTORY_CAPACITY ? HALL_HISTORY_CAPACITY : elapsed;
+        history_cursor += elapsed - retained;
+        if (elapsed > HALL_HISTORY_CAPACITY) history_count = 0;
+        for (uint32_t bucket = 0; bucket < retained; ++bucket) {
+            for (uint8_t index = 0; index < slot_count; ++index) {
+                auto &slot = slots[index];
+                HallHistoryPoint point = {HALL_INVALID_VALUE, HALL_INVALID_VALUE, HALL_INVALID_VALUE};
+                if (bucket == 0 && elapsed <= HALL_HISTORY_CAPACITY && slot.samples) {
+                    point.average = static_cast<uint16_t>((slot.sum + slot.samples / 2u) / slot.samples);
+                    point.minimum = slot.minimum;
+                    point.maximum = slot.maximum;
+                }
+                slot.history[next_history_index] = point;
+            }
+            next_history_index = (next_history_index + 1u) % HALL_HISTORY_CAPACITY;
+            if (history_count < HALL_HISTORY_CAPACITY) ++history_count;
+            ++history_cursor;
+        }
+        history_end_ms += elapsed * HALL_HISTORY_INTERVAL_MS;
+        for (uint8_t index = 0; index < slot_count; ++index) clear_accumulator(slots[index]);
+    }
+}
 
 /**
  * 初始化霍尔采集与历史记录
@@ -93,8 +91,11 @@ void hall_sensor_init() {
  */
 void hall_sensor_sync_config() {
     const int requested_count = active_channel_count();
-    const uint8_t count = requested_count < 0 ? 0 :
-        requested_count > IO_CONFIG_MAX_CHANNELS ? IO_CONFIG_MAX_CHANNELS : requested_count;
+    const uint8_t count = requested_count < 0
+                              ? 0
+                              : requested_count > IO_CONFIG_MAX_CHANNELS
+                                    ? IO_CONFIG_MAX_CHANNELS
+                                    : requested_count;
     bool changed = !initialized || count != channel_count;
     for (uint8_t channel = 0; channel < IO_CONFIG_MAX_CHANNELS; ++channel) {
         const int pin = channel < count ? IO_CONFIG.hall[channel] : PIN_NONE;
@@ -200,8 +201,10 @@ bool hall_sensor_history_point(const int channel, const uint32_t cursor, HallHis
  * 最新转换超过五百毫秒即过期；分钟平均值按仍在六十秒内的有效完整桶等权计算
  */
 HallChannelStatus hall_sensor_status(const int channel) {
-    HallChannelStatus status = {PIN_NONE, false, false, false, HALL_INVALID_VALUE,
-        HALL_INVALID_VALUE, HALL_INVALID_VALUE, HALL_INVALID_VALUE, UINT32_MAX};
+    HallChannelStatus status = {
+        PIN_NONE, false, false, false, HALL_INVALID_VALUE,
+        HALL_INVALID_VALUE, HALL_INVALID_VALUE, HALL_INVALID_VALUE, UINT32_MAX
+    };
     if (channel < 0 || channel >= channel_count) return status;
     status.pin = runtime_pins[channel];
     const int slot_index = channel_slots[channel];

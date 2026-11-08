@@ -35,8 +35,13 @@ struct HallChannelStatus {
 };
 
 void hall_sensor_init();
+
 void hall_sensor_sync_config();
+
 void hall_sensor_run();
+
 HallHistoryInfo hall_sensor_history_info();
+
 HallChannelStatus hall_sensor_status(int channel);
+
 bool hall_sensor_history_point(int channel, uint32_t cursor, HallHistoryPoint &point);
