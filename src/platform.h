@@ -129,8 +129,8 @@ const ProjectPreset &hal_default_project_preset();
   // GPIO17  未引出 不用 SPIQ    ← 外置4MB Flash D1
   // GPIO18  排针05 不用 USB_D-（FSPICLK）         -                 经典款可用；新款被原生USB占用
   // GPIO19  排针06 不用 USB_D+（FSPICS0）         -                 经典款可用；新款被原生USB占用
-  // GPIO20  排针08 可用 U0RXD            -                UART0 接板载USB转TTL 日志口
-  // GPIO21  排针09 可用 U0TXD            -                UART0 接板载USB转TTL 日志口
+  // GPIO20  排针08 可用 U0RXD            -                未分配时用作 UART0 日志口
+  // GPIO21  排针09 可用 U0TXD            -                占用任一脚时关闭 UART0 控制台
 
   // C3 项目接线统一定义在 project_presets.h；这里仅保留板型信息。
 
@@ -227,25 +227,10 @@ extern int PCF_SCL;
 bool hal_i2c_begin(int sda, int scl);
 
 // ---------- 控制台串口 ----------
-// Arduino-ESP32 只在「USB CDC 上电启动」（ARDUINO_USB_CDC_ON_BOOT）时才自己调用
-// Serial.begin()，本工程各 env 都没开这个宏，于是 Serial 从头到尾没有 begin：
-// core 内部 _uart 为 NULL，Serial.write() 会静默丢数据（不报错、不打日志）
-// 表现就是串口上只剩 ROM 启动信息和 core 自己的 [E] 日志，一条应用日志都看不到
-// 因此这里显式打开控制台串口（C3: UART0 GPIO20/21，S3: GPIO43/44）
-#if defined(ARDUINO_ARCH_ESP32)
-/**
- * 初始化控制台串口
- * ESP32 平台显式调用 Serial.begin(115200)，确保应用日志能够从串口输出
- */
-static void hal_console_begin() { Serial.begin(115200); }
-#else
-// RP2040: 日志走 stdout，无需 begin
-/**
- * 初始化控制台串口（RP2040）
- * RP2040 的日志直接写 stdout，因此保持空实现
- */
-static inline void hal_console_begin() {}
-#endif
+// C3 UART0 在读取配置前保持静默；按实际接线决定是否启用，网页日志不受影响
+void hal_console_prepare();
+void hal_console_begin();
+void hal_console_write(const char *data, size_t len);
 
 // 从持久化设置加载，首次使用 hal_default_project_preset() 的默认接线
 // BambuBus 串口 RX、TX 引脚号；RS485_MODE_RXTX 模式下 DE 不驱动

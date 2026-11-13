@@ -8,19 +8,15 @@
  * 判断引脚是否为系统保留脚
  * @param pin 引脚号
  * @return true 表示不可分配
- * 按平台过滤 Flash、USB、控制台串口等保留引脚；总微动与其他输入统一校验
+ * 按平台过滤 Flash、USB、控制台串口等保留引脚；C3 UART0 由平台层按接线占用自动停用
+ * 总微动与其他输入统一校验
  */
 static bool is_reserved_pin(const int pin) {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
-    // Flash 和控制台不可重分配；经典款的 USB 焊盘可用作普通 GPIO
+    // Flash 不可重分配；UART0 可交给接线，经典款的 USB 焊盘可用作普通 GPIO
     if (pin == 11 || (pin >= 14 && pin <= 17)) return true;
-#if C3_BOARD_USB_TTL && !ARDUINO_USB_CDC_ON_BOOT
-    if (pin == 20 || pin == 21) return true;
-#else
+#if !C3_BOARD_USB_TTL || ARDUINO_USB_CDC_ON_BOOT
     if (pin == 18 || pin == 19) return true;
-#if !ARDUINO_USB_CDC_ON_BOOT
-    if (pin == 20 || pin == 21) return true;
-#endif
 #endif
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)
     // S3 DevKit 的 26-37 接 Flash/PSRAM，19/20 保留给原生 USB
@@ -229,10 +225,13 @@ bool io_config_i2c_validate(const int sda, const int scl, const IoConfig &config
  * 获取引脚风险提示文本
  * @param pin 引脚号
  * @return 中文提示；无风险时返回空串
- * 为 ESP32-C3/S3 的启动绑带脚提供网页提示
+ * 为 ESP32-C3/S3 的启动绑带脚及 C3 控制台复用提供网页提示
  */
 static const char *pin_warning_text(int pin) {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
+#if !ARDUINO_USB_CDC_ON_BOOT
+    if (pin == 20 || pin == 21) return "GPIO20/21 可用作普通 IO；占用任一脚时自动关闭 UART0 控制台，主板日志仍可在网页查看";
+#endif
     if (pin == 2) return "ESP32-C3 GPIO2 是启动绑带引脚，建议上电或复位时保持高电平，避免外部电路影响启动正常运行时可作为普通 IO";
     if (pin == 9) return "ESP32-C3 GPIO9 连接 BOOT 按键，是启动绑带引脚；上电或复位时拉低会进入下载模式，外部电路需保持高电平才能正常启动";
     if (pin == 8) return "ESP32-C3 GPIO8：进入串口下载模式时必须为高电平；复位时被微动开关等外部电路拉低，会导致无法进入下载模式、无法刷入固件刷机前请释放该引脚正常运行时可作为普通 IO";

@@ -238,7 +238,7 @@ void BMCU_apply_io_config() {
 
 /**
  * 在主循环应用通道与五通总微动接线
- * 先释放所有变更输入和通道，再绑定新引脚；未变化通道保持运行，新总微动重新建立输入基线
+ * 先释放所有变更输入和通道，再按接线切换控制台并绑定新引脚；未变化通道保持运行，新总微动重新建立输入基线
  */
 static void apply_io_config() {
     // 上一次已应用到硬件的引脚配置，用与 IO_CONFIG 比较找出变更通道
@@ -269,6 +269,7 @@ static void apply_io_config() {
         ch.msw_previous = ch.msw_raw = -1;
         ch.msw_raw_time = 0;
     }
+    hal_console_begin(); // 旧通道已释放，新通道接管引脚前完成控制台切换
     for (int i = 0; i < channels; i++) {
         if (!changed[i]) continue;
         motors[i].setPins(IO_CONFIG.motor[i][0], IO_CONFIG.motor[i][1]);

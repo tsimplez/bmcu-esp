@@ -95,8 +95,9 @@ BambuBus 通信协议，支持多通道耗材管理、电机控制、编码器�
 
 > 本固件基于社区逆向工程实现，与 Bambu Lab 官方无关，仅供学习研究，非官方支持版本
 
-## 项目特色
-空打 缠料 检测支持(制作中)
+### 扩展说明
+- 单微动（实现自吸和耗材在线检测）
+- 单霍尔（实现【空打】【缠料】暂停打印 (制作中)）
 需要把 离线 切换回 在线或者自动（使用电机堵转实现（打印机会退料在进料（只能直接离线）有概率提示堵转））
 
 ## 支持的平台
@@ -153,7 +154,7 @@ web/index.html          # 管理页面，构建时作为二进制块编入固件
 ### 主循环
 
 ```
-setup():  控制台/看门狗/日志 → 加载设置 → 释放 USB 焊盘 → I2C → BMCU_init → web_config_init
+setup():  日志/看门狗 → 加载设置 → 按接线配置控制台 → 释放 USB 焊盘 → GPIO/I2C → BMCU_init → web_config_init
 loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_config_run（网页） → yield()
 ```
 
@@ -205,7 +206,9 @@ pio run -t clean             # 清理
 
 - 公共依赖在 `[env]` 中声明（PCF8575），网页 `web/index.html` 通过 `board_build.embed_txtfiles` 编入固件
 - `pico` 环境需 `lib_ignore` 忽略 ESP32 专用库（WiFi/DNSServer/ESPmDNS/WebServer/Preferences）；`upload_protocol = picotool`
-- C3 默认日志走 UART0；若要用板载 USB 看日志需追加 `-DARDUINO_USB_CDC_ON_BOOT=1`
+- C3 的 GPIO20/21 可分配给接线；启用通道、五通总微动、有线 BambuBus 或已配置 I2C 占用任一脚时，自动关闭 UART0 应用/SDK 日志，网页主板日志保留；接线应用后两脚均空闲时恢复 UART0 控制台
+- C3 启动时先暂停 UART0 输出，读取接线后决定是否开启；运行中改线由主循环先释放旧引脚，再切换控制台并绑定新引脚。此运行期控制不改变 ROM/Bootloader 启动输出
+- 若要用 C3 板载 USB 看日志需追加 `-DARDUINO_USB_CDC_ON_BOOT=1`；原生 USB CDC 保持原控制台逻辑，GPIO18/19 仍按 USB 配置保护或释放
 
 ## 有关于市面上的 bmcu 项目
 - Top ams 和 天枢TTC 相似

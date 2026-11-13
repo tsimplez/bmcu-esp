@@ -195,25 +195,11 @@ size_t log_bus_read(const int ch, uint32_t *seq, char *out, size_t max_len, uint
 // ============================================================
 
 /**
- * 把日志同步输出到控制台
- * @param s 文本内容
- * @param len 文本长度
- * ESP32 使用 Serial.write()，RP2040 使用 stdout 输出日志
- */
-static void console_echo(const char *s, size_t len) {
-#if defined(ARDUINO_ARCH_ESP32)
-    Serial.write(reinterpret_cast<const uint8_t *>(s), len);
-#else
-    fwrite(s, 1, len, stdout);
-#endif
-}
-
-/**
  * 格式化写入日志
  * @param ch 日志通道
  * @param fmt printf 格式串
  * @param ... 可变参数
- * 添加毫秒时间戳后写入环形缓冲，主板日志同时回显到控制台
+ * 添加毫秒时间戳后写入环形缓冲，主板日志由平台层回显；控制台引脚被占用时仍保留网页日志
  */
 void log_bus_printf(const int ch, const char *fmt, ...) {
     char body[224];
@@ -229,7 +215,7 @@ void log_bus_printf(const int ch, const char *fmt, ...) {
     const size_t len = static_cast<size_t>(n) < sizeof(line) ? static_cast<size_t>(n) : sizeof(line) - 1;
 
     log_bus_write(ch, line, len);
-    if (ch == LOG_CH_MAIN) console_echo(line, len);
+    if (ch == LOG_CH_MAIN) hal_console_write(line, len);
 }
 
 // 手写十进制转换：hex 转储可能在中断 / 事件回调里调用，
