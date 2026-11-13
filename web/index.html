@@ -318,12 +318,12 @@ button:disabled{opacity:.45;cursor:not-allowed}
 <!-- ================= 设置 ================= -->
 <div id="t-settings" class="hide">
   <div class="card">
-    <h2>BambuBus 接线与 RS485 收发方式</h2>
-    <div class="row">
+    <h2>和打印机通信方式</h2>
+    <div class="row" id="bus-mode-row">
       <button id="r1" onclick="setRs485(1)">模式 1：只用 RXD / TXD</button>
       <button id="r2" onclick="setRs485(2)">模式 2：RO / DI / RE / DE</button>
     </div>
-    <div class="hint">
+    <div class="hint" id="bus-mode-hint">
       模式 1 (默认) 适合只有 RXD / TXD 的自动收发模块，固件不再驱动 DE 引脚<br>
       模式 2 由 DE 引脚控制收发方向（RE 与 DE 并在一起）
     </div>
@@ -334,11 +334,39 @@ button:disabled{opacity:.45;cursor:not-allowed}
     <div class="row hide" id="bus-de-row" style="margin-top:8px">
       <label for="bus-de">DE（接 RE / DE）</label><select id="bus-de" style="max-width:260px" onchange="updateBusLabels()" disabled></select>
     </div>
+    <div id="lan-pairing" class="hide" style="margin-top:16px">
+      <h3>局域网配对</h3>
+      <div class="hint">设备与打印机需连接同一局域网，打印机需允许局域网控制</div>
+      <div class="row" style="margin-top:8px">
+        <label for="lan-ip">打印机 IP</label><input id="lan-ip" placeholder="192.168.1.100" maxlength="15" inputmode="decimal" autocomplete="off" oninput="updateBusLabels()">
+        <label for="lan-code">访问码（配对码）</label><input id="lan-code" maxlength="8" placeholder="8 位访问码" autocomplete="off" oninput="updateBusLabels()">
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label for="lan-serial">打印机序列号</label><input id="lan-serial" class="grow" maxlength="31" autocomplete="off" aria-describedby="lan-serial-hint" oninput="updateBusLabels()">
+        <button id="pair-lan" class="primary" onclick="saveBus(true)" disabled>保存并配对</button>
+      </div>
+      <div id="lan-serial-hint" class="hint">打印机序列号区分大小写，必须与打印机显示完全一致</div>
+      <div id="lan-state" class="hint" role="status">保存并重启后启用局域网</div>
+      <details style="margin-top:12px">
+        <summary>局域网换料设置</summary>
+        <div class="row" style="margin-top:10px">
+          <label for="lan-feed-ms">进料时间（毫秒）</label><input id="lan-feed-ms" type="number" min="100" max="29999" step="100" value="6000" oninput="updateBusLabels()">
+          <label for="lan-nozzle-temp">换料温度（℃）</label><input id="lan-nozzle-temp" type="number" min="170" max="300" step="1" value="250" oninput="updateBusLabels()">
+        </div>
+        <div class="hint">进料时间和温度随配对配置一起保存；退料时长使用各通道的“退料超时”</div>
+        <div class="row" style="margin-top:10px">
+          <label for="lan-channel">当前装料通道</label><select id="lan-channel" onchange="LAN_CHANNEL_DIRTY=true" disabled></select>
+          <button id="lan-channel-save" onclick="submitLanAction('channel')" disabled>确认当前通道</button>
+          <button id="lan-cancel" class="danger" onclick="submitLanAction('cancel')" disabled>停止局域网换料</button>
+        </div>
+        <div class="hint">确认通道只记录热端当前的耗材来源，不会启动电机；重启或异常后需重新确认，并配置 Top-AMS 换料 G-code 才能自动换色</div>
+      </details>
+    </div>
     <div class="row" style="margin-top:10px">
       <button id="save-bus" class="primary" onclick="saveBus()" disabled>保存总线配置并重启</button>
       <span id="bus-state" class="hint" role="status">正在读取总线配置…</span>
     </div>
-    <div class="hint">主控 RX 接模块的数据输出，TX 接模块的数据输入，请核对模块标注模式与接线一起保存，重启生效；修改后请断电换线模式 1 不占用 DE 引脚</div>
+    <div class="hint" id="bus-wiring-hint">主控 RX 接模块的数据输出，TX 接模块的数据输入；模式与接线一起保存，重启生效，修改后请断电换线；RX/TX 同时选“无”可使用局域网通信</div>
   </div>
   <div class="card">
     <h2>BambuBus 与 IO 引脚配置</h2>
@@ -630,7 +658,7 @@ const showSensorValue=(id,value,unit)=>{
 /**
  * 拉取并刷新设备运行状态
  * @return {Promise<void>|undefined} 请求完成后的 Promise；已有请求时返回 undefined
- * OTA 期间暂停请求；其余时间带 5 秒超时读取 /api/status，同步电机及退料测时、传感器、暂停实验、项目、mDNS 实际地址和 OTA，首次成功时自动检查更新
+ * OTA 期间暂停请求；其余时间带 5 秒超时同步电机、局域网配对、传感器、暂停实验、项目和 mDNS，首次成功时自动检查更新
  */
 const refreshStatus=()=>{
   if(statusPending||otaBusy) return
@@ -664,7 +692,7 @@ const refreshStatus=()=>{
     $('s-uptime').textContent = fmtUptime(d.uptime)
     $('s-heap').textContent = (d.heap/1024).toFixed(1)+' / '+(d.heap_total/1024).toFixed(1)+' KB'
     $('s-chip').textContent = d.chip
-    $('s-rs485').textContent = d.rs485==1 ? '模式 1（仅 RXD/TXD）' : '模式 2（DE 控制方向）'
+    $('s-rs485').textContent = d.lan_ams?.enabled ? '局域网 MQTT' : d.rs485==1 ? '模式 1（仅 RXD/TXD）' : '模式 2（DE 控制方向）'
     $('s-fw').textContent = (d.version||'-') + '  (' + (d.target||'-') + ')'
     $('s-build').textContent = fmtBuild(d.build)
     $('u-ver').textContent = d.version||'-'
@@ -689,6 +717,7 @@ const refreshStatus=()=>{
     renderMotorControls()
     renderChannelStatus()
     renderPauseTest()
+    updateBusLabels()
     updateChannelStateText(true)
     updateOtaControls()
     /* 首次拿到状态后自动检查一次更新，有新版就把常驻横幅亮出来 */
@@ -701,6 +730,7 @@ const refreshStatus=()=>{
     renderMotorControls()
     renderChannelStatus()
     renderPauseTest()
+    updateBusLabels()
   }).finally(()=>{clearTimeout(timer);statusPending=false;})
 }
 
@@ -1184,28 +1214,29 @@ const renderPullbackTest=(motor,fresh,occupied)=>{
 }
 /**
  * 根据状态刷新电机按钮和运行提示
- * 检测中由检测按钮提供停止入口；处理请求防重、排队和运行切换，并显示任务来源与检测时间
+ * 检测中由检测按钮提供停止入口；局域网换料期间禁止新增手动动作，并显示任务来源与检测时间
  */
 const renderMotorControls=()=>{
   const fresh=statusAt&&performance.now()-statusAt<3000
   for(let i=0;i<(S.channels||0);i++){
     const m=(S.motors||[])[i]||{},queued=!!m.queue_position,running=!!m.dir,occupied=running||queued
-    const testing=renderPullbackTest(i,!!fresh,occupied)
+    const testing=renderPullbackTest(i,!!fresh,occupied||!!S.lan_ams?.busy)
     document.querySelectorAll('[data-motor="'+i+'"]').forEach(b=>{
       const stop=b.dataset.dir==='0'
       b.classList.toggle('hide',testing||(stop?!occupied:occupied))
       if(stop) b.textContent=queued?'取消排队':'停止'
-      b.disabled=stop?motorPending[i]===0:!fresh||motorPending[i]!=null
+      b.disabled=stop?motorPending[i]===0:!fresh||motorPending[i]!=null||!!S.lan_ams?.busy
     })
     const el=$('run'+i)
     if(!el) continue
     const left=Math.max(0,(m.remaining_ms||0)-(performance.now()-statusAt))
-    el.textContent=queued?(['','打印机','手动','微动辅助'][m.queued_source]||'')+' · 等待'+(m.queued_dir>0?'进料':'退料')+' · 排队第 '+m.queue_position+' 位'+(fresh?'':' · 状态待确认'):
-      running?(['','打印机','手动','微动辅助'][m.source]||'')+' · '+(m.dir>0?'进料':'退料')+
+    el.textContent=queued?(['','打印机','手动','微动辅助','局域网'][m.queued_source]||'')+' · 等待'+(m.queued_dir>0?'进料':'退料')+' · 排队第 '+m.queue_position+' 位'+(fresh?'':' · 状态待确认'):
+      running?(['','打印机','手动','微动辅助','局域网'][m.source]||'')+' · '+(m.dir>0?'进料':'退料')+
       (!fresh?' · 状态待确认':m.remaining_ms<0?' · 剩余时间未知':left>0?' · 剩余 '+(left/1000).toFixed(1)+' 秒':' · 等待停止确认'):
       ''
   }
-  $('manual-state').textContent=fresh?'运行电机 '+S.motor_running+' / '+S.motor_limit+' · 排队 '+(S.motors||[]).filter(m=>m.queue_position).length+'，可继续点击其他通道':
+  $('manual-state').textContent=fresh?(S.lan_ams?.busy?'局域网换料中，可停止本次换料':
+    '运行电机 '+S.motor_running+' / '+S.motor_limit+' · 排队 '+(S.motors||[]).filter(m=>m.queue_position).length+'，可继续点击其他通道'):
     '设备状态未更新，请检查连接；仍可尝试停止运行中的电机'
 }
 /**
@@ -1567,6 +1598,8 @@ let BUS_READY=false
 let BUS_SAVING=false
 // 设备当前已生效的总线引脚映射，用于检测未保存修改
 let BUS_APPLIED={}
+// 当前通道确认不持久化，操作提交期间禁止重复请求
+let LAN_CHANNEL_DIRTY=false,LAN_ACTION_PENDING=false
 /**
  * 选择 RS485 接线模式
  * @param {number} mode 1 表示仅 RXD/TXD，2 表示带 DE 方向控制
@@ -1575,36 +1608,55 @@ let BUS_APPLIED={}
 const setRs485=(mode)=>{if(BUS_SAVING) return;BUS_MODE=mode;updateBusLabels()}
 /**
  * 刷新 BambuBus 引脚标签和校验状态
- * 标出引脚占用、警告、重复和缺失，并据此启用或禁用保存按钮
+ * 检查接线成对、GPIO 冲突及完整局域网凭据；双空时显示配对区，保存和换料期间禁止重复提交
  */
 const updateBusLabels=()=>{
-  const keys=BUS_MODE===2?['rx','tx','de']:['rx','tx'], seen=new Set(), warnings=[]
+  const rxNone=$('bus-rx').value==='255',txNone=$('bus-tx').value==='255',lan=rxNone&&txNone
+  const keys=!lan&&BUS_MODE===2?['rx','tx','de']:['rx','tx'],seen=new Set(),warnings=[]
   let conflict=false,duplicate=false,missing=false
   $('r1').classList.toggle('on',BUS_MODE===1);$('r2').classList.toggle('on',BUS_MODE===2)
-  $('bus-de-row').classList.toggle('hide',BUS_MODE!==2)
+  $('bus-mode-row').classList.toggle('hide',lan);$('bus-mode-hint').classList.toggle('hide',lan)
+  $('bus-de-row').classList.toggle('hide',lan||BUS_MODE!==2)
+  $('bus-wiring-hint').classList.toggle('hide',lan);$('lan-pairing').classList.toggle('hide',!lan)
   for(const key of keys){
     const sel=$('bus-'+key)
     for(const op of sel.options){
-      const uses=(BUS_USES[op.value]||[]).slice()
-      for(const role of keys) if($('bus-'+role).value===op.value) uses.push('BambuBus '+role.toUpperCase())
+      const uses=op.value==='255'?[]:(BUS_USES[op.value]||[]).slice()
+      for(const role of keys) if(op.value!=='255'&&$('bus-'+role).value===op.value) uses.push('BambuBus '+role.toUpperCase())
       op.textContent=op.dataset.label+(op.title?' ⚠':'')+(uses.length?'（'+uses.join('、')+'）':'')
     }
     sel.title=sel.selectedOptions[0]?.title||''
     if(sel.title) warnings.push(sel.title)
     if(sel.value==='') missing=true
+    if(sel.value==='255') continue
     if(seen.has(sel.value)) duplicate=true
     seen.add(sel.value)
     if(BUS_USES[sel.value]?.length) conflict=true
   }
-  $('save-bus').disabled=!BUS_READY||BUS_SAVING||missing||duplicate||conflict
-  $('bus-state').textContent=!BUS_READY?'正在读取总线配置…':duplicate?'RX、TX、DE 不能重复':
+  const ip=$('lan-ip').value.trim(),serial=$('lan-serial').value.trim(),code=$('lan-code').value.trim()
+  const validIp=/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)&&ip.split('.').every(p=>Number(p)<=255&&(p==='0'||p[0]!=='0'))
+  const credentials=validIp&&/^[A-Za-z0-9]{1,31}$/.test(serial)&&/^[A-Za-z0-9]{8}$/.test(code)
+  const empty=!ip&&!serial&&!code
+  const feed=Number($('lan-feed-ms').value),temp=Number($('lan-nozzle-temp').value)
+  const timing=Number.isInteger(feed)&&feed>=100&&feed<30000&&Number.isInteger(temp)&&temp>=170&&temp<=300
+  const ready=statusAt>0&&performance.now()-statusAt<4000&&S?.maintenance===true
+  const invalid=missing||duplicate||conflict||rxNone!==txNone||(lan&&(!timing||(!empty&&!credentials)))
+  $('save-bus').disabled=!BUS_READY||BUS_SAVING||!ready||invalid
+  $('save-bus').textContent=lan?'保存通信配置并重启':'保存总线配置并重启'
+  $('pair-lan').disabled=$('save-bus').disabled||!credentials
+  for(const id of ['r1','r2','bus-rx','bus-tx','bus-de','lan-ip','lan-code','lan-serial','lan-feed-ms','lan-nozzle-temp'])
+    $(id).disabled=!BUS_READY||BUS_SAVING||!!S?.lan_ams?.busy
+  $('bus-state').textContent=!BUS_READY?'正在读取总线配置…':BUS_SAVING?'正在保存通信配置…':rxNone!==txNone?'RX/TX 必须同时配置或同时为无':duplicate?'RX、TX、DE 不能重复':
     conflict?'所选 GPIO 已被通道、总微动或 I2C 占用，请先修改并保存对应接线':missing?'请选择完整接线':
+    lan&&!timing?'进料时间为 100～29999 毫秒，温度为 170～300 ℃':lan&&!empty&&!credentials?'请填写有效 IP、8 位访问码和打印机序列号':
+    !ready?'设备空闲并连接正常后可保存':lan?(empty?'可先保存局域网模式，再填写三个字段配对':'配置将在保存并重启后生效'):
     warnings.join(' ')||'模式与引脚将在保存并重启后生效'
+  renderLanStatus()
 }
 /**
  * 渲染 BambuBus 接线配置
  * @param {Object} d /api/settings 返回的完整配置
- * 建立电机、微动、霍尔、总微动和 I2C 的占用表，填充 RX、TX、DE 并刷新冲突提示
+ * 建立电机、微动、霍尔、总微动和 I2C 占用表，填充接线与局域网配置并明文显示访问码；双空时不占用 DE
  */
 const renderBus=(d)=>{
   const b=d.bus||{};BUS_READY=!!d.bus;BUS_SAVING=false;BUS_MODE=d.rs485===2?2:1;BUS_USES={};BUS_APPLIED={}
@@ -1624,31 +1676,46 @@ const renderBus=(d)=>{
   add(BUS_USES,d.io?.switch_pin,'五通总微动')
   for(const key of ['rx','tx','de']){
     const sel=$('bus-'+key);sel.textContent='';sel.disabled=!BUS_READY
+    if(key!=='de') {const none=new Option('无','255');none.dataset.label='无';sel.add(none)}
     for(const pin of b.pins||[]){
       const op=new Option(pin.label,pin.id);op.dataset.label=pin.label;op.title=pin.warning_text||'';sel.add(op)
     }
     sel.value=String(b[key])
-    if(key!=='de'||BUS_MODE===2) add(BUS_APPLIED,b[key],'BambuBus '+key.toUpperCase())
+    if((b.rx!==255||b.tx!==255)&&(key!=='de'||BUS_MODE===2)) add(BUS_APPLIED,b[key],'BambuBus '+key.toUpperCase())
   }
+  const lan=d.lan_ams||{}
+  $('lan-ip').value=lan.printer_ip||'';$('lan-serial').value=lan.serial||'';$('lan-code').value=lan.access_code||''
+  $('lan-feed-ms').value=lan.feed_ms??6000;$('lan-nozzle-temp').value=lan.nozzle_temp??250
+  const channel=$('lan-channel');channel.textContent='';channel.add(new Option('未知 / 需确认','-1'))
+  for(let ch=0;ch<d.channels;ch++) channel.add(new Option('通道 '+(ch+1),ch))
+  LAN_CHANNEL_DIRTY=false
   updateBusLabels()
 }
 /**
- * 保存 BambuBus 接线配置
+ * 保存打印机接线和局域网配置
+ * @param {boolean} pair 是否要求完整凭据并配对
  * @return {Promise<void>} 请求处理完成的 Promise
- * 提交模式及 RX/TX/DE 引脚到 /api/bus，失败时恢复控件可操作状态
+ * 一次提交配置后重启，失败保留用户输入
  */
-const saveBus = async () => {
-  if ($('save-bus').disabled) return
+const saveBus = async (pair=false) => {
+  if ($(pair?'pair-lan':'save-bus').disabled) return
   BUS_SAVING = true;
   updateBusLabels()
-  for (const key of ['rx', 'tx', 'de']) $('bus-' + key).disabled = true
+  const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),12000)
   try {
     const body = new URLSearchParams({mode: BUS_MODE, rx: $('bus-rx').value, tx: $('bus-tx').value})
-    if (BUS_MODE === 2) body.set('de', $('bus-de').value)
+    const lan=$('bus-rx').value==='255'&&$('bus-tx').value==='255'
+    if (!lan&&BUS_MODE === 2) body.set('de', $('bus-de').value)
+    if(lan){
+      body.set('pair',pair?'1':'0')
+      body.set('lan_ip',$('lan-ip').value.trim());body.set('lan_serial',$('lan-serial').value.trim())
+      body.set('lan_access_code',$('lan-code').value.trim())
+      body.set('lan_feed_ms',$('lan-feed-ms').value);body.set('lan_nozzle_temp',$('lan-nozzle-temp').value)
+    }
     const r = await fetch('/api/bus', {
       method: 'POST',
       headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-      body: body.toString()
+      body: body.toString(),signal:ac.signal
     })
     const d = await r.json()
     if (!r.ok || !d.ok) throw Error(d.msg || '保存失败')
@@ -1657,11 +1724,51 @@ const saveBus = async () => {
     setTimeout(() => location.reload(), 3500)
   } catch (e) {
     BUS_SAVING = false;
-    for (const key of ['rx', 'tx', 'de']) $('bus-' + key).disabled = !BUS_READY
     updateBusLabels();
-    $('bus-state').textContent = e.message || '连接中断，请重新读取确认是否保存';
+    $('bus-state').textContent = e.name==='AbortError'?'请求超时，请刷新确认是否已保存':e.message || '连接中断，请重新读取确认是否保存';
     toast($('bus-state').textContent, 8000)
+  } finally {
+    clearTimeout(timer)
   }
+}
+
+/**
+ * 刷新局域网连接、换料状态及通道确认控件
+ * 保留尚未提交的通道选择；状态过期或换料中禁止确认，停止入口仍允许请求
+ */
+const renderLanStatus=()=>{
+  const lan=S?.lan_ams,fresh=statusAt>0&&performance.now()-statusAt<4000
+  const selected=$('bus-rx').value==='255'&&$('bus-tx').value==='255'
+  const ready=selected&&lan?.enabled&&fresh&&!LAN_ACTION_PENDING&&!BUS_SAVING
+  $('lan-channel').disabled=!ready||!lan?.paired||!!lan?.busy||!S?.maintenance
+  $('lan-channel-save').disabled=$('lan-channel').disabled
+  $('lan-cancel').disabled=!selected||!lan?.enabled||LAN_ACTION_PENDING||BUS_SAVING
+  if(!LAN_CHANNEL_DIRTY&&document.activeElement!==$('lan-channel')) $('lan-channel').value=String(lan?.current_channel??-1)
+  const current=lan?.current_channel>=0?' · 当前通道 '+(lan.current_channel+1):' · 当前装料通道待确认'
+  $('lan-state').textContent=!lan?.enabled?'保存并重启后启用局域网':!fresh?'设备状态未更新，可尝试停止局域网换料':
+    (lan.state||(!lan.connected?'等待连接':!lan.paired?'已连接，等待打印机状态':'已配对'))+
+    (lan.paired?current:'')+(lan.target_channel>=0&&lan.busy?' → 通道 '+(lan.target_channel+1):'')+
+    (lan.error?' · '+lan.error:'')
+}
+
+/**
+ * 提交通道确认或停止局域网换料请求
+ * @param {string} action channel 表示确认当前通道，cancel 表示停止
+ * @return {Promise<void>} 请求完成后的 Promise
+ * 请求不直接启动电机，成功后以状态轮询确认主循环处理结果
+ */
+const submitLanAction=async(action)=>{
+  if(LAN_ACTION_PENDING||$(action==='channel'?'lan-channel-save':'lan-cancel').disabled) return
+  LAN_ACTION_PENDING=true;renderLanStatus()
+  const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),5000)
+  try{
+    const r=await fetch('/api/lan/'+action,{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:action==='channel'?new URLSearchParams({channel:$('lan-channel').value}).toString():''})
+    const d=await r.json()
+    if(!r.ok||!d.ok) throw Error(d.msg||'请求失败')
+    LAN_CHANNEL_DIRTY=false;toast(d.msg);await refreshStatus()
+  }catch(e){toast(e.name==='AbortError'?'请求超时，请检查设备状态':e.message,6000)}
+  finally{clearTimeout(timer);LAN_ACTION_PENDING=false;renderLanStatus()}
 }
 
 // ---------- I2C 总线配置 ----------
@@ -2629,6 +2736,7 @@ const MAIN_LOG_TYPES = [
   {type: 'printer', label: '打印机', color: '#60a5fa'},
   {type: 'autoload', label: '自动进料', color: '#2dd4bf'},
   {type: 'bus', label: 'BambuBus', color: '#facc15'},
+  {type: 'lan', label: '局域网 / MQTT', color: '#22d3ee'},
   {type: 'pause-test', label: '暂停实验', color: '#fb7185'},
   {type: 'settings', label: '设置/存储', color: '#fb923c'},
   {type: 'i2c', label: 'I2C/环境', color: '#a3e635'},
@@ -2783,7 +2891,7 @@ class LogRing {
 const LOGS=[new LogRing(0),new LogRing(1)]
 
 /**
- * 从原始主板日志行中读取模块类型，认证原始帧与总线状态归入 BambuBus
+ * 从原始主板日志行识别模块，局域网 MQTT 归入 lan，认证原始帧与总线状态归入 BambuBus
  * @param {string} line 原始日志行
  * @return {string} 已定义的模块类型，未识别时返回 system
  */

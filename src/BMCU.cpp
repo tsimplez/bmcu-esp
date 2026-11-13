@@ -19,6 +19,7 @@
 #include "log_bus.h"
 #include "i2c_bus.h"
 #include "BambuBus.h"
+#include "lan_ams.h"
 
 namespace {
 constexpr uint32_t CHANNEL_SWITCH_DELAY_MS = 100; // 通道切换后的运动稳定期
@@ -121,6 +122,7 @@ static const char *motor_source_name(const MotorSource source) {
         case MOTOR_PRINTER: return "打印机";
         case MOTOR_MANUAL: return "手动";
         case MOTOR_AUTOLOAD: return "微动辅助";
+        case MOTOR_LAN: return "局域网换料";
         default: return "空闲";
     }
 }
@@ -193,7 +195,7 @@ bool BMCU_channel_motor_ready(const int motorNum) {
 
 /**
  * 启动排队中的电机动作
- * 在并发上限内依次启动队首；丢弃无效接线及已结束、换通道或缺料的打印机任务
+ * 在并发上限内依次启动队首；丢弃无效接线及已结束、换通道或缺料的打印机任务，局域网任务另按当前会话校验
  */
 static void run_motor_queue() {
     while (motor_queued && BMCU_running_count() < MOTOR_LIMIT) {
@@ -204,6 +206,10 @@ static void run_motor_queue() {
         }
         // 该通道没有电机引脚：丢掉这次请求，别让它卡住后面的排队动作
         if (!BMCU_channel_motor_ready(job.channel)) {
+            remove_job(0);
+            continue;
+        }
+        if (job.source == MOTOR_LAN && !lan_ams_motor_allowed(job.channel)) {
             remove_job(0);
             continue;
         }
@@ -336,9 +342,10 @@ void BMCU_apply_channel_modes() {
 /**
  * 判断当前是否允许维护操作
  * @return true 表示可以安全修改配置或升级
- * 要求没有电机排队或运行、所有通道处于停止且打印机状态为 waiting
+ * 要求没有电机排队或运行、所有通道处于停止且打印机状态为 waiting；局域网换料等待确认时也禁止维护
  */
 bool BMCU_can_maintain() {
+    if (lan_ams_busy()) return false;
     // 手动维护不再因为打印机总线近期有通信而被拒绝，只检查本地运动状态
     if (BMCU_running_count() || motor_queued) return false;
     for (int i = 0; i < active_channel_count(); i++) {
@@ -360,10 +367,11 @@ int BMCU_running_count() {
 
 /**
  * 查询打印机总线故障状态
- * @return true 表示总线超时并已阻止打印机动作
- * 返回最近一次总线合法性判断的结果
+ * @return true 表示当前通信或换料故障已阻止打印机动作
+ * 有线模式返回最近一次总线合法性判断，局域网模式返回当前连接及换料故障
  */
 bool BMCU_printer_bus_fault() {
+    if (lan_ams_enabled()) return lan_ams_status().fault;
     return printer_bus_fault;
 }
 
@@ -470,9 +478,10 @@ void BMCU_request_stop_motor(const int motorNum) {
  * @param cmd 1=进料，-1=退料
  * @param duration_ms 点动时长（毫秒）
  * @return true 表示已加入电机队列，等待主循环启动
- * 只检查本地运行、停止请求、排队和引脚状态；后续打印机请求可以接管本通道
+ * 检查本地运行、停止请求、排队和引脚状态，局域网换料期间拒绝点动；后续有线打印机请求可以接管本通道
  */
 bool BMCU_manual_pulse(const int motorNum, const int cmd, const uint32_t duration_ms) {
+    if (lan_ams_busy()) return false;
     if (!is_active_channel(motorNum) || (cmd != 1 && cmd != -1) || !duration_ms ||
         duration_ms >= MAX_PULSE_MS)
         return false;
@@ -491,7 +500,7 @@ bool BMCU_manual_pulse(const int motorNum, const int cmd, const uint32_t duratio
  * @param duration_ms 限时动作时长，0 表示不自动停止
  * @return true 表示命令已执行或已排队
  * 打印机可接管本通道；同方向不重复驱动，反方向直接切换，同来源重复命令不续期
- * 并发名额不足时按通道合并排队，实际启动后才计算时长；故障总线不能启动打印机任务
+ * 并发名额不足时按通道合并排队，实际启动后才计算时长；故障总线不能启动打印机任务，局域网任务仅允许当前会话通道
  */
 bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const uint32_t duration_ms) {
     if (!valid_channel(motorNum) || cmd < -1 || cmd > 1) return false;
@@ -512,6 +521,10 @@ bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const
     }
     if (!is_active_channel(motorNum)) return false;
     if (!BMCU_channel_motor_ready(motorNum)) return false;
+    if (source == MOTOR_LAN && (!lan_ams_enabled() || !lan_ams_motor_allowed(motorNum) ||
+                               CHANNEL_MODE[motorNum] == CHANNEL_MODE_OFFLINE)) return false;
+    if (lan_ams_enabled() && source == MOTOR_PRINTER) return false;
+    if (lan_ams_busy() && source != MOTOR_LAN) return false;
     if (source == MOTOR_PRINTER && printer_bus_fault) return false;
     const int pos = queue_position(motorNum);
     if (source != MOTOR_PRINTER &&
@@ -566,7 +579,7 @@ void BMCU_apply_pullback_timeout(const int motorNum, const uint32_t previous_tim
 
 /**
  * 处理停止请求和限时电机
- * 先处理网页停止请求，再停止已到期的限时动作；队列等本轮打印机状态处理完成后再启动
+ * 先处理网页停止请求，局域网换料期间同时取消整个会话，再停止已到期的限时动作；队列等本轮打印机状态处理完成后再启动
  */
 static void motor_tick() {
     const uint32_t now = millis();
@@ -574,6 +587,7 @@ static void motor_tick() {
         auto &ch = channel_state[i];
         auto &m = ch.motor;
         if (ch.stop_requested) {
+            if (lan_ams_busy()) lan_ams_cancel();
             BMCU_stop_motor(i);
             continue;
         }
@@ -772,9 +786,14 @@ float AS5600_get_speed(const uint8_t channel) {
 /**
  * 在主循环轮询五通总微动，下降沿触发当前空闲电机进料 200ms
  * 使用配置的真实或扩展输入；未配置、扩展器离线时跳过，首次有效读数只建立基线；通道无料时不进料
+ * 局域网只使用已确认且状态新鲜的装料通道，换料期间不触发辅助进料
  * 本函数由运动调度调用，不是硬件中断回调
  */
 static void switchInterrupt() {
+    if (lan_ams_busy()) {
+        lastSwitchState = -1;
+        return;
+    }
     const int pin = IO_CONFIG.switch_pin;
     if (pin == PIN_NONE || (IS_PCF8575_VIRTUAL_PIN(pin) && !PCF8575_pin_is_online(pin))) {
         lastSwitchState = -1;
@@ -782,7 +801,7 @@ static void switchInterrupt() {
     }
     const int switchState = digitalRead_PCF8575(pin);
     if (switchState == LOW && lastSwitchState > LOW) {
-        int n = get_now_filament_num();
+        const int n = lan_ams_enabled() ? lan_ams_active_channel() : get_now_filament_num();
         if (is_active_channel(n) && is_filament_online(n) && !channel_state[n].motor.direction)
             motorCmd(n, 1, MOTOR_AUTOLOAD, 200);
     }
@@ -793,9 +812,10 @@ static void switchInterrupt() {
  * 判断通道是否禁止微动辅助进料
  * @param motorNum 通道编号
  * @return true 表示当前不能触发辅助进料
- * 非自动模式、无微动输入、正被手动或打印机占用时返回 true
+ * 非自动模式、无微动输入、正被手动或打印机占用以及局域网换料期间返回 true
  */
 static bool autoload_blocked(const int motorNum) {
+    if (lan_ams_busy()) return true;
     if (!is_active_channel(motorNum)) return true;
     if (CHANNEL_MODE[motorNum] != CHANNEL_MODE_AUTO) return true; // 仅自动模式触发
     if (IO_CONFIG.microswitch[motorNum] == PIN_NONE) return true; // 无真实微动输入
@@ -887,12 +907,19 @@ void BMCU_init() {
 
 /**
  * BMCU主运行逻辑
- * 先应用待处理接线，再处理停止请求、打印机目标和共用队列；总线故障取消打印机运行及排队，保留本地手动任务
+ * 先应用待处理接线，再处理停止请求、打印机目标和共用队列；有线总线故障取消打印机运行及排队，保留本地手动任务
+ * 双空接线时由局域网会话提供换料目标，跳过有线状态机，仍使用共用定时和队列保护
  */
 void BMCU_run() {
     if (io_apply_pending) apply_io_config();
     motor_tick();
     PCF8575_poll();
+    if (lan_ams_enabled()) {
+        lan_ams_run();
+        switchInterrupt();
+        run_motor_queue();
+        return;
+    }
     const int bus_stu = BambuBus_run();
     if (bus_stu < 0) {
         if (!printer_bus_fault)

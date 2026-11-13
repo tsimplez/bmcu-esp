@@ -43,6 +43,8 @@ int OTA_NOTIFY = DEFAULT_OTA_NOTIFY;
 IoConfig IO_CONFIG = {};
 // 启动时从设置加载；未校准前默认关闭霍尔停转检测
 HallDetectionConfig HALL_DETECTION[IO_CONFIG_MAX_CHANNELS] = {};
+// 局域网打印机凭据和换料参数；与其他设置一起保存，访问码不写日志
+LanAmsConfig LAN_AMS_CONFIG = DEFAULT_LAN_AMS_CONFIG;
 // BambuBus 串口 RX/TX 和 RS485 DE 引脚；启动时从设置加载
 int BUS_RX = hal_default_project_preset().bus.rx;
 int BUS_TX = hal_default_project_preset().bus.tx;
@@ -202,9 +204,52 @@ bool settings_hall_detection_valid(const HallDetectionConfig &config) {
 }
 
 /**
+ * 校验局域网打印机凭据和换料参数
+ * @param config 待检查的局域网配置
+ * @param require_credentials true 时必须完整填写打印机凭据
+ * @return true 表示字符串、IPv4 地址、访问码、序列号和参数范围均合法
+ * 凭据允许全部为空但不允许部分为空；IPv4 必须为四段十进制数字，不接受前导零或多余字符
+ */
+bool settings_lan_config_valid(const LanAmsConfig &config, const bool require_credentials) {
+    if (!memchr(config.printer_ip, '\0', sizeof(config.printer_ip)) ||
+        !memchr(config.access_code, '\0', sizeof(config.access_code)) ||
+        !memchr(config.serial, '\0', sizeof(config.serial)) ||
+        config.feed_ms < 100 || config.feed_ms >= MAX_PULSE_MS ||
+        config.nozzle_temp < 170 || config.nozzle_temp > 300) return false;
+    if (!config.printer_ip[0] && !config.access_code[0] && !config.serial[0])
+        return !require_credentials;
+    if (!config.printer_ip[0] || strlen(config.access_code) != 8 || !config.serial[0]) return false;
+
+    const char *p = config.printer_ip;
+    for (int segment = 0; segment < 4; ++segment) {
+        const char *start = p;
+        unsigned value = 0;
+        while (*p >= '0' && *p <= '9') {
+            value = value * 10 + static_cast<unsigned>(*p++ - '0');
+            if (value > 255 || p - start > 3) return false;
+        }
+        if (p == start || (p - start > 1 && *start == '0')) return false;
+        if (segment == 3) {
+            if (*p) return false;
+        } else if (*p++ != '.') {
+            return false;
+        }
+    }
+    const char *values[] = {config.access_code, config.serial};
+    for (const char *value : values) {
+        for (; *value; ++value) {
+            const char c = *value;
+            if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')))
+                return false;
+        }
+    }
+    return true;
+}
+
+/**
  * 校验并应用设置到运行期变量
  * @param data 从存储或快照得到的设置
- * 逐项检查范围后更新全局配置；各 AMS 身份和霍尔检测独立校验，保留未启用通道的配置
+ * 逐项检查范围后更新全局配置；各 AMS 身份、霍尔检测和局域网配置独立校验，保留未启用通道的配置
  * I2C 仅由 SDA/SCL 决定，接线无效时恢复平台默认映射
  */
 static void apply_settings_values(const SettingsData& data) {
@@ -254,6 +299,7 @@ static void apply_settings_values(const SettingsData& data) {
     OTA_URL[OTA_URL_MAX - 1] = 0;  // 强行截断，防止 NVS 里出现没有结束符的脏数据
     MOTOR_LIMIT = data.motor_limit >= 1 && data.motor_limit <= IO_CONFIG_MAX_CHANNELS
                       ? min(static_cast<int>(data.motor_limit), active_channel_count()) : 1;
+    LAN_AMS_CONFIG = settings_lan_config_valid(data.lan_ams) ? data.lan_ams : DEFAULT_LAN_AMS_CONFIG;
 
     // 先加载整组候选接线，再交叉校验，避免用旧总线引脚误判新配置
     const IoConfig loaded = data.io_config;
@@ -323,7 +369,7 @@ void settings_load_from_flash() {
 /**
  * 生成当前设置快照
  * @return 包含所有运行期设置及 CRC32 的 SettingsData
- * 收集当前生效参数、全部 AMS 身份、霍尔检测和接线配置；I2C 只存两根引脚，计算 checksum 后返回副本
+ * 收集当前生效参数、全部 AMS 身份、霍尔检测、局域网和接线配置；I2C 只存两根引脚，计算 checksum 后返回副本
  */
 SettingsData settings_snapshot() {
     SettingsData data = {};
@@ -352,6 +398,7 @@ SettingsData settings_snapshot() {
     data.bus_rx = BUS_RX; data.bus_tx = BUS_TX; data.bus_de = BUS_DE;
     memcpy(data.ams_version, AMS_VERSION, sizeof(AMS_VERSION));
     memcpy(data.hall_detection, HALL_DETECTION, sizeof(HALL_DETECTION));
+    data.lan_ams = LAN_AMS_CONFIG;
     data.checksum = calculate_crc32(&data);
     return data;
 }
@@ -378,9 +425,10 @@ bool settings_save_to_flash() {
  * 保存候选设置并完整回读校验
  * @param candidate 已完成范围和接线校验的候选设置
  * @return true 表示写入成功且回读完全一致
- * 校验全部霍尔检测参数并重算魔数和 CRC，不修改运行期设置，供项目切换在重启后统一生效
+ * 校验全部霍尔检测和局域网参数并重算魔数和 CRC，不修改运行期设置，供项目切换在重启后统一生效
  */
 bool settings_save_snapshot(const SettingsData &candidate) {
+    if (!settings_lan_config_valid(candidate.lan_ams)) return false;
     for (const auto &config : candidate.hall_detection)
         if (!settings_hall_detection_valid(config)) return false;
     SettingsData data = candidate;
@@ -396,7 +444,8 @@ bool settings_save_snapshot(const SettingsData &candidate) {
 
 /**
  * 恢复所有设置默认值
- * 接线和 AMS 数量复用平台默认项目；霍尔检测默认关闭，全部 AMS 使用自动序列号和默认版本，OTA 恢复默认发布目录
+ * 接线和 AMS 数量复用平台默认项目；霍尔检测使用默认值，全部 AMS 使用自动序列号和默认版本，OTA 恢复默认发布目录
+ * 清空局域网配对凭据并恢复默认换料参数
  * 本函数不直接写存储
  */
 void settings_reset_to_defaults() {
@@ -412,6 +461,7 @@ void settings_reset_to_defaults() {
     MOTOR_LIMIT = 1;
     RS485_MODE = hal_default_project_preset().bus.mode;
     BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
+    LAN_AMS_CONFIG = DEFAULT_LAN_AMS_CONFIG;
     memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL));
     for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
         AMS_VERSION[ams][0] = DEFAULT_AMS_VERSION_MAJOR;
@@ -456,15 +506,19 @@ static const char *channel_mode_name(const int mode) {
 
 /**
  * 打印当前全部设置
- * 启动和保存设置时，把总线、各 AMS 身份、通道接线、霍尔检测和 OTA 等参数写入主板日志
+ * 启动和保存设置时，把总线、各 AMS 身份、通道接线、霍尔检测、局域网和 OTA 等参数写入主板日志，不输出访问码
  */
 void settings_log_all() {
     LOG_MAIN("[settings] 进料停止延迟=%dms，五通总微动=%s", FEED_STOP_DELAY_MS,
              io_config_pin_label(IO_CONFIG.switch_pin).c_str());
     LOG_MAIN("[settings] RS485 收发模式=%d，BambuBus 原始报文日志=%s",
              RS485_MODE, BUS_LOG_ENABLE ? "已启用" : "已关闭");
-    LOG_MAIN("[settings] BambuBus RX=IO%d，TX=IO%d，DE=IO%d（%s）", BUS_RX, BUS_TX, BUS_DE,
-             RS485_MODE == RS485_MODE_DE ? "占用" : "不占用");
+    LOG_MAIN("[settings] BambuBus RX=%s，TX=%s，DE=%s（%s）", io_config_pin_label(BUS_RX).c_str(),
+             io_config_pin_label(BUS_TX).c_str(), io_config_pin_label(BUS_DE).c_str(),
+             io_config_bus_enabled() && RS485_MODE == RS485_MODE_DE ? "占用" : "不占用");
+    LOG_MAIN("[settings] 通信方式=%s，局域网凭据=%s，送料=%lums，换料温度=%u℃",
+             io_config_bus_enabled() ? "BambuBus" : "局域网", LAN_AMS_CONFIG.printer_ip[0] ? "已配置" : "未配置",
+             static_cast<unsigned long>(LAN_AMS_CONFIG.feed_ms), static_cast<unsigned>(LAN_AMS_CONFIG.nozzle_temp));
     for (uint8_t ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
         char serial[AMS_SERIAL_LENGTH + 1];
         settings_get_ams_serial(ams, serial);

@@ -116,7 +116,7 @@ const char *hal_project_target() {
 /**
  * 获取平台默认项目接线
  * @return 生命周期覆盖整个固件运行期的默认预设
- * C3 复用项目表；原生 USB 板保留 UART 适配，其他平台沿用现有默认值
+ * C3 复用项目表；原生 USB 板保留 UART 适配，其他平台由默认电机和微动数组生成接线及通道数
  */
 const ProjectPreset &hal_default_project_preset() {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
@@ -129,18 +129,13 @@ const ProjectPreset &hal_default_project_preset() {
     return native_usb;
 #endif
 #else
-    static ProjectPreset preset = {"", "平台默认", hal_project_target(), DEFAULT_AMS_COUNT,
-        {PIN_BUS_RX, PIN_BUS_TX, PIN_BUS_DE, DEFAULT_RS485_MODE, PIN_NONE, PIN_NONE},
-        IO_CONFIG_MAX_CHANNELS, {}};
-    static const int motors[IO_CONFIG_MAX_CHANNELS][2] = {
+    static constexpr int motors[IO_CONFIG_MAX_CHANNELS][2] = {
         MOTOR_PINS_1_4, MOTOR_PINS_5_8, MOTOR_PINS_9_12, MOTOR_PINS_13_16};
-    static const int switches[IO_CONFIG_MAX_CHANNELS] = {
+    static constexpr int switches[IO_CONFIG_MAX_CHANNELS] = {
         MSW_PINS_1_4, MSW_PINS_5_8, MSW_PINS_9_12, MSW_PINS_13_16};
-    for (int ch = 0; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
-        preset.pins[ch][0] = motors[ch][0];
-        preset.pins[ch][1] = motors[ch][1];
-        preset.pins[ch][2] = switches[ch];
-    }
+    static const ProjectPreset preset = {"", "平台默认", hal_project_target(), DEFAULT_AMS_COUNT,
+        {PIN_BUS_RX, PIN_BUS_TX, PIN_BUS_DE, DEFAULT_RS485_MODE, PIN_NONE, PIN_NONE},
+        {motors, switches}};
     return preset;
 #endif
 }

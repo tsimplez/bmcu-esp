@@ -48,6 +48,19 @@ extern HallDetectionConfig HALL_DETECTION[IO_CONFIG_MAX_CHANNELS];
 
 bool settings_hall_detection_valid(const HallDetectionConfig &config);
 
+struct LanAmsConfig {
+    char printer_ip[16];           // 打印机 IPv4 地址，空表示尚未配对
+    char access_code[9];           // 8 位局域网访问码，设置页明文显示，禁止写入日志
+    char serial[32];               // 打印机序列号，用于 MQTT 主题
+    uint32_t feed_ms;              // 局域网换料时的电机送料时长
+    uint16_t nozzle_temp;          // 局域网换料温度，单位摄氏度
+};
+
+constexpr LanAmsConfig DEFAULT_LAN_AMS_CONFIG = {"", "", "", 6000, 250};
+extern LanAmsConfig LAN_AMS_CONFIG;
+
+bool settings_lan_config_valid(const LanAmsConfig &config, bool require_credentials = false);
+
 // 设置数据结构
 struct SettingsData {
     int32_t pullback_timeout[16];    // 16个电机的退料时间（秒）
@@ -72,10 +85,11 @@ struct SettingsData {
     int32_t bus_de;                  // RS485 DE 方向控制引脚；RXTX 模式下不使用
     int32_t ams_version[AMS_IDENTITY_COUNT][4]; // 各 AMS 版本（A.B.C.D，每段 0..255）
     HallDetectionConfig hall_detection[IO_CONFIG_MAX_CHANNELS]; // 各通道的双阈值与无转动超时
+    LanAmsConfig lan_ams;            // 局域网打印机凭据和换料参数
 };
 
-// 当前布局包含霍尔检测参数；旧布局均恢复整份默认设置，不迁移
-#define SETTINGS_MAGIC_NUMBER    0x5341542F
+// 当前布局包含局域网打印机配置；旧布局均恢复整份默认设置，不迁移
+#define SETTINGS_MAGIC_NUMBER    0x53415430
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**

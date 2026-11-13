@@ -5,6 +5,8 @@
 #include "log_bus.h"
 #include "env_sensor.h"
 #include "bambu_motion_reference.h"
+#include "lan_ams.h"
+#include "PCF8575_PinMap.h"
 
 // ==================== 接收状态与共享计数 ====================
 // 单帧最大容量：接收组帧、接收队列和发送缓冲区共用该上限
@@ -713,9 +715,10 @@ static int bus_tx_context_type = -1;
  * @param data 待发送数据
  * @param length 数据长度
  * 先占用固定发送槽并复制报文、保存日志类型，再同步发送；TX 日志完成后才释放缓冲
- * 主循环预占请求后调用，忙状态或超出缓冲容量时拒绝写入，避免覆盖在途帧
+ * 主循环预占请求后调用，未配置有线接线、忙状态或超出缓冲容量时拒绝写入，避免覆盖在途帧
  */
 void send_uart(const unsigned char *data, const uint16_t length) {
+    if (!io_config_bus_enabled()) return;
     if (!TX_IDLE || !data || !length || length > sizeof(packge_send_buf)) return;
     TX_IDLE = false;
     if (data != packge_send_buf) memmove(packge_send_buf, data, length);
@@ -723,9 +726,9 @@ void send_uart(const unsigned char *data, const uint16_t length) {
     // RS485_MODE_RXTX（只用 RXD/TXD）时模块自行控制收发方向，不驱动 DE
     const bool drive_de = (RS485_MODE == RS485_MODE_DE);
 
-    if (drive_de) digitalWrite(BUS_DE, 1);
+    if (drive_de) digitalWrite_PCF8575(BUS_DE, HIGH);
     hal_bus_write(packge_send_buf, length);
-    if (drive_de) digitalWrite(BUS_DE, 0);
+    if (drive_de) digitalWrite_PCF8575(BUS_DE, LOW);
     last_bus_tx_ms = millis();
     bus_tx_seen = true;
     if (BUS_LOG_ENABLE) log_bus_hex_typed(LOG_CH_BUS, 'T', context_type, packge_send_buf, length);
@@ -912,18 +915,21 @@ static void BambuBUS_UART_Init(const uint32_t baud) {
 
 /**
  * 初始化 BambuBus 协议层
- * 加载并约束唯一使用通道，复位运动、测试与注册状态、生成身份，再以 1.25Mbps 启动接收回调
+ * 加载并约束唯一使用通道，复位运动、测试与注册状态、生成身份；有线接线完整时以 1.25Mbps 启动接收回调
  * 使用通道仅恢复为待确认记录，不恢复电机动作；仅在启动时调用
  */
 void BambuBus_init() {
     pause_test = PauseTest();
     const bool _init_ready = BambuBus_read();
-    if (RS485_MODE == RS485_MODE_DE) {
-        digitalWrite(BUS_DE, LOW);
-        pinMode(BUS_DE, OUTPUT);
+    if (io_config_bus_enabled() && RS485_MODE == RS485_MODE_DE) {
+        digitalWrite_PCF8575(BUS_DE, LOW);
+        pinMode_PCF8575(BUS_DE, OUTPUT);
     }
-    LOG_MAIN("RS485 模式 = %d (%s)", RS485_MODE,
-             RS485_MODE == RS485_MODE_RXTX ? "仅 RXD/TXD，不驱动 DE" : "RO/DI/RE/DE，DE 控制方向");
+    if (io_config_bus_enabled())
+        LOG_MAIN("RS485 模式 = %d (%s)", RS485_MODE,
+                 RS485_MODE == RS485_MODE_RXTX ? "仅 RXD/TXD，不驱动 DE" : "RO/DI/RE/DE，DE 控制方向");
+    else
+        LOG_MAIN("BambuBus RX/TX 未配置，跳过 UART 和 RS485 方向引脚初始化");
 
     for (int i = 0; i < 4; i++) {
         for (int j = 0; j < 4; j++) {
@@ -1002,7 +1008,8 @@ void BambuBus_init() {
     sync_current_channels();
     refresh_serial_identities();
     // BambuBUS_UART_Init(1228800); // 打印机最新版本用这个 第一次打印有效 long_packge_version_version_and_name_AMS08 需要 1.0.6.87
-    BambuBUS_UART_Init(1250000); // 旧打印机版本 long_packge_version_version_and_name_AMS08 需要 90.0.0.0
+    if (io_config_bus_enabled())
+        BambuBUS_UART_Init(1250000); // 旧打印机版本 long_packge_version_version_and_name_AMS08 需要 90.0.0.0
 }
 
 // ==================== 包处理辅助函数 ====================
@@ -2020,10 +2027,15 @@ static void update_bus_timeouts(const uint32_t now) {
 
 /**
  * 获取打印机连接状态
- * @return 0=尚未收到心跳，1=最近 5 秒有心跳，2=心跳超时
- * 仅表示通信连接状态；超时锁存到下次合法心跳，不会因 millis() 回绕而自动恢复
+ * @return 0=尚未确认连接，1=在线，2=离线或故障
+ * 有线模式使用十秒心跳时效并锁存超时，局域网模式使用已配对连接和当前故障状态
  */
 int BambuBus_printer_status() {
+    if (lan_ams_enabled()) {
+        const auto status = lan_ams_status();
+        if (status.fault) return 2;
+        return status.paired ? 1 : status.age_ms != UINT32_MAX ? 2 : 0;
+    }
     update_bus_timeouts(millis());
     return !heartbeat_seen ? 0 : heartbeat_timed_out ? 2 : 1;
 }
@@ -2049,9 +2061,10 @@ uint32_t BambuBus_rx_dropped_count() {
 /**
  * 读取距最近合法报文的时间
  * @return 毫秒数；从未收到合法报文时返回 UINT32_MAX
- * 供网页显示总线新鲜度
+ * 供网页显示通信新鲜度，局域网模式返回 MQTT 状态报文的年龄
  */
 uint32_t BambuBus_last_valid_packet_age_ms() {
+    if (lan_ams_enabled()) return lan_ams_status().age_ms;
     if (!bus_packet_seen) return UINT32_MAX;
     return millis() - last_bus_packet_ms;
 }
@@ -2060,9 +2073,25 @@ uint32_t BambuBus_last_valid_packet_age_ms() {
  * 读取网页展示的当前打印机通道及动作
  * @return 有效全局通道和动作名；使用记录等待新报文确认时返回 pending，无有效选择时返回 -1 与 none
  * 同时检查通信和本通道运动时间，准备完成不算正在使用；重启或断线保留待确认显示，不驱动电机或改变协议反馈
+ * 局域网模式显示会话实际电机方向或已确认装料通道，不读取有线协议残留状态
  */
 BambuBusCurrentChannelStatus BambuBus_current_channel_status() {
     constexpr BambuBusCurrentChannelStatus none = {.channel = -1, .state = "none"};
+    if (lan_ams_enabled()) {
+        const auto status = lan_ams_status();
+        if (status.busy) {
+            for (int ch = 0; ch < active_channel_count(); ++ch) {
+                const auto motor = BMCU_motor_status(ch);
+                if (motor.source == MOTOR_LAN && motor.direction)
+                    return {ch, motor.direction > 0 ? "feeding" : "retracting"};
+            }
+            if (current_channel_enabled(status.target_channel)) return {status.target_channel, "selected"};
+        }
+        const int active = lan_ams_active_channel();
+        if (current_channel_enabled(active)) return {active, "using"};
+        return current_channel_enabled(status.current_channel)
+            ? BambuBusCurrentChannelStatus{status.current_channel, status.paired ? "selected" : "pending"} : none;
+    }
     const int remembered = data_save.using_filament_num;
     const BambuBusCurrentChannelStatus pending = current_channel_enabled(remembered) &&
         remembered == data_save.BambuBus_now_filament_num
@@ -2089,9 +2118,13 @@ BambuBusCurrentChannelStatus BambuBus_current_channel_status() {
 /**
  * 读取当前允许霍尔检测的唯一使用通道
  * @return 已由新鲜打印机报文确认使用的通道；待确认、离线或其他动作返回 -1
- * 复用网页状态的通信与通道时效检查，持久化记录不能单独启动检测
+ * 复用网页状态的通信与通道时效检查，持久化记录不能单独启动检测；局域网换料期间不检测，空闲时只使用会话确认通道
  */
 int BambuBus_active_using_channel() {
+    if (lan_ams_enabled()) {
+        const int channel = lan_ams_busy() ? -1 : lan_ams_active_channel();
+        return current_channel_enabled(channel) ? channel : -1;
+    }
     const auto [channel, state] = BambuBus_current_channel_status();
     return strcmp(state, "using") == 0 ? channel : -1;
 }
@@ -2100,9 +2133,10 @@ int BambuBus_active_using_channel() {
  * 查找当前允许触发暂停实验的耗材通道
  * @param now 当前毫秒时间
  * @return 正在使用的全局通道；通信或运动状态不满足时返回 -1
- * 同时要求有效心跳、最近一秒的合法报文、非离线模式和正在使用反馈，避免使用旧通道或离线重试
+ * 同时要求有线接线、有效心跳、最近一秒的合法报文、非离线模式和正在使用反馈，避免使用旧通道或离线重试
  */
 static int pause_test_candidate(const uint32_t now) {
+    if (!io_config_bus_enabled()) return -1;
     if (!heartbeat_seen || heartbeat_timed_out || now - last_heartbeat_ms >= 10000u ||
         !bus_packet_seen || bus_packet_timed_out || now - last_bus_packet_ms > 1000u) return -1;
     const int channel = data_save.BambuBus_now_filament_num;
@@ -2117,9 +2151,10 @@ static int pause_test_candidate(const uint32_t now) {
  * 登记网页暂停实验或解除请求
  * @param enable true 请求触发，false 请求解除
  * @return true 表示请求已登记；无可用通道或已有测试请求时拒绝触发
- * 这里只登记目标，由主循环再次校验并执行；解除可重复提交且允许断线登记，但不恢复离线模式或取消待保存
+ * 这里只登记目标，由主循环再次校验并执行；解除可重复提交且允许断线登记，但不恢复离线模式或取消待保存；未配置有线总线时不可用
  */
 bool BambuBus_request_pause_test(const bool enable) {
+    if (!io_config_bus_enabled()) return false;
     if (!enable) {
         pause_test.request = -1;
         return true;
@@ -2206,9 +2241,10 @@ static void pause_test_run(const uint32_t now) {
  * 判断总线最近是否有活动
  * @param quiet_ms 静默时间窗口（毫秒）
  * @return true 表示当前不满足总线静默条件
- * 检查请求预占、发送槽、队列、UART、接收回调及最近收发；残帧静默超过 100ms 后不再阻止保存
+ * 检查请求预占、发送槽、队列、UART、接收回调及最近收发；残帧静默超过 100ms 后不再阻止保存，未配置有线接线时不查询 UART
  */
 bool BambuBus_recent_activity(const uint32_t quiet_ms) {
+    if (!io_config_bus_enabled()) return false;
     // 回调尚未退出时，即使 UART 已读空或帧还未发布也不能开始保存
     const uint32_t callback_seq = hal_atomic_load_u32(&rx_callback_seq);
     if ((callback_seq & 1u) || !TX_IDLE || bus_request_active) return true;
@@ -2285,9 +2321,10 @@ static void log_auth_request(uint8_t *frame, const uint16_t length, const int ty
  * @return 0=无帧、发送忙或忽略其它设备帧，1=处理了本机合法帧，2=错误帧，-1=合法通信超时
  * 发送槽空闲时才预占并解析队首，每轮最多处理一帧；全部回复及日志完成后释放请求和缓冲
  * 发送忙时不消费请求、不改变业务状态，仍更新通信超时；保存由独立后台入口执行
- * 每轮维护暂停实验的请求和故障锁存；有效 0x040D/0x040E 请求独立写入主板日志，不执行认证应答
+ * 每轮维护暂停实验的请求和故障锁存；有效 0x040D/0x040E 请求独立写入主板日志，不执行认证应答；没有有线接线时不处理协议
  */
 int BambuBus_run() {
+    if (!io_config_bus_enabled()) return 0;
     sync_current_channels();
     int stu = 0;
     const uint32_t now = millis();
@@ -2376,8 +2413,10 @@ int BambuBus_run() {
  * 每轮先更新一秒冷却标记，再检查收发静默；写入并回读成功才清除待保存标记，失败下轮限频重试
  * 离线模式经设置存储的 CRC 和回读校验成功后才解除堵转；失败继续锁存并每秒重试
  * 用户在网页恢复模式后取消离线待保存，避免后台重新覆盖用户选择；冷却到期锁存为就绪
+ * 局域网换料期间推迟写入，避免阻塞本地电机定时
  */
 void BambuBus_save_run() {
+    if (lan_ams_busy()) return;
     static bool cooling_down = false;
     static uint32_t save_finished_ms = 0;
     const uint32_t now = millis();

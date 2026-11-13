@@ -51,12 +51,13 @@ enum MotorSource {
     MOTOR_IDLE, // 空闲
     MOTOR_PRINTER, // 打印机
     MOTOR_MANUAL, // 手动
-    MOTOR_AUTOLOAD // 微动辅助
+    MOTOR_AUTOLOAD, // 微动辅助
+    MOTOR_LAN // 局域网换料
 };
 
 struct MotorStatus {
     int direction; // 当前方向：1=进料，-1=退料，0=停止
-    MotorSource source; // 当前动作来源：打印机、手动点动或微动辅助进料
+    MotorSource source; // 当前动作来源：打印机、手动点动、微动辅助或局域网换料
     int32_t remaining_ms; // -1 表示结束时间由打印机决定
     int queue_position; // 0=未排队，1=下一个执行
     int queued_direction; // 排队任务的目标方向：1=进料，-1=退料，0=无排队任务

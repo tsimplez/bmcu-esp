@@ -17,6 +17,9 @@ struct IoBusConfig {
     int rx, tx, de, mode, sda, scl;
 };
 
+// RX/TX 均已配置时启用有线总线；仅查询配置，不替代完整接线校验
+bool io_config_bus_enabled(const IoBusConfig *bus = nullptr);
+
 // 生成当前平台的固件默认映射
 void io_config_set_defaults(IoConfig &config);
 
@@ -43,6 +46,6 @@ bool io_config_validate(const IoConfig &config, int active_channels, String *err
 void io_config_append_pin_options(String &json, bool i2c_only = false);
 void io_config_append_hall_pin_options(String &json);
 
-// 总线接线只允许主控 GPIO；模式 1 不占用 DE
+// 有线总线只允许主控 GPIO；模式 1 不占用 DE，ESP32 双空 RX/TX 时使用局域网且不占用 DE
 bool io_config_bus_validate(int rx, int tx, int de, int mode, int sda, int scl,
                             const IoConfig &config, int active_channels, String *error = nullptr);

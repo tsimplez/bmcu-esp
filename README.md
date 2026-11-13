@@ -58,7 +58,7 @@
 2. 电脑使用typec连接好esp32
 3. 打开 [在线烧录网站](https://web.esphome.io)
 4. 点击连接 -> 左上角选择串行端口 -> 点击安装（在 准备首次使用 旁边） -> 选择下载好的固件安装就可以了
-5. 最后连接esp32 的 wifi（BMCU_xxxxxx）访问 [192.168.4.1](http://192.168.4.1)
+5. 最后连接esp32 的 wifi（BMCU_xxxxxx）访问 [192.168.4.1](http://192.168.4.1) 或 [http://bmcu.local](http://bmcu.local)
 
 ## BOM清单
 也可以看这个清单 https://b.242499.xyz/bmcu
@@ -157,45 +157,6 @@ setup():  控制台/看门狗/日志 → 加载设置 → 释放 USB 焊盘 → 
 loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_config_run（网页） → yield()
 ```
 
-### 平台适配层（`platform.h` / `platform.cpp`）
-
-- 引脚映射：按 `CONFIG_IDF_TARGET_ESP32C3` / `ARDUINO_ARCH_ESP32` / RP2040 分组，未使用的通道用 `PIN_NONE(255)` 占位
-- 非易失存储：ESP32 用 NVS（命名空间 `settings` / `filament`），RP2040 用片内 Flash 固定偏移，接口统一为 `hal_storage_read/write`
-- 总线串口：ESP32 用 `Serial1`（事件回调，RX 缓冲 2048），RP2040 用 `uart0`（中断），均为 8E1
-- 看门狗、I2C、控制台串口均在此层实现
-
-### 设置存储（`settings_storage`）
-
-- 运行期设置包括：退料超时、通道模式、AMS 数量、手动点动时长、微动辅助进料时长、进料停止延迟、电机并发上限、RS485 模式、报文日志开关、序列号后缀、AMS 版本、OTA 源与提示开关、含五通总微动的 IO 引脚配置、I2C 接线、总线接线
-- 当前设置格式为 `0x5341542F`，包含霍尔接线与各通道停转检测参数；旧格式会恢复整份默认设置，包括接线和 AMS 数量，不迁移历史记录。耗材记录格式同步升为 `2`，旧耗材记录也恢复默认值，包括耗材信息和当前通道；升级前应记录现有配置
-- `GET/POST /api/settings` 的 `feed_stop_delay_ms` 对应 `FEED_STOP_DELAY_MS`，范围 0～29999 毫秒，默认 1000，0 表示立即停车。保存后用于下一次安排延迟停车，已开始的延迟保持原截止时间；显式停止请求仍立即停车
-- `GET /api/settings` 的 `io.switch_pin` 返回五通总微动输入；保存时用 `io_switch` 与全部启用通道的 `io_mfN`、`io_mbN`、`io_swN` 一起提交。支持 GPIO、PCF8575 输入和 255（无），不允许与通道、UART 或 I2C 引脚重复。`PIN_SWITCH` 只作为平台默认值：C3 和 Pico 为“无”（Pico GPIO0 用于 UART0 TX），S3 为 GPIO42
-- `GET /api/settings` 的 `ams_identity` 返回四个对象：`index`（0..3）、`serial`（自定义后缀）、`effective_serial`（实际完整序列号）、`ams_version`、`enabled`。保存单台使用 `POST /api/settings` 的 `ams_index` 加 `serial` / `ams_version`；`ams` 仍表示数量，身份字段缺少编号会被拒绝
-- 记录带格式标识（`SETTINGS_MAGIC_NUMBER`）与 CRC32；仅加载当前格式，格式不匹配或校验失败即恢复默认值，不迁移历史记录
-- 保存失败时用内存快照回退，避免读到不完整 Flash
-- 启动与保存后都会把生效设置打印到主板日志，便于排查
-
-### 霍尔停转检测（`hall_sensor`）
-
-- 在各通道「49E 霍尔」标题旁点击「检测设置」，设置 ADC 下限、上限和无转动超时；三项一起保存，写入并回读校验成功才生效。下限与上限须满足 `0 ≤ 下限 < 上限 ≤ 4095`；超时范围 `0..3600` 秒，`0` 关闭检测，默认 `1000 / 3000 / 0`，各通道独立保存
-- 图上始终显示标有数值的两条阈值虚线，自动纵轴包含两条线；关闭检测或尚无采样时也可查看已保存阈值。请根据实际安装后的原始曲线设置上下限，避免使用一秒或五秒均值判断磁极变化
-- 固件以原始 ADC 采样进行双阈值检测：连续三次 `≤ 下限` 或 `≥ 上限` 才确认所在区域；首次确认只建立基准，之后确认从低区到高区或从高区到低区才刷新转动时间。持续停在高区、低区或中间区都会超时；短暂尖峰不会刷新计时
-- 只有打印机以新鲜报文确认「当前使用」的一个通道执行判断，其他通道继续采样、显示统计和每秒日志。超时从首次有效采样开始；切换通道、检测参数或霍尔接线后重新计时；读取失败、ADC 初始化失败或超过 500 ms 无采样单独显示采样异常，恢复采样后重新计时
-- 当前使用通道全局唯一，编号保存在耗材记录中，由后台限频保存并回读校验；重启或通信失效时显示「使用通道 · 等待确认」，收到新的使用报文才开始检测。普通轮询保留待确认记录，明确停止、退料、切换、通道离线或缩减启用数量会清除相应使用记录；不会恢复电机动作或累计关机时间
-- 超时和恢复移动各记录一次主板日志，网页显示固件状态；`hall_sensor_detection_status()` 提供当前检测快照，`hall_sensor_last_event()` 提供最新事件及启动内递增序号，查询不消费事件。后续调用方应按序号去重，并重新检查活动通道和状态；当前仅提示，**不调用 `BambuBus_request_pause_test()`，不自动暂停打印**
-- `GET /api/settings` 的 `hall_detection` 数组按全局通道顺序返回 `lower`、`upper`、`timeout_s`；`POST /api/hall/detection` 使用表单字段 `channel`（从 0 开始）、`pin`（打开弹框时的霍尔引脚）、`lower`、`upper`、`timeout_s`。通道或数值错误返回 400，接线已变更或无有效 ADC 引脚返回 409，写入或回读失败返回 500 且保留原运行配置；成功返回 `ok`、`channel`、`pin` 和 `detection`
-- `GET /api/hall` 每通道的 `detection` 包含上述配置、`state` 和 `idle_ms`，状态为 `inactive`、`pending`、`waiting`、`monitoring`、`timeout` 或 `sensor_error`；顶层 `event` 包含 `sequence`、`channel`、`type`，事件类型为 `none`、`timeout`、`recovered`、`sensor_error` 或 `sensor_restored`。`GET /api/status` 的 `current_channel_state` 增加 `pending`，仅供显示待确认的使用记录
-
-### 日志总线（`log_bus`）
-
-- 两路固定大小环形缓冲：主板日志（`LOG_MAIN`）与 BambuBus 原始报文（`LOG_BUS`）
-- 缓冲区大小：ESP32 为主板 4 KB / 总线 64 KB，RP2040 为主板 2 KB / 总线 8 KB
-- 写入永不阻塞（可在中断/事件回调中调用）；网页以游标增量读取，支持清空
-- `LOG_MAIN` 同时输出到串口控制台，`LOG_BUS` 只进缓冲
-- 主板日志按系统/其他、霍尔、电机、打印机、自动进料、BambuBus、暂停实验、设置/存储、I2C/环境、网页/配网和 OTA 升级筛选；支持全选、全不选，并独立保存浏览器勾选状态
-- 霍尔在主循环中每通道首次采样及此后每秒记录一次当前 ADC 原始值或读取失败，包含通道编号和 IO 引脚；未配置的通道不记录，正常采样仍为每通道每秒 20 次
-- BambuBus 报文按报文类型过滤显示；「抓取 30 秒」在前端按当前勾选的显示类型抓取未来 30 秒的报文，抓完自动下载 `.log` 文件；两路日志的普通「下载」均包含当前通道的全部浏览器缓存，不受显示筛选影响
-
 ## 网页管理
 
 仅 ESP32 平台生效，RP2040 为空实现（不影响编译）
@@ -212,7 +173,9 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 |---|---|---|
 | `/api/status` | GET | 运行状态、通道与电机状态、耗材颜色与透明度、并发上限等；`mdns` 为配置名称，`mdns_active` 为实际名称（离线或待更新时为空） |
 | `/api/settings` | GET / POST | 读取 / 保存通道参数 |
-| `/api/bus` | POST | 保存 BambuBus 接线与 RS485 模式 |
+| `/api/bus` | POST | 保存 BambuBus 接线与 RS485 模式，或双空 RX/TX 的局域网配对/换料参数，重启生效 |
+| `/api/lan/channel` | POST | 已配对且空闲时确认当前装料通道，`channel` 为 0 基编号或 -1（未知），不启动电机 |
+| `/api/lan/cancel` | POST | 提交停止局域网换料请求，由主循环停车并清除当前通道确认 |
 | `/api/pcf` | POST | 保存 I2C 接线（SDA/SCL 同时有效才启用） |
 | `/api/motor` | POST | 手动进退料（`motor` / `dir` / 可选 `duration`） |
 | `/api/scan` | GET | 扫描 WiFi |
@@ -252,8 +215,7 @@ pio run -t clean             # 清理
 [教程 https://docs.qq.com/doc/DVm9tRkhkSXF1ZGZi](https://docs.qq.com/doc/DVm9tRkhkSXF1ZGZi)
 
 ### Top ams
-之前使用此方案的，可以很方便迁移到本项目（只需要加 1个ttl转485模块）
-- ***不推荐使用的是(mqtt方案)，其他项目都是使用485方案(和打印机直接通信)***
+之前使用此方案的，可以沿用上述局域网换料方式，或增加 TTL 转 RS485 模块后改用有线 BambuBus
 - 功能: 微动
 - 群: 882091399
 - [教程 https://docs.qq.com/doc/DVkZIR0NtYUtsenB6](https://docs.qq.com/doc/DVkZIR0NtYUtsenB6)

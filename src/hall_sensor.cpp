@@ -97,8 +97,7 @@ namespace {
      * 切换通道、配置或接线重新计时；初始化或读取失败、超过五百毫秒无采样单独报错，恢复后重新建立基准
      */
     void update_detector(const uint32_t now, const int sampled_channel, const bool valid, const uint16_t raw) {
-        // const int channel = BambuBus_active_using_channel();
-        const int channel = 0;
+        const int channel = BambuBus_active_using_channel();
         if (channel < 0 || channel >= channel_count || runtime_pins[channel] == PIN_NONE ||
             !settings_hall_detection_valid(HALL_DETECTION[channel]) || !HALL_DETECTION[channel].timeout_s) {
             if (detector.channel >= 0)

@@ -22,6 +22,7 @@
 #include "i2c_bus.h"
 #include "env_sensor.h"
 #include "hall_sensor.h"
+#include "lan_ams.h"
 #include "PCF8575_PinMap.h"
 
 // ============================================================
@@ -361,7 +362,7 @@ static void on_sta_connected() {
 static bool maintenance_required() {
     if (BMCU_can_maintain()) return true;
     server.send(409, "application/json",
-                "{\"ok\":false,\"msg\":\"请先停止所有电机运动\"}");
+                "{\"ok\":false,\"msg\":\"请先停止所有电机运动并结束局域网换料\"}");
     return false;
 }
 
@@ -455,7 +456,7 @@ static String sensor_json_value(bool valid, float value, int digits) {
 
 /**
  * 处理运行状态查询
- * 汇总 WiFi、项目、总线、有效当前通道、暂停实验、电机、耗材和传感器；陈旧通道不会被标为正在使用
+ * 汇总 WiFi、项目、总线、局域网换料、有效当前通道、暂停实验、电机、耗材和传感器；陈旧通道不会被标为正在使用
  * mdns 保留配置名称，mdns_active 返回重名避让后的实际名称，离线或尚未读取时为空
  * filament_colors 按启用的全局通道顺序返回记录中的 #RRGGBB，供网页以不透明圆点显示
  * filament_alpha 按相同顺序返回 0-255 的 A 分量，0 为完全透明，255 为不透明
@@ -486,6 +487,16 @@ static void handle_status() {
     j += ']';
     j += ",\"maxams\":" + String(BMCU_max_ams_count());
     j += ",\"printer\":" + String(BambuBus_printer_status());
+    const auto lan = lan_ams_status();
+    j += ",\"lan_ams\":{\"enabled\":" + String(lan_ams_enabled() ? "true" : "false") +
+         ",\"connected\":" + String(lan.connected ? "true" : "false") +
+         ",\"paired\":" + String(lan.paired ? "true" : "false") +
+         ",\"busy\":" + String(lan.busy ? "true" : "false") +
+         ",\"fault\":" + String(lan.fault ? "true" : "false") +
+         ",\"current_channel\":" + String(lan.current_channel) +
+         ",\"target_channel\":" + String(lan.target_channel) +
+         ",\"age_ms\":" + String(lan.age_ms == UINT32_MAX ? -1 : static_cast<int32_t>(lan.age_ms)) +
+         ",\"state\":\"" + json_escape(lan.state) + "\",\"error\":\"" + json_escape(lan.error) + "\"}";
     const auto current = BambuBus_current_channel_status();
     j += ",\"current_channel\":" + String(current.channel) +
          ",\"current_channel_state\":\"" + String(current.state) + "\"";
@@ -732,7 +743,7 @@ static void handle_hall() {
 
 /**
  * 处理设置读取请求
- * 输出时长、AMS 身份、通道模式、霍尔检测参数及接线和可选引脚；完整序列号与协议共用生成函数
+ * 输出时长、AMS 身份、通道模式、霍尔检测、局域网参数及接线和可选引脚；返回已保存的访问码供设置页直接显示
  */
 static void handle_settings_get() {
     String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
@@ -764,6 +775,11 @@ static void handle_settings_get() {
         j += '}';
     }
     j += "],\"otaurl\":\"" + json_escape(OTA_URL) + "\",\"otanotify\":" + String(OTA_NOTIFY);
+    j += ",\"lan_ams\":{\"printer_ip\":\"" + json_escape(LAN_AMS_CONFIG.printer_ip) +
+         "\",\"serial\":\"" + json_escape(LAN_AMS_CONFIG.serial) +
+         "\",\"access_code\":\"" + json_escape(LAN_AMS_CONFIG.access_code) +
+         "\",\"feed_ms\":" + String(LAN_AMS_CONFIG.feed_ms) +
+         ",\"nozzle_temp\":" + String(LAN_AMS_CONFIG.nozzle_temp) + "}";
     j += ",\"io\":{\"motor\":[";
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
         if (i) j += ',';
@@ -911,39 +927,100 @@ static void handle_pcf_save() {
 }
 
 /**
- * 处理 BambuBus 总线接线保存
- * 校验 RS485 模式与 RX/TX/DE 引脚，写入设置后重启；UART 重启前继续使用旧接线
+ * 保存打印机接线与局域网配对配置
+ * 双空 RX/TX 启用局域网；候选配置校验及写入回读成功后重启，运行期仍保留原接线和凭据
+ * 未提交的凭据保持原值，显式清空时按三个字段全空校验
  */
 static void handle_bus_save() {
-    if (!server.hasArg("rx") || !server.hasArg("tx") || !server.hasArg("mode") ||
-        !valid_number("rx", 0, 48) || !valid_number("tx", 0, 48) || !valid_number("mode", 1, 2) ||
-        (server.arg("mode").toInt() == RS485_MODE_DE &&
-         (!server.hasArg("de") || !valid_number("de", 0, 48)))) {
-        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请完整填写总线模式与接线，模式 2 必须指定 DE\"}");
+    int rx = PIN_NONE, tx = PIN_NONE;
+    if (!parse_i2c_pin("rx", rx) || !parse_i2c_pin("tx", tx) || !server.hasArg("mode") ||
+        !valid_number("mode", 1, 2) || !valid_number("pair", 0, 1)) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请完整填写接线，RX/TX 必须同时配置或同时为无\"}");
         return;
     }
-    const int rx = server.arg("rx").toInt(), tx = server.arg("tx").toInt();
+    const bool lan = rx == PIN_NONE && tx == PIN_NONE;
+    const bool pair = server.arg("pair") == "1";
     const int mode = server.arg("mode").toInt();
-    const int de = mode == RS485_MODE_DE ? server.arg("de").toInt() : BUS_DE;
+    if ((!lan && mode == RS485_MODE_DE && (!server.hasArg("de") || !valid_number("de", 0, 48))) ||
+        (pair && !lan)) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"模式 2 必须指定 DE，局域网配对需要 RX/TX 同时为无\"}");
+        return;
+    }
+    const int de = !lan && mode == RS485_MODE_DE ? server.arg("de").toInt() : BUS_DE;
     String error;
     if (!io_config_bus_validate(rx, tx, de, mode, PCF_SDA, PCF_SCL, IO_CONFIG, active_channel_count(), &error)) {
         server.send(400, "application/json", String("{\"ok\":false,\"msg\":\"") + json_escape(error.c_str()) + "\"}");
         return;
     }
+    SettingsData candidate = settings_snapshot();
+    candidate.bus_rx = rx; candidate.bus_tx = tx; candidate.bus_de = de; candidate.rs485_mode = mode;
+    if (lan) {
+        String ip = server.hasArg("lan_ip") ? server.arg("lan_ip") : candidate.lan_ams.printer_ip;
+        String serial = server.hasArg("lan_serial") ? server.arg("lan_serial") : candidate.lan_ams.serial;
+        String code = server.hasArg("lan_access_code") ? server.arg("lan_access_code") : candidate.lan_ams.access_code;
+        ip.trim(); serial.trim(); code.trim();
+        if (ip.length() >= sizeof(candidate.lan_ams.printer_ip) ||
+            serial.length() >= sizeof(candidate.lan_ams.serial) || code.length() >= sizeof(candidate.lan_ams.access_code) ||
+            !valid_number("lan_feed_ms", 100, MAX_PULSE_MS - 1) || !valid_number("lan_nozzle_temp", 170, 300)) {
+            server.send(400, "application/json", "{\"ok\":false,\"msg\":\"局域网参数无效，进料时间为 100～29999 毫秒，温度为 170～300 ℃\"}");
+            return;
+        }
+        copy_str(candidate.lan_ams.printer_ip, sizeof(candidate.lan_ams.printer_ip), ip.c_str());
+        copy_str(candidate.lan_ams.serial, sizeof(candidate.lan_ams.serial), serial.c_str());
+        copy_str(candidate.lan_ams.access_code, sizeof(candidate.lan_ams.access_code), code.c_str());
+        if (server.hasArg("lan_feed_ms")) candidate.lan_ams.feed_ms = server.arg("lan_feed_ms").toInt();
+        if (server.hasArg("lan_nozzle_temp")) candidate.lan_ams.nozzle_temp = server.arg("lan_nozzle_temp").toInt();
+        if (!settings_lan_config_valid(candidate.lan_ams, pair)) {
+            server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请输入有效 IPv4 地址、8 位字母数字访问码和打印机序列号；未配对时三个字段可全部留空\"}");
+            return;
+        }
+    }
     if (!maintenance_required()) return;
-    const SettingsData previous = settings_snapshot();
-    BUS_RX = rx; BUS_TX = tx; BUS_DE = de; RS485_MODE = mode;
-    const bool saved = settings_save_to_flash();
-    // UART 仍使用旧接线；重启前保持运行状态与硬件一致
-    settings_restore_snapshot(previous);
-    if (!saved) {
-        server.send(500, "application/json", "{\"ok\":false,\"msg\":\"保存或回读校验失败，未切换接线，请重试\"}");
+    if (!settings_save_snapshot(candidate)) {
+        server.send(500, "application/json", "{\"ok\":false,\"msg\":\"保存或回读校验失败，未切换通信配置，请重试\"}");
         return;
     }
-    LOG_MAIN("[web] BambuBus 接线已保存：模式=%d RX=IO%d TX=IO%d DE=IO%d，重启生效", mode, rx, tx, de);
-    server.send(200, "application/json", "{\"ok\":true,\"msg\":\"BambuBus 配置已保存，设备正在重启；请断电后按新引脚接线\"}");
+    LOG_MAIN("[web] 打印机通信配置已保存：%s，重启生效", lan ? "局域网" : "BambuBus");
+    server.send(200, "application/json", lan
+        ? "{\"ok\":true,\"msg\":\"局域网配置已保存，重启后连接打印机，请等待配对状态\"}"
+        : "{\"ok\":true,\"msg\":\"BambuBus 配置已保存，设备正在重启；请断电后按新引脚接线\"}");
     delay(300);
     ESP.restart();
+}
+
+/**
+ * 提交局域网当前装料通道确认
+ * 仅在已配对且允许维护时接受有效通道或 -1；实际状态更新交给主循环，不启动电机
+ */
+static void handle_lan_channel() {
+    if (!server.hasArg("channel") || !valid_number("channel", -1, active_channel_count() - 1)) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"当前装料通道无效\"}");
+        return;
+    }
+    if (!lan_ams_enabled() || !lan_ams_status().paired) {
+        server.send(409, "application/json", "{\"ok\":false,\"msg\":\"请先完成局域网配对\"}");
+        return;
+    }
+    if (!maintenance_required()) return;
+    const int channel = server.arg("channel").toInt();
+    if ((channel >= 0 && !BMCU_channel_motor_ready(channel)) || !lan_ams_request_channel(channel)) {
+        server.send(409, "application/json", "{\"ok\":false,\"msg\":\"通道未配置或局域网换料正在处理，请稍后重试\"}");
+        return;
+    }
+    server.send(202, "application/json", "{\"ok\":true,\"msg\":\"通道确认请求已提交，不会启动电机\"}");
+}
+
+/**
+ * 提交局域网换料停止请求
+ * 不在 Web 回调中停车，由主循环取消换料并清除当前通道确认
+ */
+static void handle_lan_cancel() {
+    if (!lan_ams_enabled()) {
+        server.send(409, "application/json", "{\"ok\":false,\"msg\":\"当前未启用局域网换料\"}");
+        return;
+    }
+    lan_ams_request_cancel();
+    server.send(202, "application/json", "{\"ok\":true,\"msg\":\"停止请求已提交，请检查耗材后重新确认当前通道\"}");
 }
 
 /**
@@ -2256,7 +2333,7 @@ static void handle_not_found() {
 
 /**
  * 注册 Web 路由
- * 把首页、状态、设置、接线、电机、WiFi、日志、重启、恢复默认配置、恢复出厂和 OTA 接口绑定到处理函数
+ * 把首页、状态、设置、接线、局域网换料、电机、WiFi、日志、重启、恢复默认配置、恢复出厂和 OTA 接口绑定到处理函数
  */
 static void setup_routes() {
     server.on("/", HTTP_GET, handle_root);
@@ -2268,6 +2345,8 @@ static void setup_routes() {
     server.on("/api/projects", HTTP_GET, handle_projects_get);
     server.on("/api/projects", HTTP_POST, handle_project_save);
     server.on("/api/bus", HTTP_POST, handle_bus_save);
+    server.on("/api/lan/channel", HTTP_POST, handle_lan_channel);
+    server.on("/api/lan/cancel", HTTP_POST, handle_lan_cancel);
     server.on("/api/pcf", HTTP_POST, handle_pcf_save);
     server.on("/api/motor", HTTP_POST, handle_manual_motor);
     server.on("/api/printer/pause-test", HTTP_POST, handle_pause_test);

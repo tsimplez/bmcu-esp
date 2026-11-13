@@ -10,7 +10,7 @@
  * @return true 表示不可分配
  * 按平台过滤 Flash、USB、控制台串口等保留引脚；总微动与其他输入统一校验
  */
-static bool is_reserved_pin(int pin) {
+static bool is_reserved_pin(const int pin) {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
     // Flash 和控制台不可重分配；经典款的 USB 焊盘可用作普通 GPIO
     if (pin == 11 || (pin >= 14 && pin <= 17)) return true;
@@ -35,7 +35,7 @@ static bool is_reserved_pin(int pin) {
  * @return true 表示真实且未保留
  * 结合平台引脚范围与保留脚列表，过滤扩展编号及其空隙和不存在的 GPIO
  */
-static bool is_real_gpio(int pin) {
+static bool is_real_gpio(const int pin) {
     if (pin < 0 || pin >= PCF8575_VIRTUAL_PIN_BASE || is_reserved_pin(pin)) return false;
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
@@ -70,7 +70,7 @@ void io_config_set_defaults(IoConfig &config) {
  * @return true 表示该引脚不再可用
  * 启用 I2C 时 SDA/SCL 不能再作通道脚；关闭时扩展虚拟引脚全部失效
  */
-static bool pin_invalid_after_switch(int pin, bool i2c_configured, int sda, int scl) {
+static bool pin_invalid_after_switch(const int pin, const bool i2c_configured, const int sda, const int scl) {
     if (pin == PIN_NONE) return false;
     if (!i2c_configured) return IS_PCF8575_VIRTUAL_PIN(pin);
     return pin == sda || pin == scl;
@@ -85,7 +85,7 @@ static bool pin_invalid_after_switch(int pin, bool i2c_configured, int sda, int 
  * @return 被清空的引脚数量，供日志使用
  * 电机任一脚失效就整对清成 PIN_NONE；通道微动、霍尔和总微动单独清理，其余接线保持不变
  */
-int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda, int scl) {
+int io_config_clear_invalid_pins(IoConfig &config, const bool i2c_configured, const int sda, const int scl) {
     int cleared = 0;
     if (pin_invalid_after_switch(config.switch_pin, i2c_configured, sda, scl)) {
         config.switch_pin = PIN_NONE;
@@ -112,14 +112,24 @@ int io_config_clear_invalid_pins(IoConfig &config, bool i2c_configured, int sda,
 }
 
 /**
+ * 判断 BambuBus 是否已配置 RX/TX
+ * @param bus 可选候选接线，空指针使用当前配置
+ * @return RX/TX 均不是 PIN_NONE 时返回 true
+ * 仅查询配置状态，引脚合法性、单空和冲突由完整接线校验处理
+ */
+bool io_config_bus_enabled(const IoBusConfig *bus) {
+    return (bus ? bus->rx : BUS_RX) != PIN_NONE && (bus ? bus->tx : BUS_TX) != PIN_NONE;
+}
+
+/**
  * 判断引脚是否被 BambuBus 占用
  * @param pin 引脚号
  * @param bus 可选候选接线，空指针使用当前配置
  * @return true 表示已被占用
- * RX/TX 始终占用；只有 DE 模式才占用 DE 引脚
+ * 已启用有线总线时 RX/TX 占用，只有 DE 模式才占用 DE；双空 RX/TX 时全部释放
  */
-static bool bus_uses_pin(int pin, const IoBusConfig *bus = nullptr) {
-    if (pin == PIN_NONE) return false;
+static bool bus_uses_pin(const int pin, const IoBusConfig *bus = nullptr) {
+    if (pin == PIN_NONE || !io_config_bus_enabled(bus)) return false;
     if (bus) return pin == bus->rx || pin == bus->tx || (bus->mode == RS485_MODE_DE && pin == bus->de);
     return pin == BUS_RX || pin == BUS_TX || (RS485_MODE == RS485_MODE_DE && pin == BUS_DE);
 }
@@ -132,7 +142,7 @@ static bool bus_uses_pin(int pin, const IoBusConfig *bus = nullptr) {
  * @return true 表示可用
  * 综合检查虚拟引脚开关、I2C 占用、系统保留脚和总线占用
  */
-bool io_config_pin_available(int pin, bool allow_none, const IoBusConfig *bus) {
+bool io_config_pin_available(const int pin, const bool allow_none, const IoBusConfig *bus) {
     if (allow_none && pin == PIN_NONE) return true;
     // 虚拟引脚只在 I2C 总线已配置后可选；未配置时 I2C 引脚可作普通 IO
     const int sda = bus ? bus->sda : PCF_SDA, scl = bus ? bus->scl : PCF_SCL;
@@ -150,7 +160,7 @@ bool io_config_pin_available(int pin, bool allow_none, const IoBusConfig *bus) {
  * @return true 表示支持 ADC 且未被系统、总线或 I2C 占用
  * 通道之间的重复占用由整组接线校验检查，PCF8575 不提供模拟输入
  */
-bool io_config_hall_pin_available(int pin, bool allow_none, const IoBusConfig *bus) {
+bool io_config_hall_pin_available(const int pin, const bool allow_none, const IoBusConfig *bus) {
     if (allow_none && pin == PIN_NONE) return true;
     return hal_adc_pin_available(pin) && io_config_pin_available(pin, false, bus);
 }
@@ -182,7 +192,8 @@ static bool i2c_pin_available(const int pin, bool sda) {
  * @return true 表示配置合法
  * 检查通道数、与总线/通道/霍尔/总微动引脚的冲突、SDA/SCL 是否不同以及平台复用限制
  */
-bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active_channels, String *error,
+bool io_config_i2c_validate(const int sda, const int scl, const IoConfig &config, const int active_channels,
+                            String *error,
                             const IoBusConfig *bus) {
     if (active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
         if (error) *error = "通道数量无效";
@@ -202,11 +213,11 @@ bool io_config_i2c_validate(int sda, int scl, const IoConfig &config, int active
     }
     for (int ch = 0; ch < active_channels; ch++) {
         for (int role = 0; role < 4; role++) {
-            const int pin = role < 2 ? config.motor[ch][role] :
-                role == 2 ? config.microswitch[ch] : config.hall[ch];
+            const int pin = role < 2 ? config.motor[ch][role] : role == 2 ? config.microswitch[ch] : config.hall[ch];
             if (pin == sda || pin == scl) {
-                if (error) *error = io_config_pin_label(pin) + " 已被通道 " + String(ch + 1) +
-                    (role == 0 ? " 进料" : role == 1 ? " 退料" : role == 2 ? " 微动" : " 霍尔") + " 使用，请先修改通道配置";
+                if (error)
+                    *error = io_config_pin_label(pin) + " 已被通道 " + String(ch + 1) +
+                             (role == 0 ? " 进料" : role == 1 ? " 退料" : role == 2 ? " 微动" : " 霍尔") + " 使用，请先修改通道配置";
                 return false;
             }
         }
@@ -284,8 +295,7 @@ bool io_config_validate(const IoConfig &config, const int active_channels, Strin
     if (config.switch_pin != PIN_NONE) assigned[assigned_count++] = config.switch_pin;
     for (int ch = 0; ch < active_channels; ch++) {
         for (int role = 0; role < 4; role++) {
-            const int pin = role < 2 ? config.motor[ch][role] :
-                role == 2 ? config.microswitch[ch] : config.hall[ch];
+            const int pin = role < 2 ? config.motor[ch][role] : role == 2 ? config.microswitch[ch] : config.hall[ch];
             // "无"(PIN_NONE) 合法：切换 I2C 配置会先清空不再可用的引脚，
             // 该通道等用户在网页里补配置
             if (role == 3 ? !io_config_hall_pin_available(pin, true, bus) : !io_config_pin_available(pin, true, bus)) {
@@ -363,6 +373,7 @@ void io_config_append_hall_pin_options(String &json) {
  * @param error 可选的错误文本输出
  * @return true 表示配置合法
  * 按候选 I2C、通道电机/微动/霍尔和总微动接线检查冲突，同时检查 RX/TX/DE 合法性和平台复用限制
+ * ESP32 允许 RX/TX 同时为 PIN_NONE 并忽略 DE；其他平台保持有线要求，单空 RX/TX 一律拒绝
  */
 bool io_config_bus_validate(const int rx, const int tx, const int de, const int mode, const int sda, const int scl,
                             const IoConfig &config, const int active_channels, String *error) {
@@ -371,6 +382,13 @@ bool io_config_bus_validate(const int rx, const int tx, const int de, const int 
         if (error) *error = "总线模式或通道数量无效";
         return false;
     }
+    if ((rx == PIN_NONE) != (tx == PIN_NONE)) {
+        if (error) *error = "RX、TX 必须同时配置或同时为无";
+        return false;
+    }
+#if defined(ARDUINO_ARCH_ESP32)
+    if (rx == PIN_NONE && tx == PIN_NONE) return true;
+#endif
     const int pins[] = {rx, tx, de};
     const char *roles[] = {"RX", "TX", "DE"};
     for (int i = 0; i < (mode == RS485_MODE_DE ? 3 : 2); i++) {
@@ -389,10 +407,11 @@ bool io_config_bus_validate(const int rx, const int tx, const int de, const int 
             if (error) *error = io_config_pin_label(pin) + " 已被五通总微动占用";
             return false;
         }
-        for (int j = 0; j < i; j++) if (pin == pins[j]) {
-            if (error) *error = "RX、TX、DE 不能重复";
-            return false;
-        }
+        for (int j = 0; j < i; j++)
+            if (pin == pins[j]) {
+                if (error) *error = "RX、TX、DE 不能重复";
+                return false;
+            }
         // 只有 SDA/SCL 同时配置后 I2C 才真正占用引脚
         if (sda != PIN_NONE && scl != PIN_NONE && sda >= 0 && scl >= 0 && sda != scl &&
             (pin == sda || pin == scl)) {

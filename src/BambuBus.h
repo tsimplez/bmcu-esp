@@ -57,7 +57,7 @@ extern void BambuBus_save_run();
 
 extern bool BambuBus_recent_activity(uint32_t quiet_ms);
 
-// 0=尚未收到心跳，1=在线，2=超时离线；只统计 CRC 正确的打印机心跳
+// 0=尚未连接，1=在线，2=超时离线；有线统计合法心跳，局域网使用有效 MQTT 状态
 extern int BambuBus_printer_status();
 
 extern uint32_t BambuBus_rx_error_count();
@@ -66,7 +66,7 @@ extern uint32_t BambuBus_rx_dropped_count();
 
 extern uint32_t BambuBus_last_valid_packet_age_ms();
 
-// 网页所用的唯一通道快照；保存的使用通道等待新报文时为 pending，无有效选择为 -1
+// 网页通道快照；有线保存的通道等待新报文时为 pending，局域网需人工确认，无有效选择为 -1
 struct BambuBusCurrentChannelStatus {
     int channel;
     const char *state;

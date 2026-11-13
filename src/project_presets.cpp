@@ -5,15 +5,15 @@
  * 展开项目的完整通道接线
  * @param preset 项目预设
  * @param config 输出的通道配置
- * 清空全部未定义通道，并替换五通总微动和霍尔输入，防止切换项目后残留旧接线
+ * 按 pins 条目数展开，清空全部未列出的通道，并替换五通总微动和霍尔输入，防止切换项目后残留旧接线
  */
 void project_preset_io(const ProjectPreset &preset, IoConfig &config) {
     config.switch_pin = preset.switch_pin;
-    for (int ch = 0; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
-        config.motor[ch][0] = ch < preset.wired_channels ? preset.pins[ch][0] : PIN_NONE;
-        config.motor[ch][1] = ch < preset.wired_channels ? preset.pins[ch][1] : PIN_NONE;
-        config.microswitch[ch] = ch < preset.wired_channels ? preset.pins[ch][2] : PIN_NONE;
-        config.hall[ch] = ch < preset.wired_channels ? preset.hall[ch] : PIN_NONE;
+    for (size_t ch = 0; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
+        config.motor[ch][0] = ch < preset.pins.size() ? preset.pins[ch][0] : PIN_NONE;
+        config.motor[ch][1] = ch < preset.pins.size() ? preset.pins[ch][1] : PIN_NONE;
+        config.microswitch[ch] = ch < preset.pins.size() ? preset.pins[ch][2] : PIN_NONE;
+        config.hall[ch] = ch < preset.pins.size() ? preset.hall[ch] : PIN_NONE;
     }
 }
 
@@ -22,7 +22,7 @@ void project_preset_io(const ProjectPreset &preset, IoConfig &config) {
  * @param preset 待检查的预设
  * @param error 可选的错误说明
  * @return true 表示可以应用
- * 使用候选总线检查全部冲突，不修改当前生效配置
+ * pins 条目数不得超过 AMS 通道数；使用候选总线检查全部冲突，不修改当前生效配置
  */
 bool project_preset_validate(const ProjectPreset &preset, String *error) {
     if (strcmp(preset.target, hal_project_target()) != 0) {
@@ -30,7 +30,7 @@ bool project_preset_validate(const ProjectPreset &preset, String *error) {
         return false;
     }
     if (preset.ams < 1 || preset.ams > IO_CONFIG_MAX_CHANNELS / 4 ||
-        preset.wired_channels < 0 || preset.wired_channels > preset.ams * 4) {
+        preset.pins.size() > static_cast<size_t>(preset.ams * 4)) {
         if (error) *error = "项目的 AMS 数量或通道配置无效";
         return false;
     }
