@@ -11,6 +11,17 @@
 #include <Update.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+// 两套 HTTP 服务各自定义 HTTP_ANY，包含 SDK 头文件后恢复 Arduino 宏
+#pragma push_macro("HTTP_ANY")
+#undef HTTP_ANY
+#include <esp_http_server.h>
+#pragma pop_macro("HTTP_ANY")
+#include <esp_random.h>
+#include <cJSON.h>
+#include <freertos/queue.h>
+#include <lwip/sockets.h>
+#include <new>
+#include <utility>
 
 #include "log_bus.h"
 #include "platform.h"
@@ -455,17 +466,18 @@ static String sensor_json_value(bool valid, float value, int digits) {
 }
 
 /**
- * 处理运行状态查询
+ * 生成运行状态快照，供 HTTP 与 WebSocket 共用
+ * @return 完整状态 JSON；预留内存失败时为空
  * 汇总 WiFi、项目、总线、局域网换料、有效当前通道、暂停实验、电机、耗材和传感器；陈旧通道不会被标为正在使用
  * mdns 保留配置名称，mdns_active 返回重名避让后的实际名称，离线或尚未读取时为空
  * filament_colors 按启用的全局通道顺序返回记录中的 #RRGGBB，供网页以不透明圆点显示
  * filament_alpha 按相同顺序返回 0-255 的 A 分量，0 为完全透明，255 为不透明
  */
-static void handle_status() {
+static String status_json() {
     IPAddress ip = ap_mode ? WiFi.softAPIP() : WiFi.localIP();
 
     String j;
-    j.reserve(2500);
+    if (!j.reserve(2500)) return String();
     j  = "{\"mode\":\"" + String(ap_mode ? "AP" : "STA") + "\"";
     j += ",\"ip\":\"" + ip.toString() + "\"";
     j += ",\"ssid\":\"" + json_escape(ap_mode ? "" : sta_ssid) + "\"";
@@ -571,7 +583,17 @@ static void handle_status() {
          ",\"bmp_temp\":" + sensor_json_value(env.bmp280_online && env.bmp280_valid, env.bmp_temperature_c, 2) +
          ",\"pressure\":" + sensor_json_value(env.bmp280_online && env.bmp280_valid, env.pressure_hpa, 2) + "}";
     j += "}";
-    server.send(200, "application/json", j);
+    return j;
+}
+
+/**
+ * 处理 HTTP 运行状态查询
+ * 返回主循环生成的状态快照，内存不足时提示稍后重试
+ */
+static void handle_status() {
+    const String json = status_json();
+    server.send(json.isEmpty() ? 503 : 200, "application/json",
+                json.isEmpty() ? "{\"ok\":false,\"msg\":\"可用内存不足，请稍后重试\"}" : json);
 }
 
 /**
@@ -660,20 +682,19 @@ static void handle_hall_detection_save() {
 }
 
 /**
- * 读取霍尔当前值、短期均值、分钟增量历史及固件检测状态和最新事件
+ * 生成霍尔读数、统计、检测状态和增量历史快照
+ * @param has_cursor 是否提供历史游标
+ * @param requested_epoch 浏览器上次收到的历史纪元
+ * @param requested_cursor 浏览器上次收到的历史游标
+ * @param epoch 返回快照的纪元
+ * @param delivered 返回本次最后一个历史游标
+ * @param more 返回是否仍有历史待补齐
+ * @return 完整霍尔 JSON；预留内存失败时为空
  * 每次最多返回 50 个时间桶，more 提示继续读取；纪元变化或游标失效时从现存最早数据重新分页
  * 只读取主循环缓存，不在 HTTP 回调中采样；传输年龄相对 now_ms，毫秒和游标回绕均按无符号差值处理
  */
-static void handle_hall() {
-    const bool has_cursor = server.hasArg("cursor");
-    const bool has_epoch = server.hasArg("epoch");
-    uint32_t requested_cursor = 0, requested_epoch = 0;
-    if (has_cursor != has_epoch ||
-        (has_cursor && (!parse_hall_uint("cursor", requested_cursor) ||
-                        !parse_hall_uint("epoch", requested_epoch)))) {
-        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"霍尔游标与纪元须同时提供有效的无符号整数\"}");
-        return;
-    }
+static String hall_json(bool has_cursor, uint32_t requested_epoch, uint32_t requested_cursor,
+                        uint32_t &epoch, uint32_t &delivered, bool &more) {
     const HallHistoryInfo info = hall_sensor_history_info();
     const HallDetectionStatus detection = hall_sensor_detection_status();
     const HallDetectionEvent event = hall_sensor_last_event();
@@ -683,7 +704,9 @@ static void handle_hall() {
     const uint32_t remaining = reset ? info.count : distance;
     const uint32_t count = remaining > 50u ? 50u : remaining;
     const uint32_t first = reset ? info.cursor - info.count + 1u : requested_cursor + 1u;
-    const uint32_t delivered = count ? first + count - 1u : info.cursor;
+    epoch = info.epoch;
+    delivered = count ? first + count - 1u : info.cursor;
+    more = remaining > count;
     HallChannelStatus channels[IO_CONFIG_MAX_CHANNELS];
     unsigned configured = 0;
     for (int channel = 0; channel < info.channels; ++channel) {
@@ -691,10 +714,7 @@ static void handle_hall() {
         if (channels[channel].configured) ++configured;
     }
     String j;
-    if (!j.reserve(384u + info.channels * 320u + configured * count * 28u)) {
-        server.send(503, "application/json", "{\"ok\":false,\"msg\":\"可用内存不足，请稍后重试\"}");
-        return;
-    }
+    if (!j.reserve(384u + info.channels * 320u + configured * count * 28u)) return String();
     j += "{\"epoch\":" + String(info.epoch) + ",\"cursor\":" + String(delivered) +
         ",\"reset\":" + String(reset ? "true" : "false") +
         ",\"more\":" + String(remaining > count ? "true" : "false") +
@@ -737,8 +757,413 @@ static void handle_hall() {
         j += "]}";
     }
     j += "]}";
+    return j;
+}
+
+/**
+ * 处理 HTTP 霍尔查询
+ * 严格校验成对的纪元与游标参数，按最多 50 个时间桶返回缓存快照
+ */
+static void handle_hall() {
+    const bool has_cursor = server.hasArg("cursor");
+    uint32_t cursor = 0, epoch = 0;
+    if (has_cursor != server.hasArg("epoch") ||
+        (has_cursor && (!parse_hall_uint("cursor", cursor) || !parse_hall_uint("epoch", epoch)))) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"霍尔游标与纪元须同时提供有效的无符号整数\"}");
+        return;
+    }
+    uint32_t delivered = 0, response_epoch = 0;
+    bool more = false;
+    const String json = hall_json(has_cursor, epoch, cursor, response_epoch, delivered, more);
     server.sendHeader("Cache-Control", "no-store");
-    server.send(200, "application/json", j);
+    server.send(json.isEmpty() ? 503 : 200, "application/json",
+                json.isEmpty() ? "{\"ok\":false,\"msg\":\"可用内存不足，请稍后重试\"}" : json);
+}
+
+// WebSocket 任务只处理网络和订阅消息，业务快照仍由主循环生成
+static constexpr uint8_t WS_CLIENTS = 4;
+static httpd_handle_t ws_server = nullptr;
+static char ws_token[33] = {};
+static QueueHandle_t ws_events = nullptr;
+static portMUX_TYPE ws_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool ws_worker_busy = false;
+struct WsSession {
+    int fd = -1;
+    uint32_t generation = 0;
+    bool closing = false;
+    bool authenticated = false;
+};
+enum class WsEventType : uint8_t { Status, Hall, Ack };
+struct WsEvent {
+    WsEventType type;
+    uint8_t slot;
+    uint32_t generation, id, epoch, cursor;
+    bool has_cursor;
+};
+struct WsClient {
+    uint32_t generation = 0, seen_ms = 0;
+    uint32_t status_id = 0, status_started = 0, status_due = 0;
+    uint32_t hall_id = 0, epoch = 0, cursor = 0, hall_due = 0;
+    uint32_t pending_seq = 0, pending_id = 0, pending_since = 0;
+    uint32_t pending_epoch = 0, pending_cursor = 0;
+    bool has_cursor = false, pending_hall = false;
+};
+struct WsSend {
+    uint8_t slot;
+    WsSession session;
+    String payload;
+};
+static WsSession ws_sessions[WS_CLIENTS];
+static WsClient ws_clients[WS_CLIENTS];
+static String ws_status_cache;
+static uint32_t ws_status_ms = 0;
+static bool ws_status_dirty = true;
+
+/**
+ * 复制网络任务维护的连接身份
+ * @param slot 固定客户端槽号
+ * @return 包含描述符和连接代次的快照
+ */
+static WsSession ws_session_snapshot(uint8_t slot) {
+    portENTER_CRITICAL(&ws_lock);
+    const WsSession session = ws_sessions[slot];
+    portEXIT_CRITICAL(&ws_lock);
+    return session;
+}
+
+/**
+ * 释放断开的固定会话槽
+ * @param context HTTPD 保存的会话槽指针
+ * 由网络任务调用，不依赖事件队列容量，也不释放静态内存
+ */
+static void ws_session_free(void *context) {
+    auto *session = static_cast<WsSession *>(context);
+    portENTER_CRITICAL(&ws_lock);
+    session->fd = -1;
+    portEXIT_CRITICAL(&ws_lock);
+}
+
+/**
+ * 在网络任务中补齐短写并限制单次发送时间
+ * @param handle HTTPD 服务句柄
+ * @param fd 当前连接描述符
+ * @param data 待发送数据
+ * @param length 数据长度
+ * @param flags socket 发送标志
+ * @return 完整发送的字节数；超时或失败返回负值，调用方关闭连接
+ */
+static int ws_socket_send(httpd_handle_t handle, int fd, const char *data, size_t length, int flags) {
+    (void)handle;
+    size_t sent = 0;
+    const uint32_t started = millis();
+    while (sent < length) {
+        const int count = send(fd, data + sent, length - sent, flags);
+        if (count <= 0) return HTTPD_SOCK_ERR_FAIL;
+        sent += static_cast<size_t>(count);
+        if (sent < length && millis() - started >= 100u) return HTTPD_SOCK_ERR_TIMEOUT;
+    }
+    return static_cast<int>(sent);
+}
+
+/**
+ * 读取 WebSocket 控制消息中的无符号整数
+ * @param json 控制消息对象
+ * @param name 字段名称
+ * @param value 返回完整的 32 位整数
+ * @return 字段为 0..UINT32_MAX 整数时返回 true
+ */
+static bool ws_read_uint(const cJSON *json, const char *name, uint32_t &value) {
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, name);
+    if (!cJSON_IsNumber(item) || !(item->valuedouble >= 0 && item->valuedouble <= UINT32_MAX)) return false;
+    value = static_cast<uint32_t>(item->valuedouble);
+    return item->valuedouble == value;
+}
+
+/**
+ * 返回本次启动的 WebSocket 验证凭据
+ * 浏览器通过现有 HTTP 同源及 localhost CORS 规则读取，服务未启动时返回 503
+ */
+static void handle_ws_token() {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(ws_server ? 200 : 503, "application/json", ws_server
+                ? String("{\"token\":\"") + ws_token + "\"}"
+                : String("{\"ok\":false,\"msg\":\"WebSocket 尚未启动\"}"));
+}
+
+/**
+ * 在 TCP 连接建立时初始化 WebSocket 会话
+ * @param handle HTTPD 服务句柄
+ * @param fd 新连接描述符
+ * @return 会话和发送回调准备成功时返回 ESP_OK，否则关闭新连接
+ * 不依赖新版 SDK 已移除的 GET 握手回调，未验证的连接不能订阅状态
+ */
+static esp_err_t ws_session_open(httpd_handle_t handle, int fd) {
+    static uint32_t generation = 0;
+    for (uint8_t slot = 0; slot < WS_CLIENTS; ++slot) {
+        if (ws_sessions[slot].fd >= 0) continue;
+        if (++generation == 0) ++generation;
+        const timeval timeout = {0, 100000};
+        if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0 ||
+            httpd_sess_set_send_override(handle, fd, ws_socket_send) != ESP_OK) return ESP_FAIL;
+        portENTER_CRITICAL(&ws_lock);
+        ws_sessions[slot] = {fd, generation, false, false};
+        portEXIT_CRITICAL(&ws_lock);
+        httpd_sess_set_ctx(handle, fd, &ws_sessions[slot], ws_session_free);
+        return ESP_OK;
+    }
+    return ESP_FAIL;
+}
+
+/**
+ * 接收 WebSocket 验证、订阅和逐帧确认
+ * @param request 当前 HTTPD 请求
+ * @return 成功入队返回 ESP_OK；非法消息或队列已满时关闭连接
+ * 接收上限为 192 字节，回调不读取业务快照、不执行电机动作
+ */
+static esp_err_t handle_ws(httpd_req_t *request) {
+    if (request->method == HTTP_GET) return ESP_OK;
+    auto *session = static_cast<WsSession *>(request->sess_ctx);
+    if (!session || session->closing) return ESP_FAIL;
+    httpd_ws_frame_t frame = {};
+    if (httpd_ws_recv_frame(request, &frame, 0) != ESP_OK ||
+        frame.type != HTTPD_WS_TYPE_TEXT || !frame.final || frame.len == 0 || frame.len > 192) return ESP_FAIL;
+    char payload[193] = {};
+    frame.payload = reinterpret_cast<uint8_t *>(payload);
+    if (httpd_ws_recv_frame(request, &frame, sizeof(payload) - 1) != ESP_OK) return ESP_FAIL;
+    cJSON *json = cJSON_ParseWithLengthOpts(payload, frame.len + 1, nullptr, true);
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(json, "type");
+    bool valid = cJSON_IsObject(json) && cJSON_IsString(type);
+    if (!session->authenticated) {
+        const cJSON *token = cJSON_GetObjectItemCaseSensitive(json, "token");
+        valid = valid && strcmp(type->valuestring, "hello") == 0 && cJSON_IsString(token) &&
+                strcmp(token->valuestring, ws_token) == 0;
+        cJSON_Delete(json);
+        if (!valid) return ESP_FAIL;
+        portENTER_CRITICAL(&ws_lock);
+        session->authenticated = true;
+        portEXIT_CRITICAL(&ws_lock);
+        return ESP_OK;
+    }
+    WsEvent event = {};
+    event.slot = static_cast<uint8_t>(session - ws_sessions);
+    event.generation = session->generation;
+    if (valid && strcmp(type->valuestring, "ack") == 0) {
+        event.type = WsEventType::Ack;
+        valid = ws_read_uint(json, "seq", event.id) && event.id != 0;
+    } else if (valid && strcmp(type->valuestring, "status") == 0) {
+        event.type = WsEventType::Status;
+        valid = ws_read_uint(json, "id", event.id) && event.id != 0;
+    } else if (valid && strcmp(type->valuestring, "hall") == 0) {
+        event.type = WsEventType::Hall;
+        event.has_cursor = cJSON_HasObjectItem(json, "cursor");
+        valid = ws_read_uint(json, "id", event.id) &&
+                event.has_cursor == cJSON_HasObjectItem(json, "epoch") &&
+                (!event.has_cursor || (ws_read_uint(json, "epoch", event.epoch) && ws_read_uint(json, "cursor", event.cursor)));
+    } else valid = false;
+    cJSON_Delete(json);
+    return valid && xQueueSend(ws_events, &event, 0) == pdTRUE ? ESP_OK : ESP_FAIL;
+}
+
+/**
+ * 在 HTTPD 任务中发送快照或关闭指定代次的连接
+ * @param argument 独占的发送工作及缓冲区
+ * 发送前核对会话身份，描述符复用时丢弃旧工作；空正文表示关闭
+ */
+static void ws_send_work(void *argument) {
+    auto *work = static_cast<WsSend *>(argument);
+    auto &session = ws_sessions[work->slot];
+    if (session.fd == work->session.fd && session.generation == work->session.generation &&
+        !session.closing && httpd_sess_get_ctx(ws_server, session.fd) == &session) {
+        httpd_ws_frame_t frame = {};
+        frame.type = HTTPD_WS_TYPE_TEXT;
+        frame.payload = reinterpret_cast<uint8_t *>(const_cast<char *>(work->payload.c_str()));
+        frame.len = work->payload.length();
+        if (frame.len == 0 || httpd_ws_send_frame_async(ws_server, session.fd, &frame) != ESP_OK) {
+            portENTER_CRITICAL(&ws_lock);
+            session.closing = true;
+            portEXIT_CRITICAL(&ws_lock);
+            shutdown(session.fd, SHUT_RDWR);
+        }
+    }
+    delete work;
+    portENTER_CRITICAL(&ws_lock);
+    ws_worker_busy = false;
+    portEXIT_CRITICAL(&ws_lock);
+}
+
+/**
+ * 向网络任务转交唯一待发送缓冲区
+ * @param slot 客户端槽号
+ * @param payload 发送后转移所有权的正文；空正文表示关闭
+ * @return 成功入队返回 true，失败后由主循环重试
+ */
+static bool ws_queue_send(uint8_t slot, String &payload) {
+    const WsSession session = ws_session_snapshot(slot);
+    if (session.fd < 0 || session.closing || session.generation != ws_clients[slot].generation) return false;
+    auto *work = new (std::nothrow) WsSend;
+    if (!work) return false;
+    work->slot = slot;
+    work->session = session;
+    work->payload = std::move(payload);
+    portENTER_CRITICAL(&ws_lock);
+    ws_worker_busy = true;
+    portEXIT_CRITICAL(&ws_lock);
+    if (httpd_queue_work(ws_server, ws_send_work, work) == ESP_OK) return true;
+    delete work;
+    portENTER_CRITICAL(&ws_lock);
+    ws_worker_busy = false;
+    portEXIT_CRITICAL(&ws_lock);
+    return false;
+}
+
+/**
+ * 使主循环订阅状态与网络连接代次保持一致
+ * @param slot 客户端槽号
+ * @param now 本轮主循环的毫秒时间
+ * @return 当前槽仍连接且未开始关闭时返回 true
+ */
+static bool ws_sync_client(uint8_t slot, uint32_t now) {
+    const WsSession session = ws_session_snapshot(slot);
+    auto &client = ws_clients[slot];
+    if (session.fd < 0 || session.closing) {
+        client = {};
+        return false;
+    }
+    if (client.generation != session.generation) {
+        client = {};
+        client.generation = session.generation;
+        client.seen_ms = now;
+    }
+    return true;
+}
+
+/**
+ * 在主循环中处理订阅并生成有界的实时快照
+ * 每轮最多读取 16 个控制事件、安排一个发送；每客户端最多一帧等待确认
+ * 状态每秒刷新且共用快照，霍尔每页最多 50 桶，确认后才推进历史游标
+ */
+static void websocket_run() {
+    if (!ws_server) return;
+    const uint32_t now = millis();
+    WsEvent event;
+    for (uint8_t received = 0; received < 16 && xQueueReceive(ws_events, &event, 0) == pdTRUE; ++received) {
+        if (!ws_sync_client(event.slot, now)) continue;
+        auto &client = ws_clients[event.slot];
+        if (client.generation != event.generation) continue;
+        client.seen_ms = now;
+        if (event.type == WsEventType::Status) {
+            client.status_id = event.id;
+            client.status_started = now;
+            client.status_due = now;
+            ws_status_dirty = true;
+        } else if (event.type == WsEventType::Hall) {
+            client.hall_id = event.id;
+            client.has_cursor = event.has_cursor;
+            client.epoch = event.epoch;
+            client.cursor = event.cursor;
+            client.hall_due = now;
+        } else if (client.pending_seq == event.id) {
+            if (client.pending_hall && client.hall_id == client.pending_id) {
+                client.has_cursor = true;
+                client.epoch = client.pending_epoch;
+                client.cursor = client.pending_cursor;
+            }
+            client.pending_seq = 0;
+        }
+    }
+    portENTER_CRITICAL(&ws_lock);
+    const bool busy = ws_worker_busy;
+    portEXIT_CRITICAL(&ws_lock);
+    if (busy) return;
+    static uint8_t next_slot = 0;
+    static uint32_t sequence = 0;
+    for (uint8_t checked = 0; checked < WS_CLIENTS; ++checked) {
+        const uint8_t slot = next_slot;
+        next_slot = (next_slot + 1) % WS_CLIENTS;
+        if (!ws_sync_client(slot, now)) continue;
+        auto &client = ws_clients[slot];
+        String payload;
+        if ((client.pending_seq && now - client.pending_since >= 5000u) || now - client.seen_ms >= 10000u) {
+            ws_queue_send(slot, payload);
+            return;
+        }
+        if (client.pending_seq) continue;
+        const bool hall = client.hall_id && static_cast<int32_t>(now - client.hall_due) >= 0;
+        const bool status = client.status_id && static_cast<int32_t>(now - client.status_due) >= 0 &&
+                            (!hall || static_cast<int32_t>(client.status_due - client.hall_due) <= 0);
+        if (!status && !hall) continue;
+        String hall_data;
+        const String *data;
+        uint32_t epoch = 0, cursor = 0;
+        bool more = false;
+        if (status) {
+            if (ws_status_dirty || now - ws_status_ms >= 1000u) {
+                ws_status_ms = now;
+                ws_status_cache = status_json();
+                ws_status_dirty = false;
+            }
+            data = &ws_status_cache;
+        } else {
+            hall_data = hall_json(client.has_cursor, client.epoch, client.cursor, epoch, cursor, more);
+            data = &hall_data;
+        }
+        if (data->isEmpty() || !payload.reserve(data->length() + 128u)) {
+            ws_queue_send(slot, payload);
+            return;
+        }
+        if (++sequence == 0) ++sequence;
+        const uint32_t id = status ? client.status_id : client.hall_id;
+        payload = "{\"type\":\"" + String(status ? "status" : "hall") + "\",\"id\":" + String(id) +
+                  ",\"seq\":" + String(sequence);
+        if (status) payload += ",\"elapsed_ms\":" + String(ws_status_ms - client.status_started);
+        payload += ",\"data\":";
+        payload += *data;
+        payload += '}';
+        if (!ws_queue_send(slot, payload)) return;
+        client.pending_seq = sequence;
+        client.pending_id = id;
+        client.pending_since = now;
+        client.pending_hall = !status;
+        client.pending_epoch = epoch;
+        client.pending_cursor = cursor;
+        if (status) client.status_due = now + 1000u;
+        else client.hall_due = now + (more ? 50u : 1000u);
+        return;
+    }
+}
+
+/**
+ * 启动独立端口上的 WebSocket 服务
+ * 使用 SDK 自带 HTTPD 任务，连接、接收及发送资源有界，启动失败仍保留 HTTP 管理
+ */
+static void websocket_init() {
+    uint8_t token_bytes[16];
+    esp_fill_random(token_bytes, sizeof(token_bytes));
+    for (size_t i = 0; i < sizeof(token_bytes); ++i)
+        snprintf(ws_token + i * 2, 3, "%02x", static_cast<unsigned>(token_bytes[i]));
+    ws_events = xQueueCreate(16, sizeof(WsEvent));
+    if (!ws_events) return;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = 81;
+    config.max_open_sockets = WS_CLIENTS;
+    config.max_uri_handlers = 1;
+    config.recv_wait_timeout = 1;
+    config.send_wait_timeout = 1;
+    config.open_fn = ws_session_open;
+    httpd_uri_t route = {};
+    route.uri = "/api/ws";
+    route.method = HTTP_GET;
+    route.handler = handle_ws;
+    route.is_websocket = true;
+    if (httpd_start(&ws_server, &config) == ESP_OK && httpd_register_uri_handler(ws_server, &route) == ESP_OK) {
+        LOG_MAIN("[web] WebSocket 服务已启动，端口 81");
+        return;
+    }
+    if (ws_server) httpd_stop(ws_server);
+    ws_server = nullptr;
+    vQueueDelete(ws_events);
+    ws_events = nullptr;
+    LOG_MAIN("[web] WebSocket 启动失败，请使用 HTTP 轮询");
 }
 
 /**
@@ -2373,6 +2798,7 @@ static void setup_routes() {
     server.addMiddleware(handle_local_preview_cors);
     server.on("/", HTTP_GET, handle_root);
     server.on("/api/status", HTTP_GET, handle_status);
+    server.on("/api/ws-token", HTTP_GET, handle_ws_token);
     server.on("/api/hall", HTTP_GET, handle_hall);
     server.on("/api/hall/detection", HTTP_POST, handle_hall_detection_save);
     server.on("/api/settings", HTTP_GET, handle_settings_get);
@@ -2401,7 +2827,7 @@ static void setup_routes() {
 
 /**
  * 初始化 Web 管理服务
- * 读取 WiFi 凭据并异步连接已保存网络，未配置时启动配网热点；重连由主循环统一调度，随后启动 HTTP 服务
+ * 读取 WiFi 凭据并异步连接已保存网络，未配置时启动配网热点；重连由主循环统一调度，随后启动 HTTP 和 WebSocket 服务
  */
 void web_config_init() {
     load_wifi_creds();
@@ -2416,12 +2842,13 @@ void web_config_init() {
 
     setup_routes();
     server.begin();
+    websocket_init();
     LOG_MAIN("[web] HTTP 管理服务已启动");
 }
 
 /**
  * 轮询 Web 与 WiFi 状态
- * 处理 STA 连接、掉线和超时，保留配网热点并定时重试已保存网络；同步 mDNS 实际名称并处理 HTTP 与强制门户 DNS
+ * 处理 STA 重连、mDNS、HTTP 与强制门户 DNS，并在主循环中生成 WebSocket 订阅快照
  */
 void web_config_run() {
     if (sta_ssid[0]) {
@@ -2444,6 +2871,7 @@ void web_config_run() {
 
     sync_mdns_name();
     server.handleClient();
+    websocket_run();
     if (ap_mode) dns.processNextRequest();
 }
 

@@ -15,6 +15,10 @@
       .project-picker{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
       .project-picker label{color:var(--dim);white-space:nowrap}
       .project-picker select{width:240px;max-width:100%}
+      .data-picker{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+      .data-picker label{color:var(--dim);white-space:nowrap}
+      .data-picker select{width:auto}
+      #data-state{min-width:4em;font-size:12px;color:var(--dim)}
       .project-preview{width:620px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);padding:0;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg);box-shadow:0 18px 60px #0008}
       .project-preview::backdrop{background:#0009}
       .project-preview[open]{display:flex;flex-direction:column}
@@ -172,6 +176,14 @@
             <select id="project-select" onchange="selectProject()" disabled>
                 <option value="">正在读取…</option>
             </select>
+        </div>
+        <div class="data-picker">
+            <label for="data-mode">数据连接</label>
+            <select id="data-mode" onchange="changeDataMode(this.value)">
+                <option value="ws">WebSocket</option>
+                <option value="http">HTTP 轮询</option>
+            </select>
+            <span id="data-state" role="status">连接中</span>
         </div>
     </div>
     <div id="printer" class="hint" role="status">正在读取打印机状态…</div>
@@ -689,7 +701,7 @@
   /**
    * 切换页面标签页
    * @param {string} name 标签页名称
-   * 显示目标面板并保存当前标签；状态页补齐霍尔历史，首次进入日志页启动持续收集，参数按需重载
+   * 显示目标面板并保存当前标签；状态页补齐霍尔历史，其余页取消订阅，首次进入日志页启动持续收集，参数按需重载
    * 捕获异常时在控制台输出上下文与完整异常
    */
   const showTab = (name) => {
@@ -706,10 +718,8 @@
     const bs = document.querySelectorAll('nav button');
     for (let i = 0; i < bs.length; i++) bs[i].classList.toggle('on', bs[i].getAttribute('data-tab') === name)
     if ((name === 'status' || name === 'settings') && !IO_DIRTY) loadPara()
-    if (name === 'status') {
-      refreshHall();
-      renderHallCharts()
-    }
+    refreshHall()
+    if (name === 'status') renderHallCharts()
     if (name === 'logs') startLogCollection()
   }
 
@@ -743,13 +753,13 @@
     if (!m || !MONTHS[m[1]]) return s || '-'
     return m[3] + '-' + MONTHS[m[1]] + '-' + ('0' + m[2]).slice(-2) + ' ' + m[4]
   }
-  // 是否已有状态请求在途，防止 1 秒轮询叠加请求
+  // 是否已有 HTTP 状态请求在途，防止轮询叠加请求
   let statusPending = false
-  // 最近一次状态请求成功时的 performance.now() 时间；0 表示设备离线
+  // 最近一次收到有效状态时的 performance.now() 时间；0 表示设备离线
   let statusAt = 0
   // mDNS 输入框是否已从设备状态初始化，避免轮询覆盖用户正在输入的内容
   let mdnsLoaded = false
-  // 最近一次 /api/status 返回的完整状态对象
+  // HTTP 或 WebSocket 最近一次返回的完整状态对象
   let S;
   // 本次页面加载是否已自动检查过 OTA，避免每轮状态刷新都请求服务器
   let otaAutoTried;
@@ -789,89 +799,113 @@
     el.style.color = 'var(--fg)'
   }
   /**
-   * 拉取并刷新设备运行状态
-   * @return {Promise<void>|undefined} 请求完成后的 Promise；已有请求时返回 undefined
-   * OTA 期间暂停请求；其余时间带 5 秒超时同步电机、局域网配对、传感器、暂停实验、项目和 mDNS，首次成功时自动检查更新
-   * 捕获异常时在控制台输出上下文与完整异常
+   * 应用状态快照并刷新页面
+   * @param {Object} d 设备的完整状态
+   * @param {number} requestedAt 本帧采样对应的浏览器时间下界，用于隔离操作前状态和估算退料截止
+   * 同步电机、局域网配对、传感器、暂停实验、项目和 mDNS，首次成功时自动检查更新
+   */
+  const applyStatusPacket = (d, requestedAt) => {
+    if (!d || !Array.isArray(d.motors) || !Number.isInteger(d.channels)) throw Error('状态数据格式不完整')
+    S = d
+    statusAt = performance.now()
+    syncPullbackTests(requestedAt)
+    syncProjectCurrent(d.project)
+    $('printer').textContent = ['等待打印机连接', '打印机在线', '打印机离线'][d.printer] || '打印机状态未知'
+    $('printer').style.color = d.printer === 1 ? 'var(--ok)' : d.printer === 2 ? 'var(--err)' : 'var(--dim)'
+    $('s-mode').textContent = d.mode === 'AP' ? 'AP 配网热点' : 'STA 已联网'
+    $('s-ip').textContent = d.ip
+    $('s-ssid').textContent = d.ssid || '(未连接)'
+    const mdns = d.mdns || 'bmcu'
+    const mdnsAddress = d.mdns_active ? 'http://' + d.mdns_active + '.local/' :
+            (d.mode === 'AP' ? '联网后自动确定' : '等待 mDNS 名称更新')
+    $('wd-mdns').textContent = mdnsAddress
+    $('w-mdns-current').textContent = mdnsAddress
+    if (!mdnsLoaded && document.activeElement !== $('w-mdns')) {
+      $('w-mdns').value = mdns
+      $('w-mdns').dataset.saved = mdns
+      mdnsLoaded = true
+    }
+    $('s-rssi').textContent = d.mode === 'AP' ? ('已接入 ' + d.cli + ' 台设备') : (d.rssi + ' dBm')
+    $('s-mac').textContent = d.mac
+    $('s-uptime').textContent = fmtUptime(d.uptime)
+    $('s-heap').textContent = (d.heap / 1024).toFixed(1) + ' / ' + (d.heap_total / 1024).toFixed(1) + ' KB'
+    $('s-chip').textContent = d.chip
+    $('s-rs485').textContent = d.lan_ams?.enabled ? '局域网 MQTT' : d.rs485 == 1 ? '模式 1（仅 RXD/TXD）' : '模式 2（DE 控制方向）'
+    $('s-fw').textContent = (d.version || '-') + '  (' + (d.target || '-') + ')'
+    $('s-build').textContent = fmtBuild(d.build)
+    $('u-ver').textContent = d.version || '-'
+    $('u-target').textContent = d.target || '-'
+    $('u-build').textContent = fmtBuild(d.build)
+    const i2c = d.i2c || {}, env = d.env || {}
+    $('s-i2c').textContent = i2c.configured ? 'SDA/SCL 已配置' : '未配置'
+    $('s-i2c').style.color = i2c.configured ? 'var(--ok)' : 'var(--dim)'
+    for (let device = 0; device < 4; device++) {
+      const online = i2c.pcf_devices?.find(p => p.address === 0x20 + device)?.online ?? (device === 0 && i2c.pcf)
+      showI2cDevice(device === 0 ? 's-pcf' : 's-pcf-' + device, i2c.configured, online)
+    }
+    showI2cDevice('s-aht', i2c.configured, i2c.aht20)
+    showI2cDevice('s-bmp', i2c.configured, i2c.bmp280)
+    showSensorValue('s-aht-temp', env.aht_temp, ' ℃')
+    showSensorValue('s-aht-hum', env.humidity, ' %')
+    showSensorValue('s-bmp-temp', env.bmp_temp, ' ℃')
+    showSensorValue('s-bmp-press', env.pressure, ' hPa')
+    $('hdr').textContent = (d.mode === 'AP' ? '配网中 ' : '') + d.ip
+    $('b1').classList.toggle('on', d.buslog == 1)
+    $('b0').classList.toggle('on', d.buslog == 0)
+    renderMotorControls()
+    renderChannelStatus()
+    renderPauseTest()
+    updateBusLabels()
+    updateChannelStateText(true)
+    updateOtaControls()
+    /* 首次拿到状态后自动检查一次更新，有新版就把常驻横幅亮出来 */
+    if (!otaAutoTried) {
+      otaAutoTried = true;
+      if (d.otanotify == 1 && d.otaurl) checkUpdate(0);
+    }
+  }
+  /**
+   * 标记设备状态过期并更新依赖在线状态的控件
+   */
+  const markStatusOffline = () => {
+    statusAt = 0
+    updateProjectControls()
+    $('printer').textContent = '设备连接中断，打印机状态未知'
+    $('printer').style.color = 'var(--warn)'
+    renderMotorControls()
+    renderChannelStatus()
+    renderPauseTest()
+    updateBusLabels()
+  }
+  /**
+   * 按所选连接刷新状态，显式刷新会建立新的 WebSocket 订阅时间基准
+   * @return {Promise<void>|undefined} 首个新状态到达或请求结束的 Promise；离线、升级或 HTTP 请求在途时返回 undefined
    */
   const refreshStatus = () => {
-    if (statusPending || otaBusy) return
+    if (otaBusy) return
+    if (dataMode === 'ws') return requestSocketData('status')
+    if (statusPending) return
     statusPending = true
-    const requestedAt = performance.now(), ac = new AbortController(), timer = setTimeout(() => ac.abort(), 5000)
+    const generation = dataGeneration, requestedAt = performance.now(), ac = new AbortController()
+    statusAbort = ac
+    const timer = setTimeout(() => ac.abort(), 5000)
     return apiFetch('/api/status', {signal: ac.signal, cache: 'no-store'}).then(r => {
       if (!r.ok) throw Error('状态请求失败')
       return r.json()
-    }).then((d) => {
-      S = d
-      statusAt = performance.now()
-      syncPullbackTests(requestedAt)
-      syncProjectCurrent(d.project)
-      $('printer').textContent = ['等待打印机连接', '打印机在线', '打印机离线'][d.printer] || '打印机状态未知'
-      $('printer').style.color = d.printer === 1 ? 'var(--ok)' : d.printer === 2 ? 'var(--err)' : 'var(--dim)'
-      $('s-mode').textContent = d.mode === 'AP' ? 'AP 配网热点' : 'STA 已联网'
-      $('s-ip').textContent = d.ip
-      $('s-ssid').textContent = d.ssid || '(未连接)'
-      const mdns = d.mdns || 'bmcu'
-      const mdnsAddress = d.mdns_active ? 'http://' + d.mdns_active + '.local/' :
-              (d.mode === 'AP' ? '联网后自动确定' : '等待 mDNS 名称更新')
-      $('wd-mdns').textContent = mdnsAddress
-      $('w-mdns-current').textContent = mdnsAddress
-      if (!mdnsLoaded && document.activeElement !== $('w-mdns')) {
-        $('w-mdns').value = mdns
-        $('w-mdns').dataset.saved = mdns
-        mdnsLoaded = true
-      }
-      $('s-rssi').textContent = d.mode === 'AP' ? ('已接入 ' + d.cli + ' 台设备') : (d.rssi + ' dBm')
-      $('s-mac').textContent = d.mac
-      $('s-uptime').textContent = fmtUptime(d.uptime)
-      $('s-heap').textContent = (d.heap / 1024).toFixed(1) + ' / ' + (d.heap_total / 1024).toFixed(1) + ' KB'
-      $('s-chip').textContent = d.chip
-      $('s-rs485').textContent = d.lan_ams?.enabled ? '局域网 MQTT' : d.rs485 == 1 ? '模式 1（仅 RXD/TXD）' : '模式 2（DE 控制方向）'
-      $('s-fw').textContent = (d.version || '-') + '  (' + (d.target || '-') + ')'
-      $('s-build').textContent = fmtBuild(d.build)
-      $('u-ver').textContent = d.version || '-'
-      $('u-target').textContent = d.target || '-'
-      $('u-build').textContent = fmtBuild(d.build)
-      const i2c = d.i2c || {}, env = d.env || {}
-      $('s-i2c').textContent = i2c.configured ? 'SDA/SCL 已配置' : '未配置'
-      $('s-i2c').style.color = i2c.configured ? 'var(--ok)' : 'var(--dim)'
-      for (let device = 0; device < 4; device++) {
-        const online = i2c.pcf_devices?.find(p => p.address === 0x20 + device)?.online ?? (device === 0 && i2c.pcf)
-        showI2cDevice(device === 0 ? 's-pcf' : 's-pcf-' + device, i2c.configured, online)
-      }
-      showI2cDevice('s-aht', i2c.configured, i2c.aht20)
-      showI2cDevice('s-bmp', i2c.configured, i2c.bmp280)
-      showSensorValue('s-aht-temp', env.aht_temp, ' ℃')
-      showSensorValue('s-aht-hum', env.humidity, ' %')
-      showSensorValue('s-bmp-temp', env.bmp_temp, ' ℃')
-      showSensorValue('s-bmp-press', env.pressure, ' hPa')
-      $('hdr').textContent = (d.mode === 'AP' ? '配网中 ' : '') + d.ip
-      $('b1').classList.toggle('on', d.buslog == 1)
-      $('b0').classList.toggle('on', d.buslog == 0)
-      renderMotorControls()
-      renderChannelStatus()
-      renderPauseTest()
-      updateBusLabels()
-      updateChannelStateText(true)
-      updateOtaControls()
-      /* 首次拿到状态后自动检查一次更新，有新版就把常驻横幅亮出来 */
-      if (!otaAutoTried) {
-        otaAutoTried = true;
-        if (d.otanotify == 1 && d.otaurl) checkUpdate(0);
-      }
-    }).catch((e) => {
+    }).then(d => {
+      if (generation !== dataGeneration) return
+      applyStatusPacket(d, requestedAt)
+      if (generation === dataGeneration && !otaBusy) $('data-state').textContent = '轮询中'
+    }).catch(e => {
+      if (generation !== dataGeneration) return
       console.error('刷新设备状态失败', e)
-      statusAt = 0
-      updateProjectControls()
-      $('printer').textContent = '设备连接中断，打印机状态未知'
-      $('printer').style.color = 'var(--warn)'
-      renderMotorControls()
-      renderChannelStatus()
-      renderPauseTest()
-      updateBusLabels()
+      markStatusOffline()
+      $('data-state').textContent = '连接中断'
     }).finally(() => {
-      clearTimeout(timer);
-      statusPending = false;
+      clearTimeout(timer)
+      if (generation !== dataGeneration) return
+      statusPending = false
+      statusAbort = null
     })
   }
 
@@ -1135,37 +1169,222 @@
     for (const ch of hallChannels.keys()) if (!active.has(ch)) hallChannels.delete(ch)
   }
   /**
-   * 拉取所有通道的霍尔增量历史
-   * @return {Promise<void>|undefined} 请求结束的 Promise；OTA 期间、页面隐藏或已有请求时不重复发送
-   * 每次只发送一个带三秒超时的请求；分批补齐历史，回到状态页时沿用游标，固件负责重置过期历史
-   * 捕获异常时在控制台输出上下文与完整异常
+   * 按所选连接读取霍尔增量历史，离开可见状态页时取消 WebSocket 订阅
+   * @return {Promise<void>|undefined} 首包或 HTTP 请求结束的 Promise；升级、隐藏或请求在途时返回 undefined
+   * HTTP 请求带三秒超时且不重叠；两种方式共用游标补齐历史，固件负责重置过期游标
+   * 旧连接和保存前的检测配置不会覆盖新数据，读取异常在控制台记录
    */
   const refreshHall = () => {
-    if (hallPending || otaBusy || document.hidden || TAB !== 'status') return
-    if (hallPageTimer !== null) {
-      clearTimeout(hallPageTimer);
-      hallPageTimer = null
+    const active = !otaBusy && !document.hidden && TAB === 'status'
+    if (dataMode === 'ws') {
+      if (active) return requestSocketData('hall')
+      if (socketRequests.hall) {
+        finishSocketRequest('hall')
+        socketRequests.hall = null
+        if (dataSocket?.readyState === WebSocket.OPEN) dataSocket.send(JSON.stringify({type: 'hall', id: 0}))
+      }
+      return
     }
+    if (hallPending || !active) return
+    clearTimeout(hallPageTimer)
+    hallPageTimer = null
     hallPending = true
-    const revision = hallConfigRevision
+    const generation = dataGeneration, revision = hallConfigRevision
     const query = hallEpoch === null ? '' : '?epoch=' + hallEpoch + '&cursor=' + hallCursor
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 3000)
+    hallAbort = ac
     return apiFetch('/api/hall' + query, {signal: ac.signal, cache: 'no-store'}).then(r => {
       if (!r.ok) throw Error('霍尔读取失败')
       return r.json()
-    }).then(data => applyHallPacket(data, revision)).catch((e) => {
-      console.error('读取霍尔数据失败', e);
-      hallFailed = true;
+    }).then(data => {
+      if (generation === dataGeneration) applyHallPacket(data, revision)
+    }).catch(e => {
+      if (generation !== dataGeneration) return
+      console.error('读取霍尔数据失败', e)
+      hallFailed = true
       hallMore = false
     }).finally(() => {
-      clearTimeout(timer);
-      hallPending = false;
+      clearTimeout(timer)
+      if (generation !== dataGeneration) return
+      hallPending = false
+      hallAbort = null
       renderHallCharts()
-      if (hallMore && !document.hidden && TAB === 'status') hallPageTimer = setTimeout(() => {
-        hallPageTimer = null;
+      if (hallMore && !otaBusy && !document.hidden && TAB === 'status') hallPageTimer = setTimeout(() => {
+        hallPageTimer = null
         refreshHall()
       }, 50)
     })
+  }
+  // 一条连接承载状态和霍尔推送；切换代次使旧 HTTP 回调失效
+  const dataModeKey = 'bmcu-data-mode:' + new URL(API_BASE || location.href).host
+  let dataMode = 'ws', dataGeneration = 0, dataSocket = null, statusAbort = null, hallAbort = null
+  let socketTokenAbort = null
+  let socketId = 0, socketSeenAt = 0, socketRetryAt = 0, socketFailures = 0
+  const socketRequests = {status: null, hall: null}
+  /**
+   * 结束一次显式刷新等待，保留订阅元数据供后续推送校验
+   * @param {string} type status 或 hall
+   */
+  const finishSocketRequest = type => {
+    const request = socketRequests[type]
+    if (!request) return
+    clearTimeout(request.timer)
+    request.resolve?.()
+    request.resolve = null
+  }
+  /**
+   * 关闭旧连接、取消 HTTP 请求并释放刷新等待
+   * 递增代次后旧回调只能结束自身，不再更新页面或清除新请求
+   */
+  const stopDataTransport = () => {
+    dataGeneration++
+    statusAbort?.abort()
+    hallAbort?.abort()
+    socketTokenAbort?.abort()
+    statusAbort = hallAbort = socketTokenAbort = null
+    statusPending = hallPending = false
+    clearTimeout(hallPageTimer)
+    hallPageTimer = null
+    for (const type of ['status', 'hall']) {
+      finishSocketRequest(type)
+      socketRequests[type] = null
+    }
+    const socket = dataSocket
+    dataSocket = null
+    if (socket) {
+      socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null
+      socket.close()
+    }
+  }
+  /**
+   * 标记连接中断并按一至三十秒退避重连
+   */
+  const retryDataSocket = () => {
+    stopDataTransport()
+    markStatusOffline()
+    hallFailed = true
+    socketRetryAt = performance.now() + Math.min(30000, 1000 * 2 ** Math.min(socketFailures++, 5))
+    $('data-state').textContent = '重连中'
+  }
+  /**
+   * 通过 WebSocket 订阅或立即刷新一类数据
+   * @param {string} type status 或 hall
+   * @return {Promise<void>|undefined} 首包或超时结束的 Promise；未连接时返回 undefined
+   * 新 ID 隔离旧推送，状态时间基准与霍尔配置版本分别保留在订阅中
+   */
+  const requestSocketData = type => {
+    if (otaBusy || dataSocket?.readyState !== WebSocket.OPEN) return
+    finishSocketRequest(type)
+    socketId = (socketId + 1) >>> 0 || 1
+    const request = {id: socketId, requestedAt: performance.now(), revision: hallConfigRevision}
+    const message = {type, id: request.id}
+    if (type === 'hall' && hallEpoch !== null) Object.assign(message, {epoch: hallEpoch, cursor: hallCursor})
+    socketRequests[type] = request
+    const promise = new Promise(resolve => request.resolve = resolve)
+    request.timer = setTimeout(retryDataSocket, 5000)
+    dataSocket.send(JSON.stringify(message))
+    return promise
+  }
+  /**
+   * 读取同源连接凭据后建立 WebSocket，校验并确认推送后交给已有渲染逻辑
+   * @return {Promise<void>} 凭据请求与连接事件注册完成的 Promise
+   * 状态请求时间加设备 elapsed_ms 得到保守采样时间，旧订阅只确认接收、不推进退料检测
+   */
+  const connectDataSocket = async () => {
+    const generation = dataGeneration, ac = new AbortController()
+    socketTokenAbort = ac
+    const timer = setTimeout(() => ac.abort(), 5000)
+    try {
+      const response = await apiFetch('/api/ws-token', {signal: ac.signal, cache: 'no-store'})
+      if (generation !== dataGeneration || otaBusy) return
+      if (!response.ok) throw Error('读取 WebSocket 连接凭据失败')
+      const {token} = await response.json()
+      if (generation !== dataGeneration || otaBusy) return
+      if (typeof token !== 'string' || !/^[0-9a-f]{32}$/.test(token)) throw Error('WebSocket 连接凭据无效')
+      const url = new URL('/api/ws', API_BASE || location.href)
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+      url.port = '81'
+      const socket = new WebSocket(url.href)
+      dataSocket = socket
+      socketSeenAt = performance.now()
+      $('data-state').textContent = socketFailures ? '重连中' : '连接中'
+      socket.onopen = () => {
+        if (generation !== dataGeneration || socket !== dataSocket) return
+        socket.send(JSON.stringify({type: 'hello', token}))
+        refreshStatus()
+        refreshHall()
+      }
+      socket.onmessage = event => {
+        if (generation !== dataGeneration || socket !== dataSocket || otaBusy) return
+        try {
+          const packet = JSON.parse(event.data)
+          if (!packet || !['status', 'hall'].includes(packet.type) || !Number.isInteger(packet.seq) ||
+                  packet.seq < 1 || packet.seq > 0xffffffff || !Number.isInteger(packet.id) || packet.id < 1 ||
+                  packet.id > 0xffffffff || !packet.data || typeof packet.data !== 'object') throw Error('推送数据格式不完整')
+          socket.send(JSON.stringify({type: 'ack', seq: packet.seq}))
+          socketSeenAt = performance.now()
+          const request = socketRequests[packet.type]
+          if (!request || packet.id !== request.id) return
+          if (packet.type === 'status') {
+            if (!Number.isInteger(packet.elapsed_ms) || packet.elapsed_ms < 0 || packet.elapsed_ms > 0xffffffff)
+              throw Error('状态采样时间无效')
+            applyStatusPacket(packet.data, request.requestedAt + packet.elapsed_ms)
+          } else {
+            applyHallPacket(packet.data, request.revision)
+            renderHallCharts()
+          }
+          if (generation !== dataGeneration || otaBusy) return
+          if (socketRequests[packet.type] === request) finishSocketRequest(packet.type)
+          socketFailures = 0
+          $('data-state').textContent = '已连接'
+        } catch (error) {
+          console.error('接收 WebSocket 数据失败', error)
+          retryDataSocket()
+        }
+      }
+      socket.onclose = () => {
+        if (generation === dataGeneration && socket === dataSocket) retryDataSocket()
+      }
+      socket.onerror = () => socket.close()
+    } catch (error) {
+      if (generation !== dataGeneration) return
+      console.error('连接 WebSocket 失败', error)
+      retryDataSocket()
+    } finally {
+      clearTimeout(timer)
+      if (socketTokenAbort === ac) socketTokenAbort = null
+    }
+  }
+  /**
+   * 调度当前传输方式，WebSocket 模式只检查心跳，不发送周期查询
+   */
+  const pollData = () => {
+    if (otaBusy) return
+    if (dataMode === 'http') {
+      refreshStatus()
+      refreshHall()
+    } else if (!dataSocket) {
+      if (!socketTokenAbort && performance.now() >= socketRetryAt) connectDataSocket()
+    } else if (performance.now() - socketSeenAt > 8000 || (statusAt && performance.now() - statusAt > 8000)) retryDataSocket()
+  }
+  /**
+   * 切换并保存当前设备的连接偏好，首次使用默认 WebSocket
+   * @param {string} mode ws 或 http
+   */
+  const changeDataMode = mode => {
+    stopDataTransport()
+    dataMode = mode === 'http' ? 'http' : 'ws'
+    $('data-mode').value = dataMode
+    try {
+      localStorage.setItem(dataModeKey, dataMode)
+    } catch (error) {
+      console.error('保存连接方式失败', error)
+    }
+    socketRetryAt = socketFailures = 0
+    markStatusOffline()
+    hallFailed = true
+    $('data-state').textContent = otaBusy ? '升级期间暂停' : '连接中'
+    pollData()
   }
   /**
    * 绘制单通道分钟 ADC 曲线、最小最大范围和两条检测阈值线
@@ -2586,7 +2805,7 @@
         <label for="p-serial-${index}">自定义后缀</label>
         <input id="p-serial-${index}" maxlength="12" pattern="[A-F0-9]{12}" placeholder="12 位 0-9/A-F；留空自动生成" autocomplete="off">
         <label for="p-ams-version-${index}">AMS 版本</label>
-        <input id="p-ams-version-${index}" maxlength="15" placeholder="1.0.6.87" inputmode="decimal" autocomplete="off">
+        <input id="p-ams-version-${index}" maxlength="15" inputmode="decimal" autocomplete="off">
         <button id="save-ams-identity-${index}">保存此 AMS</button>
         <div class="hint" id="ams-identity-state-${index}" role="status"></div>`
         $('ams-identities').appendChild(card)
@@ -2604,7 +2823,7 @@
       if (!dirty && card.dataset.saving !== '1') {
         serial.value = entry.serial || '';
         serial.dataset.saved = serial.value
-        version.value = entry.ams_version || '1.0.6.87';
+        version.value = entry.ams_version;
         version.dataset.saved = version.value
       }
       $('p-effective-serial-' + index).textContent = entry.effective_serial || '待读取'
@@ -2913,10 +3132,12 @@
   /**
    * 开始显示一次 OTA 操作
    * @param {string} msg 起始阶段说明
-   * 清空上次过程并锁定更新控件
+   * 清空上次过程并锁定更新控件，暂停实时数据连接
    */
   const beginOtaProgress = (msg) => {
     otaBusy = true;
+    stopDataTransport()
+    $('data-state').textContent = '升级期间暂停'
     otaProgressKey = ''
     $('u-steps').replaceChildren()
     $('u-progress').classList.remove('hide')
@@ -2957,7 +3178,7 @@
    * 结束 OTA 进度展示
    * @param {boolean} ok 是否成功
    * @param {string} msg 最终提示
-   * 停止活动指示并保留过程；失败保留已有百分比，恢复操作按钮
+   * 停止活动指示并保留过程；失败保留已有百分比，恢复操作按钮和实时数据连接
    */
   const finishOtaProgress = (ok, msg) => {
     if (ok) $('u-bar').value = 100
@@ -2965,6 +3186,8 @@
     $('u-stat').textContent = msg
     $('u-stat').classList.toggle('error', !ok)
     otaBusy = false
+    socketRetryAt = 0
+    pollData()
     updateOtaControls()
   }
   /**
@@ -4140,24 +4363,25 @@
   let savedTab = 'status';
   try {
     savedTab = localStorage.getItem('bmcu-tab') || 'status';
+    dataMode = localStorage.getItem(dataModeKey) === 'http' ? 'http' : 'ws'
   } catch (e) {
     console.error('恢复标签页失败', e)
   }
+  $('data-mode').value = dataMode
   initMainLogFilters()
   initBusLogFilters()
   initLogViews()
   showTab(savedTab)
-  refreshStatus()
+  pollData()
   loadPara()
   loadProjects()
-  setInterval(refreshStatus, 1000)
-  setInterval(refreshHall, 1000)
+  setInterval(pollData, 1000)
   setInterval(renderHallCharts, 1000)
   setInterval(renderChannelStatus, 200)
   window.addEventListener('resize', renderHallCharts)
   document.addEventListener('visibilitychange', () => {
+    refreshHall()
     if (!document.hidden) {
-      refreshHall();
       renderChannelStatus();
       renderHallCharts()
     }

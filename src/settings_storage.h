@@ -105,10 +105,12 @@ constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设�
 #define DEFAULT_MANUAL_PULSE_MS     10000  // 手动点动默认时长（毫秒）
 #define DEFAULT_AUTO_LOAD_MS        8000 // 微动辅助进料默认时长（毫秒）
 #define DEFAULT_FEED_STOP_DELAY_MS  1000 // 进料停止延迟默认时长（毫秒）
-#define DEFAULT_AMS_VERSION_MAJOR   1    // 默认 AMS 版本 A 段
+
+// 旧版使用 90.00.00.00 新版使用 1.0.6.87
+#define DEFAULT_AMS_VERSION_MAJOR   90   // 默认 AMS 版本 A 段
 #define DEFAULT_AMS_VERSION_MINOR   0    // 默认 AMS 版本 B 段
-#define DEFAULT_AMS_VERSION_PATCH   6    // 默认 AMS 版本 C 段
-#define DEFAULT_AMS_VERSION_BUILD   87   // 默认 AMS 版本 D 段
+#define DEFAULT_AMS_VERSION_PATCH   0    // 默认 AMS 版本 C 段
+#define DEFAULT_AMS_VERSION_BUILD   0    // 默认 AMS 版本 D 段
 
 // 点动、辅助进料和进料停止延迟的时长上限（毫秒）：必须小于 30 秒
 #define MAX_PULSE_MS                30000
@@ -163,7 +165,7 @@ bool settings_get_ams_serial(uint8_t ams, char out[AMS_SERIAL_LENGTH + 1]);
 
 /**
  * 解析 A.B.C.D 格式的 AMS 版本
- * @param text 待解析文本，例如 "1.0.6.87"
+ * @param text 待解析文本
  * @param out 输出四个版本分量
  * @return true 表示格式正确且每段均在 0..255
  * 仅在完整解析成功后写入 out，供网页保存前统一校验

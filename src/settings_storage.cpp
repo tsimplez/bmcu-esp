@@ -141,7 +141,7 @@ bool settings_get_ams_serial(uint8_t ams, char out[AMS_SERIAL_LENGTH + 1]) {
 
 /**
  * 解析 A.B.C.D 格式的 AMS 版本
- * @param text 待解析文本，例如 "1.0.6.87"
+ * @param text 待解析文本
  * @param out 输出四个版本分量
  * @return true 表示格式正确且每段均在 0..255
  * 必须正好四段十进制数字；仅在完整解析成功后写入 out
