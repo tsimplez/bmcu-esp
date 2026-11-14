@@ -88,6 +88,7 @@ struct BambuBusPauseTestStatus {
     const char *result;
 };
 
+// 登记网页暂停实验、霍尔停转暂停或解除请求
 bool BambuBus_request_pause_test(bool enable);
 
 BambuBusPauseTestStatus BambuBus_pause_test_status();

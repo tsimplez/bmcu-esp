@@ -50,8 +50,6 @@ static int cmd = 0;
 //#define BambuBus_address_AMSLite ((uint16_t)0x1200)
 #define BambuBus_address_AMSLite ((uint16_t)0x1300)
 
-#define VERSION_NAME long_packge_version_version_and_name_AMS_lite
-
 namespace {
     // ==================== 新协议内部状态机定义 ====================
     enum class filament_motion_internal : uint8_t {
@@ -1759,11 +1757,11 @@ static_assert(sizeof(serial_identity_template) == sizeof(serial_identity[0]), "s
 
 // 版本号数组（17字节）
 // AMS lite 版本响应中的版本号和型号名模板（"AMS_F102"）
-static unsigned char long_packge_version_version_and_name_AMS_lite[] = {
-    0x00, 0x00, 0x00, 0x3C, // 版本号60
-    0x41, 0x4D, 0x53, 0x5F, 0x46, 0x31, 0x30, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, // "AMS_F102"
-    0x00, 0x00, 0x00, 0x00 // 填充 + AMS序号位置
-};
+// static unsigned char long_packge_version_version_and_name_AMS_lite[] = {
+//     0x00, 0x00, 0x00, 0x3C, // 版本号60
+//     0x41, 0x4D, 0x53, 0x5F, 0x46, 0x31, 0x30, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, // "AMS_F102"
+//     0x00, 0x00, 0x00, 0x00 // 填充 + AMS序号位置
+// };
 
 // AMS 08 版本响应中的版本号和型号名模板（"AMS08"）
 static unsigned char long_packge_version_version_and_name_AMS08[] = {
@@ -2148,9 +2146,9 @@ static int pause_test_candidate(const uint32_t now) {
 }
 
 /**
- * 登记网页暂停实验或解除请求
+ * 登记网页暂停实验、霍尔停转暂停或解除请求
  * @param enable true 请求触发，false 请求解除
- * @return true 表示请求已登记；无可用通道或已有测试请求时拒绝触发
+ * @return true 表示请求已登记；无可用通道或已有暂停请求时拒绝触发
  * 这里只登记目标，由主循环再次校验并执行；解除可重复提交且允许断线登记，但不恢复离线模式或取消待保存；未配置有线总线时不可用
  */
 bool BambuBus_request_pause_test(const bool enable) {

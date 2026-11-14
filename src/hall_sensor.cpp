@@ -4,6 +4,7 @@
 #include "PCF8575_PinMap.h"
 #include "log_bus.h"
 #include "BambuBus.h"
+#include "web_config.h"
 #include <cstring>
 
 namespace {
@@ -59,12 +60,12 @@ namespace {
         int8_t candidate = 0;
         uint8_t confirmations = 0;
     } detector;
-    HallDetectionEvent last_event = {0, -1, "none"};
+    HallDetectionEvent last_event = {.sequence = 0, .channel = -1, .type = "none"};
 
     /**
      * 发布霍尔状态变化事件
      * @param type 事件类型
-     * 只保留最后一个事件及递增序号，供后续主循环调用方去重；不发出暂停或电机命令
+     * 只保留最后一个事件及递增序号，供调用方去重；暂停请求由检测状态切换时单独提交
      */
     void publish_detection_event(const char *type) {
         if (++last_event.sequence == 0) ++last_event.sequence;
@@ -93,11 +94,13 @@ namespace {
      * @param sampled_channel 本轮实际采样的通道，没有采样时为 -1
      * @param valid 本次转换是否有效
      * @param raw 本次 ADC 原始值
+     * 仅当 HA 当前阶段和打印状态均确认打印中时检测；条件不满足时退出检测并清空计时
      * 连续三次采样位于同一阈值外才确认区域；首次确认只建立基准，之后高低区交替才刷新移动时间
      * 切换通道、配置或接线重新计时；初始化或读取失败、超过五百毫秒无采样单独报错，恢复后重新建立基准
+     * 进入停转超时时提交一次 BambuBus 暂停请求；持续超时不重复提交，检测恢复不自动恢复打印
      */
     void update_detector(const uint32_t now, const int sampled_channel, const bool valid, const uint16_t raw) {
-        const int channel = BambuBus_active_using_channel();
+        const int channel = web_config_ha_printing() ? BambuBus_active_using_channel() : -1;
         if (channel < 0 || channel >= channel_count || runtime_pins[channel] == PIN_NONE ||
             !settings_hall_detection_valid(HALL_DETECTION[channel]) || !HALL_DETECTION[channel].timeout_s) {
             if (detector.channel >= 0)
@@ -164,8 +167,10 @@ namespace {
             now - detector.reference_ms >= config.timeout_s * 1000u) {
             detector.state = DetectionState::timeout;
             publish_detection_event("timeout");
-            LOG_MAIN("[hall] 通道 %d 已连续 %lu 秒未检测到移动，仅告警", channel + 1,
-                     static_cast<unsigned long>(config.timeout_s));
+            const bool requested = BambuBus_request_pause_test(true);
+            LOG_MAIN("[hall] 通道 %d 已连续 %lu 秒未检测到移动，%s", channel + 1,
+                     static_cast<unsigned long>(config.timeout_s),
+                     requested ? "已提交总线暂停请求" : "总线暂停请求未接受，请检查暂停实验状态和有线总线连接");
         }
     }
 
@@ -286,7 +291,7 @@ void hall_sensor_sync_config() {
  * 每轮最多转换一个到期通道，目标每通道二十次每秒；错过的采样不集中补读
  * 先结算过去的统计桶再读取当前值，使长停顿和毫秒回绕保持正确时间轴
  * 每通道首次采样及此后每秒将当前 ADC 值或读取失败写入主板日志，不补打错过的日志
- * 所有通道保留采样和历史，仅对当前已确认使用的一个通道执行停转检测
+ * 所有通道保留采样和历史，仅在 HA 当前阶段和打印状态均确认打印中时对已确认使用的唯一通道执行停转检测
  */
 void hall_sensor_run() {
     hall_sensor_sync_config();
@@ -356,7 +361,7 @@ HallDetectionStatus hall_sensor_detection_status() {
 /**
  * 读取最后一次检测状态变化事件
  * @return 事件序号、所属通道及类型；没有事件时序号为零
- * 查询不会消费事件；后续暂停调用方需按序号去重并再次确认通道和实时超时状态
+ * 查询不会消费事件；暂停请求已由检测状态切换时提交，调用方可按序号去重显示
  */
 HallDetectionEvent hall_sensor_last_event() {
     return last_event;

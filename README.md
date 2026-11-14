@@ -97,7 +97,8 @@ BambuBus 通信协议，支持多通道耗材管理、电机控制、编码器�
 
 ### 扩展说明
 - 单微动（实现自吸和耗材在线检测）
-- 单霍尔（实现【空打】【缠料】暂停打印 (制作中)）
+- 单霍尔（仅当 HA 当前阶段为 `printing`、打印状态为 `running`，且状态有效时，检测打印机确认的当前使用通道；无转动超时通过 BambuBus 请求暂停打印）
+  HA 未启用、配置不完整、离线、状态达到 6 秒未更新或任一项不是“打印中”时，退出停转检测并清空计时；恢复后重新计时，ADC 采样与历史记录持续保留
 需要把 离线 切换回 在线或者自动（使用电机堵转实现（打印机会退料在进料（只能直接离线）有概率提示堵转））
 
 ## 支持的平台
@@ -148,7 +149,8 @@ src/
 ├── crc_bus.c/h         # BambuBus 收发 CRC8 / CRC16 查表校验（不依赖 lib/CRC）
 └── version.h           # 固件版本与 OTA 板型键名（FW_VERSION / FW_TARGET）
 
-web/index.html          # 管理页面，构建时作为二进制块编入固件
+web/index.html          # 管理页面，构建时 gzip 压缩后编入 ESP32 固件
+scripts/prepare_web.py  # 生成压缩网页头文件，检查完整固件镜像的分区容量
 ```
 
 ### 主循环
@@ -171,7 +173,7 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
   运行中掉线也会自动重连，超时后采用同样的配网与重试流程；未配置或已忘记网络时只开启配网热点
 - **页面分页**：状态、配网、设置、固件更新、日志
 - **数据连接**：项目配置旁可切换 WebSocket / HTTP 轮询，默认 WebSocket，按设备在当前浏览器记住选择，立即生效；两种方式均每秒更新状态，霍尔仅在可见状态页更新
-  WebSocket 使用设备的 `81` 端口，localhost 预览沿用 `LOCAL_API_BASE` 的主机；断线后退避重连，页面标记数据过期，也可手动切回 HTTP 轮询；OTA 期间暂停，结束后恢复
+  WebSocket 使用设备的 `81` 端口，localhost 预览沿用 `LOCAL_API_BASE` 的主机；断线后退避重连，页面标记数据过期，也可手动切回 HTTP 轮询；检查更新在后台执行，状态、霍尔和日志继续刷新，只有实际安装固件期间暂停，结束后恢复
 - **主要接口**：
 
 | 接口 | 方法 | 用途 |
@@ -180,6 +182,10 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 | `/api/ws-token` | GET | 获取本次启动的 WebSocket 连接凭据，沿用 HTTP 同源与 localhost 跨域限制，禁止缓存 |
 | `/api/ws` | WebSocket，端口 81 | 订阅状态与霍尔增量历史，数据字段与对应 HTTP 接口一致 |
 | `/api/settings` | GET / POST | 读取 / 保存通道参数 |
+| `/api/home-assistant` | GET | 读取 HA 配置，包含连接代次 `generation` 和是否已选两个状态实体 `selected`；令牌只返回是否已配置 |
+| `/api/home-assistant` | POST | 第一步保存连接，只提交 `enabled`、`url`、`token`；空令牌保留原值 |
+| `/api/home-assistant/selection` | POST | 第二步保存 `stage_entity`、`status_entity` 和当前连接的 `generation` |
+| `/api/home-assistant/entities` | GET | 按 `offset`、`generation` 异步读取实体候选；首次刷新附 `refresh=1`，按 `ready` 和 `next_offset` 逐页获取 |
 | `/api/bus` | POST | 保存 BambuBus 接线与 RS485 模式，或双空 RX/TX 的局域网配对/换料参数，重启生效 |
 | `/api/lan/channel` | POST | 已配对且空闲时确认当前装料通道，`channel` 为 0 基编号或 -1（未知），不启动电机 |
 | `/api/lan/cancel` | POST | 提交停止局域网换料请求，由主循环停车并清除当前通道确认 |
@@ -190,9 +196,14 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 | `/api/log` | GET | 增量拉取日志（`dl=1` 下载附件） |
 | `/api/hall` | GET | 霍尔当前值、短期均值与增量历史；通道的 `avg_1s` / `avg_5s` 为近 1 秒 / 5 秒有效样本平均 ADC 值，无有效样本返回 `null` |
 | `/api/hall/detection` | POST | 保存单通道霍尔 ADC 上下限与无转动超时，字段和状态见霍尔停转检测说明 |
-| `/api/ota/check` / `pull` / `upload` | POST | 检查更新 / 在线更新 / 本地上传 |
+| `/api/ota/check` | POST / GET | POST 启动或加入后台版本检查，GET 携带 `id` 查询进度和结果，无需维护状态 |
+| `/api/ota/pull` / `upload` | POST | 在线更新 / 本地上传，要求满足维护条件且没有正在执行的版本检查 |
 | `/api/reboot` | GET | 重启 |
 | `/api/factory` | POST | 恢复默认设置 |
+
+版本检查返回 `id`、`running`、`progress` 和 `result`；`running=false` 后读取 `result.ok` 及版本信息或错误说明，GET 的任务 ID 失效时返回 409。关闭自动提示时 POST 返回 `skipped=true`，手动检查使用 `force=1` 绕过此开关
+
+日志发送缓冲按请求分配，版本检查期间缩小发送分块，为 TLS 握手保留内存；两路日志继续按原游标读取，缓冲分配失败时返回 503，客户端稍后重试
 
 WebSocket 使用 JSON 文本消息，支持最多 4 个客户端，网络任务收发，主循环只读取运行缓存并生成数据
 
@@ -217,7 +228,8 @@ pio run -e esp32c3 -t upload # 编译并上传
 pio run -t clean             # 清理
 ```
 
-- 公共依赖在 `[env]` 中声明（PCF8575），网页 `web/index.html` 通过 `board_build.embed_txtfiles` 编入固件
+- 公共依赖在 `[env]` 中声明（PCF8575），ESP32 构建时由 `scripts/prepare_web.py` 将 `web/index.html` 压缩为 gzip 并编入固件，浏览器自动解压；生成头文件放在各环境的构建目录，无需手动维护或单独烧录文件系统
+- 构建完成和烧录前均检查完整 `firmware.bin` 大小，超过应用分区则报错，避免段对齐等开销未计入构建摘要而导致烧录后无法启动
 - `pico` 环境需 `lib_ignore` 忽略 ESP32 专用库（WiFi/DNSServer/ESPmDNS/WebServer/Preferences）；`upload_protocol = picotool`
 - C3 的 GPIO20/21 可分配给接线；启用通道、五通总微动、有线 BambuBus 或已配置 I2C 占用任一脚时，自动关闭 UART0 应用/SDK 日志，网页主板日志保留；接线应用后两脚均空闲时恢复 UART0 控制台
 - C3 启动时先暂停 UART0 输出，读取接线后决定是否开启；运行中改线由主循环先释放旧引脚，再切换控制台并绑定新引脚。此运行期控制不改变 ROM/Bootloader 启动输出

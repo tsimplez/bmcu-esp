@@ -49,7 +49,7 @@ uint32_t hal_hall_epoch();
  * @return 读取到的值
  * RP2040 在当前核心的临界区读取；ESP32 使用 acquire 原子读取，供接收回调与主循环交接数据
  */
-static uint32_t hal_atomic_load_u32(const volatile uint32_t *value) {
+static inline uint32_t hal_atomic_load_u32(const volatile uint32_t *value) {
 #if defined(ARDUINO_ARCH_RP2040)
     const uint32_t state = save_and_disable_interrupts();
     const uint32_t result = *value;
@@ -64,10 +64,9 @@ static uint32_t hal_atomic_load_u32(const volatile uint32_t *value) {
  * 原子发布共享的 32 位值
  * @param value 共享变量地址
  * @param next 要写入的值
- * @return 无返回值
  * RP2040 在当前核心的临界区写入；ESP32 使用 release 原子写入，保证此前写入的帧内容先可见
  */
-static void hal_atomic_store_u32(volatile uint32_t *value, uint32_t next) {
+static inline void hal_atomic_store_u32(volatile uint32_t *value, uint32_t next) {
 #if defined(ARDUINO_ARCH_RP2040)
     const uint32_t state = save_and_disable_interrupts();
     *value = next;
@@ -80,10 +79,9 @@ static void hal_atomic_store_u32(volatile uint32_t *value, uint32_t next) {
 /**
  * 原子递增共享计数
  * @param value 共享计数地址
- * @return 无返回值
  * 保护接收回调与主循环共用的错误计数；RP2040 的调用者须位于同一核心
  */
-static void hal_atomic_increment_u32(volatile uint32_t *value) {
+static inline void hal_atomic_increment_u32(volatile uint32_t *value) {
 #if defined(ARDUINO_ARCH_RP2040)
     const uint32_t state = save_and_disable_interrupts();
     ++*value;
@@ -206,7 +204,7 @@ bool hal_storage_write(int region, const void* buf, uint32_t len);
  * 初始化前的 GPIO 预处理
  * ESP32-C3 经典款上释放内部 USB Serial/JTAG 对 GPIO18/19 的占用，其他平台为空操作
  */
-static void hal_prepare_gpio() {
+static inline void hal_prepare_gpio() {
     // ESP32-C3  USB-TTL 转串口芯片
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && C3_BOARD_USB_TTL && !ARDUINO_USB_CDC_ON_BOOT
     // 禁用内部 USB Serial/JTAG 外设对 USB 物理引脚的占用
@@ -257,7 +255,7 @@ extern int BUS_RX, BUS_TX, BUS_DE;
  * 初始化任务看门狗
  * ESP32 平台配置 10 秒超时并把主循环任务加入看门狗
  */
-static void hal_watchdog_init() {
+static inline void hal_watchdog_init() {
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     // IDF5 起看门狗参数从 (超时秒数, 是否 panic) 换成了结构体，而且系统启动时已经
     // 初始化过一次 TWDT：先 reconfigure，避免 init 打出 "TWDT already initialized"
@@ -275,14 +273,14 @@ static void hal_watchdog_init() {
  * 喂任务看门狗
  * ESP32 平台复位任务看门狗计时，防止主循环被误判为卡死
  */
-static void hal_watchdog_feed() { esp_task_wdt_reset(); }
+static inline void hal_watchdog_feed() { esp_task_wdt_reset(); }
 
 /**
  * 初始化 BambuBus 串口
  * @param baud 波特率
  * ESP32 平台扩大接收缓冲后，以 8E1 格式初始化 RS485 串口
  */
-static void hal_bus_begin(const uint32_t baud) {
+static inline void hal_bus_begin(const uint32_t baud) {
     // 默认 256 字节 RX 缓冲太小，事件任务来不及取就会丢包
     BUS_SERIAL.setRxBufferSize(2048);
     BUS_SERIAL.begin(baud, SERIAL_8E1, BUS_RX, BUS_TX, false);
@@ -290,17 +288,17 @@ static void hal_bus_begin(const uint32_t baud) {
 
 /**
  * 查询串口是否有可读数据
- * @return 可读字节数
- * 返回 BambuBus 串口当前可读取的字节数
+ * @return 有可读字节时返回 true
+ * 根据 BambuBus 串口当前可读取的字节数判断接收状态
  */
-static bool hal_bus_available() { return BUS_SERIAL.available(); }
+static inline bool hal_bus_available() { return BUS_SERIAL.available(); }
 
 /**
  * 读取一个串口字节
  * @return 读到的字节；无数据时返回 -1
  * 从 BambuBus 串口读取单字节
  */
-static int hal_bus_read() { return BUS_SERIAL.read(); }
+static inline int hal_bus_read() { return BUS_SERIAL.read(); }
 
 /**
  * 发送串口数据
@@ -308,7 +306,7 @@ static int hal_bus_read() { return BUS_SERIAL.read(); }
  * @param len 发送长度
  * ESP32 平台写入并等待串口发送完成
  */
-static void hal_bus_write(const uint8_t *data, const uint16_t len) {
+static inline void hal_bus_write(const uint8_t *data, const uint16_t len) {
     BUS_SERIAL.write(data, len);
     BUS_SERIAL.flush();
 }
@@ -331,19 +329,19 @@ static void hal_bus_write(const uint8_t *data, const uint16_t len) {
  * 初始化硬件看门狗（RP2040）
  * RP2040 平台启用 10 秒硬件看门狗
  */
-static void hal_watchdog_init() { watchdog_enable(10000, true); }
+static inline void hal_watchdog_init() { watchdog_enable(10000, true); }
 /**
  * 喂硬件看门狗（RP2040）
  * RP2040 平台刷新硬件看门狗计时
  */
-static void hal_watchdog_feed() { watchdog_update(); }
+static inline void hal_watchdog_feed() { watchdog_update(); }
 
 /**
  * 初始化 BambuBus UART（RP2040）
  * @param baud 波特率
  * RP2040 平台配置 UART0 的 TX/RX、8E1 格式和 FIFO
  */
-static void hal_bus_begin(const uint32_t baud) {
+static inline void hal_bus_begin(const uint32_t baud) {
     uart_init(BUS_SERIAL, baud);
     gpio_set_function(BUS_TX, GPIO_FUNC_UART);
     gpio_set_function(BUS_RX, GPIO_FUNC_UART);
@@ -356,20 +354,20 @@ static void hal_bus_begin(const uint32_t baud) {
  * @return 是否有可读字节
  * RP2040 平台通过 uart_is_readable() 检查接收状态
  */
-static bool hal_bus_available() { return uart_is_readable(BUS_SERIAL); }
+static inline bool hal_bus_available() { return uart_is_readable(BUS_SERIAL); }
 /**
  * 读取 UART 字节（RP2040）
  * @return 读到的字节
  * RP2040 平台从 UART0 读取一个字节
  */
-static int hal_bus_read() { return uart_getc(BUS_SERIAL); }
+static inline int hal_bus_read() { return uart_getc(BUS_SERIAL); }
 /**
  * 发送 UART 数据（RP2040）
  * @param data 待发送数据
  * @param len 发送长度
  * RP2040 平台阻塞写入并等待发送完成
  */
-static void hal_bus_write(const uint8_t *data, const uint16_t len) {
+static inline void hal_bus_write(const uint8_t *data, const uint16_t len) {
     uart_write_blocking(BUS_SERIAL, data, len);
     uart_tx_wait_blocking(BUS_SERIAL);
 }

@@ -333,7 +333,7 @@ void fail(const char *reason) {
 }
 
 /**
- * 切换非阻塞换料步骤并记录阶段日志
+ * 切换非阻塞换料步骤并记录阶段与动作时长
  * @param next 下一步骤
  * @param duration 本步骤允许等待的毫秒数
  */
@@ -349,7 +349,8 @@ void advance(Step next, uint32_t duration = STEP_TIMEOUT_MS) {
         case HEAT: LOG_MAIN("[lan] 等待喷嘴加热至 %u°C，当前 %d°C", LAN_AMS_CONFIG.nozzle_temp, report.nozzle); break;
         case EXTRUDER: LOG_MAIN("[lan] 已请求挤出机进料，3 秒后启动送料电机"); break;
         case FEED:
-            LOG_MAIN("[lan] 通道 %d 开始送线，时长 %u ms", target_channel + 1, LAN_AMS_CONFIG.feed_ms);
+            LOG_MAIN("[lan] 通道 %d 开始送线，时长 %lu ms", target_channel + 1,
+                     static_cast<unsigned long>(LAN_AMS_CONFIG.feed_ms));
             break;
         case RESUME: LOG_MAIN("[lan] 已请求恢复打印，等待 RUNNING 确认"); break;
         default: break;

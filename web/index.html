@@ -12,6 +12,21 @@
       h1{margin:0;font-size:17px;font-weight:600}
       h1 small{color:var(--dim);font-weight:400;font-size:12px;margin-left:8px}
       .header-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+      .printer-summary{display:flex;align-items:center;gap:8px 16px;flex-wrap:wrap}
+      .ha-summary{display:inline-flex;gap:4px 14px;flex-wrap:wrap;overflow-wrap:anywhere}
+      .ha-summary b{font-weight:500;color:var(--fg)}
+      .ha-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}
+      .ha-fields label{display:block;min-width:0;color:var(--dim);font-size:12px}
+      .ha-fields input{display:block;margin-top:5px}
+      .ha-fields .ha-wide{grid-column:1/-1}
+      .ha-enable{display:inline-flex;align-items:center;gap:7px}
+      .ha-enable input{width:auto;margin:0;accent-color:var(--acc)}
+      .ha-step{margin:16px 0 0;padding-top:14px;border-top:1px solid var(--line)}
+      .ha-step h3{margin:0;font-size:14px;font-weight:500}
+      .ha-picker{min-width:0}
+      .ha-picker-label{display:block;margin-bottom:5px;color:var(--dim);font-size:12px}
+      .ha-picker-warning{margin-top:5px;font-size:11px;color:var(--warn);overflow-wrap:anywhere}
+      @media(max-width:640px){.ha-fields{grid-template-columns:1fr}}
       .project-picker{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
       .project-picker label{color:var(--dim);white-space:nowrap}
       .project-picker select{width:240px;max-width:100%}
@@ -67,7 +82,8 @@
       .scanlist div:hover{background:#242935}
       .scanlist div:last-child{border-bottom:0}
       .scanlist i{color:var(--dim);font-style:normal;font-size:12px}
-      #t-logs>.card{display:flex;flex-direction:column;min-height:calc(100vh - var(--log-header-height,120px) - 32px);min-height:calc(100dvh - var(--log-header-height,120px) - 32px);margin-bottom:0}
+      #t-logs{--log-header-height:120px}
+      #t-logs>.card{display:flex;flex-direction:column;min-height:calc(100vh - var(--log-header-height) - 32px);min-height:calc(100dvh - var(--log-header-height) - 32px);margin-bottom:0}
       #t-logs>.card>:not(.logbox){flex-shrink:0}
       .logbox{white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12px;line-height:1.5;flex:1 0 180px;min-height:180px;overflow:auto;background:#0c0e13;border:1px solid var(--line);border-radius:8px;padding:10px;margin:10px 0 0}
       .logspace{position:relative;overflow-anchor:none}
@@ -79,13 +95,11 @@
       .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#262b36;border:1px solid #3a4250;border-radius:8px;padding:10px 18px;font-size:13px;opacity:0;visibility:hidden;transition:opacity .25s,visibility .25s;pointer-events:none;max-width:86vw;text-align:center;cursor:pointer}
       .toast.on{opacity:1;visibility:visible;pointer-events:auto}
       .tbl{width:100%;border-collapse:collapse}
-      .tbl th{text-align: center}
       .tbl details summary{cursor:pointer;color:var(--acc);padding:8px 0}
       .io-config{margin-top:12px;border-top:1px solid var(--line);padding-top:4px}
       .io-config .tbl{margin-top:8px}
       .io-config h3{font-size:14px;font-weight:500;margin:12px 0 8px}
       .io-config select{min-width:92px}
-      .io-warning{color:#f0b34b;font-size:14px;margin-left:4px;cursor:help}
       .io-config select.bad{border-color:#e15b64}
       .ams-identities{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}
       .ams-identity{min-width:0;border:1px solid var(--line);border-radius:8px;padding:12px}
@@ -178,7 +192,7 @@
             </select>
         </div>
         <div class="data-picker">
-            <label for="data-mode">数据连接</label>
+            <label for="data-mode">通信方式</label>
             <select id="data-mode" onchange="changeDataMode(this.value)">
                 <option value="ws">WebSocket</option>
                 <option value="http">HTTP 轮询</option>
@@ -186,7 +200,13 @@
             <span id="data-state" role="status">连接中</span>
         </div>
     </div>
-    <div id="printer" class="hint" role="status">正在读取打印机状态…</div>
+    <div class="printer-summary hint">
+        <span id="printer" role="status">正在读取打印机状态…</span>
+        <span id="ha-summary" class="ha-summary hide" role="status">
+            <span>当前阶段：<b id="ha-stage">等待状态</b></span>
+            <span>打印状态：<b id="ha-print-status">等待状态</b></span>
+        </span>
+    </div>
     <nav>
         <button data-tab="status" class="on">状态</button>
         <button data-tab="settings">设置</button>
@@ -202,8 +222,7 @@
         <button onclick="hideUpbar()">忽略</button>
     </div>
 </header>
-<dialog id="project-preview" class="project-preview" aria-labelledby="project-name"
-        oncancel="event.preventDefault();closeProjectPreview()">
+<dialog id="project-preview" class="project-preview" aria-labelledby="project-name">
     <h2 id="project-name">项目接线预览</h2>
     <div class="project-preview-body">
         <div id="project-summary"></div>
@@ -300,21 +319,6 @@
             <div class="kv"><span>RS485 模式</span><b id="s-rs485">-</b></div>
             <div class="kv"><span>固件版本</span><b id="s-fw">-</b></div>
             <div class="kv"><span>编译时间</span><b id="s-build">-</b></div>
-        </div>
-    </div>
-
-    <!-- ================= 实验测试 ================= -->
-    <div id="t-experiments" class="hide">
-        <div class="card" id="pause-test-card">
-            <h2>暂停打印测试（实验）</h2>
-            <div class="row">
-                <button id="pause-test-start" class="danger" onclick="sendPauseTest(true)" disabled>测试暂停</button>
-                <button id="pause-test-clear" onclick="sendPauseTest(false)">解除测试</button>
-            </div>
-            <div id="pause-test-state" class="hint" role="status">正在读取测试状态…</div>
-            <div class="hint">
-                点击后保持堵转，目标通道进入“退料中”时设为离线，保存成功后自动解除堵转。恢复使用请在“通道参数”中改回在线或自动；重启仍保持离线。“解除测试”只解除堵转，不恢复通道模式。
-            </div>
         </div>
     </div>
 
@@ -465,7 +469,9 @@
                     数量联动新增通道或修改接线前请停止电机动作；引脚不能重复带警告的引脚可能影响芯片启动
                 </div>
                 <div class="row" style="margin-top:10px">
-                    <label for="io-switch">五通总微动</label><span id="io-switch-control"></span>
+                    <label for="io-switch">五通总微动</label><span id="io-switch-control">
+                        <select id="io-switch" disabled><option value="255">加载中…</option></select>
+                    </span>
                 </div>
                 <div class="hint">选“无”关闭；支持主控 GPIO 和已配置 I2C 的 PCF8575 扩展脚。拉低触发时，当前选中且空闲的通道进料
                     200 毫秒。与下方通道接线一起保存。
@@ -509,8 +515,8 @@
                 <button id="btn-config-reset" class="danger" onclick="doConfigReset()">恢复默认配置</button>
                 <button class="danger" onclick="doFactory()">恢复出厂设置</button>
             </div>
-            <div class="hint">恢复默认配置会重置接线、通道参数、AMS 身份和更新设置，保留 WiFi 配置，并重启设备</div>
-            <div class="hint">恢复出厂设置会清空 WiFi 凭据、通道参数，并重启进入配网模式</div>
+            <div class="hint">恢复默认配置会重置接线、通道参数、AMS 身份和更新设置，保留 WiFi 与 HA 配置，并重启设备</div>
+            <div class="hint">恢复出厂设置会清空 WiFi 凭据、HA 配置和通道参数，并重启进入配网模式</div>
         </div>
     </div>
 
@@ -613,12 +619,68 @@
         </div>
     </div>
 
+    <!-- ================= 实验测试 ================= -->
+    <div id="t-experiments" class="hide">
+        <div class="card" id="ha-card">
+            <h2>Home Assistant</h2>
+            <div>需要安装 <a href="https://github.com/greghesp/ha-bambulab">https://github.com/greghesp/ha-bambulab</a> 插件</div>
+            <form id="ha-form">
+                <label class="ha-enable"><input id="ha-enabled" type="checkbox" checked disabled>启用 Home Assistant 状态读取</label>
+                <div class="ha-fields">
+                    <label class="ha-wide" for="ha-url">HA 局域网 HTTP 地址
+                        <input id="ha-url" type="url" maxlength="191" placeholder="http://homeassistant.local:8123"
+                               autocomplete="off" spellcheck="false" disabled>
+                    </label>
+                    <label class="ha-wide" for="ha-token">长期访问令牌
+                        <input id="ha-token" type="password" maxlength="511" placeholder="粘贴 HA 长期访问令牌"
+                               autocomplete="new-password" aria-describedby="ha-token-hint" disabled>
+                    </label>
+                </div>
+                <div class="hint" id="ha-token-hint">令牌仅在填写时发送，已保存的令牌不会回显；留空保留原令牌</div>
+                <div class="hint">先保存 HA 地址和令牌，再从下方列表选择打印机实体；设备需能访问局域网 HTTP 地址，本版不支持 HTTPS</div>
+                <div class="row" style="margin-top:12px">
+                    <button id="ha-save" type="submit" class="primary" disabled>保存连接并获取实体</button>
+                    <button id="ha-reload" type="button" onclick="loadHomeAssistant({preserveDrafts:false})">重新读取配置</button>
+                </div>
+                <div id="ha-config-state" class="hint" role="status">进入本页后读取配置</div>
+            </form>
+            <div id="ha-connection-state" class="hint" role="status">尚未配置 Home Assistant</div>
+            <form id="ha-selection-form" class="ha-step">
+                <div class="row">
+                    <h3>选择打印机实体</h3>
+                    <span class="spacer"></span>
+                    <button id="ha-entities-refresh" type="button" onclick="loadHomeAssistantEntities(true)" disabled>刷新实体列表</button>
+                </div>
+                <div id="ha-entities-state" class="hint" role="status">保存连接后获取实体列表</div>
+                <div class="ha-fields" id="ha-entity-pickers"></div>
+                <div class="hint">仅列出打印机的当前阶段和打印状态，选中一项后优先显示同机选项</div>
+                <div class="row" style="margin-top:12px">
+                    <button id="ha-selection-save" type="submit" class="primary" disabled>保存实体选择</button>
+                </div>
+                <div id="ha-selection-state" class="hint" role="status">当前阶段和打印状态均为必选</div>
+            </form>
+            <div class="hint">HA 当前阶段和打印状态均为“打印中”且状态有效时，才检测当前使用通道的霍尔停转；超时通过 BambuBus 请求暂停打印</div>
+        </div>
+
+        <div class="card" id="pause-test-card">
+            <h2>暂停打印测试（实验）</h2>
+            <div class="row">
+                <button id="pause-test-start" class="danger" onclick="sendPauseTest(true)" disabled>测试暂停</button>
+                <button id="pause-test-clear" onclick="sendPauseTest(false)">解除测试</button>
+            </div>
+            <div id="pause-test-state" class="hint" role="status">正在读取测试状态…</div>
+            <div class="hint">
+                点击后保持堵转，目标通道进入“退料中”时设为离线，保存成功后自动解除堵转。恢复使用请在“通道参数”中改回在线或自动；重启仍保持离线。“解除测试”只解除堵转，不恢复通道模式。
+            </div>
+        </div>
+    </div>
+
 </main>
 <div id="toast" class="toast"></div>
 <dialog id="hall-dialog" class="hall-dialog" aria-labelledby="hall-dialog-title" aria-describedby="hall-dialog-help">
     <form id="hall-detection-form">
         <h3 id="hall-dialog-title">霍尔检测设置</h3>
-        <div id="hall-dialog-help" class="hint">数值在下限和上限之间交替穿越才视为转动，每侧连续 3 次采样确认<br>仅检测打印机确认的当前使用通道，超时后提示，暂不自动暂停打印
+        <div id="hall-dialog-help" class="hint">数值在下限和上限之间交替穿越才视为转动，每侧连续 3 次采样确认<br>仅在 HA 当前阶段和打印状态均为“打印中”且状态有效时，检测打印机确认的当前使用通道；条件不满足时重置计时，超时后通过 BambuBus 自动请求暂停打印
         </div>
         <label for="hall-lower">检测下限（ADC）<input id="hall-lower" type="number" min="0" max="4094" step="1" required></label>
         <label for="hall-upper">检测上限（ADC）<input id="hall-upper" type="number" min="1" max="4095" step="1" required></label>
@@ -718,6 +780,7 @@
     const bs = document.querySelectorAll('nav button');
     for (let i = 0; i < bs.length; i++) bs[i].classList.toggle('on', bs[i].getAttribute('data-tab') === name)
     if ((name === 'status' || name === 'settings') && !IO_DIRTY) loadPara()
+    if ($('ha-card').closest('#t-' + name) && !haConfigLoaded) loadHomeAssistant()
     refreshHall()
     if (name === 'status') renderHallCharts()
     if (name === 'logs') startLogCollection()
@@ -765,7 +828,7 @@
   let otaAutoTried;
   // 渠道检查进行中时不重复提交，避免设备排队处理多个检查请求
   let otaChecking = false;
-  // 检查、下载、上传与重连期间暂停普通轮询，并禁止重复提交更新
+  // 下载、上传与重连期间暂停普通轮询；版本检查仅由 otaChecking 防重
   let otaBusy = false;
   // 最近一次检查到的可用更新信息；null 表示没有可更新版本
   let gOtaLatest;
@@ -802,7 +865,7 @@
    * 应用状态快照并刷新页面
    * @param {Object} d 设备的完整状态
    * @param {number} requestedAt 本帧采样对应的浏览器时间下界，用于隔离操作前状态和估算退料截止
-   * 同步电机、局域网配对、传感器、暂停实验、项目和 mDNS，首次成功时自动检查更新
+   * 同步电机、局域网配对、HA、传感器、暂停实验、项目和 mDNS，首次成功时自动检查更新
    */
   const applyStatusPacket = (d, requestedAt) => {
     if (!d || !Array.isArray(d.motors) || !Number.isInteger(d.channels)) throw Error('状态数据格式不完整')
@@ -855,6 +918,7 @@
     renderMotorControls()
     renderChannelStatus()
     renderPauseTest()
+    renderHomeAssistant()
     updateBusLabels()
     updateChannelStateText(true)
     updateOtaControls()
@@ -875,6 +939,7 @@
     renderMotorControls()
     renderChannelStatus()
     renderPauseTest()
+    renderHomeAssistant()
     updateBusLabels()
   }
   /**
@@ -908,6 +973,453 @@
       statusAbort = null
     })
   }
+
+  // HA 连接和实体选择分别保留草稿，状态推送不覆盖表单
+  let haConfigLoaded = false, haConfigLoading = false, haConfigSaving = false, haConfigDirty = false, haTokenSet = false
+  let haGeneration = 0, haConnectionConfigured = false, haConnectionUrl = '', haSelectionSaving = false, haSelectionDirty = false
+  let haSelection = {stage: '', status: ''}, haSelectionSaved = {...haSelection}, haPreferredPrinter = ''
+  // 实体按需分段加载，只有完整成功的列表才用于判断已选实体是否消失
+  let haEntities = new Map(), haEntitiesComplete = false, haEntitiesLoading = false, haEntitiesTotal = 0
+  let haEntitiesRequest = 0, haEntitiesAbort = null
+  const HA_ENTITY_PICKERS = [
+    {key: 'stage', label: '当前阶段', field: 'stage_entity'},
+    {key: 'status', label: '打印状态', field: 'status_entity'}
+  ]
+  const HA_ENTITY_LABELS = {stage: '当前阶段', status: '打印状态'}
+  const HA_STAGE_NAMES = {
+    printing: '打印中', idle: '空闲', offline: '离线', unknown: '未知', unavailable: '不可用',
+    auto_bed_leveling: '自动调平', heatbed_preheating: '热床预热', sweeping_xy_mech_mode: '振动补偿',
+    changing_filament: '换料中', m400_pause: '指令暂停', paused_filament_runout: '缺料暂停',
+    heating_hotend: '喷嘴加热', calibrating_extrusion: '挤出校准', scanning_bed_surface: '扫描热床',
+    inspecting_first_layer: '检查首层', identifying_build_plate_type: '识别打印板', calibrating_micro_lidar: '校准微型激光雷达',
+    homing_toolhead: '工具头归零', cleaning_nozzle_tip: '清洁喷嘴', checking_extruder_temperature: '检查挤出机温度',
+    paused_user: '用户暂停', paused_front_cover_falling: '前盖脱落暂停', calibrating_flow: '流量校准',
+    paused_nozzle_temperature: '喷嘴温度异常暂停', paused_heatbed_temperature: '热床温度异常暂停',
+    paused_ams_lost: 'AMS 失联暂停', paused_low_speed_of_heatbreak_fan: '喉管风扇异常暂停',
+    paused_chamber_temperature_control_error: '腔温异常暂停', cooling_chamber: '腔体降温',
+    pre_extrusion_before_printing: '打印前预挤出', preparing_ams: 'AMS 准备中', heatbed_stabilizing: '热床温度稳定中'
+  }
+  const HA_PRINT_STATUS_NAMES = {
+    running: '打印中', pause: '已暂停', finish: '已完成', failed: '打印失败', idle: '空闲',
+    prepare: '准备中', init: '初始化', slicing: '切片中', offline: '离线', unknown: '未知', unavailable: '不可用'
+  }
+  /**
+   * 把 HA 阶段或打印状态转换为显示文字
+   * @param {Object} names 状态名与中文说明映射
+   * @param {string} value HA 返回的原始状态
+   * @return {string} 已知状态的中文说明，未知状态保留原文，无值时显示等待状态
+   */
+  const homeAssistantStateText = (names, value) => typeof value !== 'string' || !value ? '等待状态' :
+          Object.prototype.hasOwnProperty.call(names, value) ? names[value] : value
+  /**
+   * 刷新 HA 阶段、打印状态和连接信息
+   * 顶部仅在已配置时显示，设备或 HA 状态过期时清除旧读数；不修改正在编辑的配置字段
+   */
+  const renderHomeAssistant = () => {
+    const ha = S?.home_assistant, deviceFresh = statusAt > 0 && performance.now() - statusAt < 4000
+    const configured = !!ha?.configured, fresh = deviceFresh && ha?.selected && ha?.enabled && ha?.connected && ha?.fresh
+    $('ha-summary').classList.toggle('hide', !configured)
+    const unavailable = !deviceFresh ? '设备未连接' : ha?.error ? '读取异常' : !ha?.selected ? '等待选择实体' : !ha?.enabled ? '已停用' :
+            !ha?.connected ? '等待连接' : '状态已过期'
+    $('ha-stage').textContent = fresh ? homeAssistantStateText(HA_STAGE_NAMES, ha.stage) : unavailable
+    $('ha-print-status').textContent = fresh ? homeAssistantStateText(HA_PRINT_STATUS_NAMES, ha.print_status) : unavailable
+    $('ha-summary').title = fresh ? 'HA 当前阶段：' + (ha.stage || 'unknown') + ' · 打印状态：' + (ha.print_status || 'unknown') : ha?.error || unavailable
+    for (const id of ['ha-stage', 'ha-print-status']) $(id).style.color = fresh ? 'var(--fg)' : 'var(--dim)'
+    const busy = haConfigLoading || haConfigSaving || haSelectionSaving
+    for (const id of ['ha-enabled', 'ha-url', 'ha-token'])
+      $(id).disabled = !haConfigLoaded || busy
+    $('ha-url').required = true
+    $('ha-token').required = !haTokenSet
+    $('ha-save').disabled = !haConfigLoaded || busy || otaBusy
+    $('ha-reload').disabled = busy || otaBusy
+    const selectionBlocked = !haConfigLoaded || !haConnectionConfigured || busy || haConfigDirty || otaBusy
+    for (const picker of HA_ENTITY_PICKERS) $('ha-' + picker.key + '-select').disabled = selectionBlocked
+    $('ha-selection-save').disabled = selectionBlocked || !haSelection.stage || !haSelection.status
+    $('ha-entities-refresh').disabled = selectionBlocked || haEntitiesLoading
+    const connection = $('ha-connection-state')
+    connection.textContent = !ha ? '等待设备提供 HA 状态' : !configured ? '尚未配置 Home Assistant' :
+            !deviceFresh ? '设备连接中断，HA 状态未更新' : ha.error ? ha.error :
+                    !ha.selected ? 'HA 连接已保存，等待选择当前阶段和打印状态实体' :
+                            !ha.enabled ? 'Home Assistant 状态读取已停用' : !ha.connected ? '正在连接 Home Assistant…' : !ha.fresh ? 'HA 状态已过期，正在重新读取' :
+                            '已连接 Home Assistant' + (Number.isFinite(ha.age_ms) && ha.age_ms >= 0 ? ' · ' + Math.floor(ha.age_ms / 1000) + ' 秒前更新' : '')
+    connection.classList.toggle('error', configured && (!deviceFresh || !!ha?.error))
+  }
+  /**
+   * 生成打印机和实体用途的友好标签
+   * @param {Object} entity 实体列表条目
+   * @return {string} 打印机和已知用途组成的文字，空选择或未知用途保留名称作为回退
+   */
+  const homeAssistantEntityName = (entity) => {
+    const label = entity.entity_id && HA_ENTITY_LABELS[entity.kind] || entity.name || entity.entity_id
+    return entity.printer ? entity.printer + ' · ' + label : label
+  }
+  /**
+   * 筛选并排序一个选择框的候选实体
+   * @param {string} key stage 或 status
+   * @return {Array<Object>} 仅包含对应类型、同机优先的实体列表
+   */
+  const homeAssistantEntityOptions = (key) => {
+    const candidates = [...haEntities.values()].filter(entity => entity.kind === key && entity.entity_id.startsWith('sensor.'))
+    candidates.sort((a, b) => {
+      const same = Number(!!haPreferredPrinter && b.printer === haPreferredPrinter) - Number(!!haPreferredPrinter && a.printer === haPreferredPrinter)
+      return same ||
+              homeAssistantEntityName(a).localeCompare(homeAssistantEntityName(b), 'zh-CN') || a.entity_id.localeCompare(b.entity_id)
+    })
+    return candidates
+  }
+  /**
+   * 刷新原生下拉框的实体选项、已选值和缺失提示
+   * 完整列表获取失败时保留 ID，不把尚未获取到的实体判为失踪，所有名称按文本输出
+   */
+  const renderHomeAssistantPickers = () => {
+    for (const picker of HA_ENTITY_PICKERS) {
+      const id = haSelection[picker.key], entity = haEntities.get(id), prefix = 'ha-' + picker.key
+      const select = $(prefix + '-select'), options = homeAssistantEntityOptions(picker.key)
+      const placeholder = document.createElement('option')
+      placeholder.value = ''
+      placeholder.textContent = '请选择' + picker.label
+      select.replaceChildren(placeholder)
+      if (id && !options.some(option => option.entity_id === id)) {
+        const saved = document.createElement('option')
+        saved.value = id
+        saved.textContent = '已选择的实体 · ' + id
+        select.appendChild(saved)
+      }
+      for (const entity of options) {
+        const option = document.createElement('option')
+        option.value = entity.entity_id
+        option.textContent = homeAssistantEntityName(entity) + ' · ' + entity.entity_id
+        select.appendChild(option)
+      }
+      select.value = id
+      select.title = entity ? homeAssistantEntityName(entity) + ' · ' + id : id
+      const missing = !!id && haEntitiesComplete && !haEntities.has(id)
+      $(prefix + '-warning').textContent = missing ? '完整列表中未找到此实体，已保留原 ID，请检查 HA 或重新选择' : ''
+      $(prefix + '-warning').classList.toggle('hide', !missing)
+    }
+  }
+  /**
+   * 选择实体并更新独立草稿
+   * @param {string} key stage 或 status
+   * @param {string} id 实体 ID
+   * 仅调整候选实体的同机优先顺序，不自动改变其他选择
+   */
+  const selectHomeAssistantEntity = (key, id) => {
+    haSelection[key] = id
+    const entity = haEntities.get(id)
+    if (entity?.printer) haPreferredPrinter = entity.printer
+    haSelectionDirty = HA_ENTITY_PICKERS.some(picker => haSelection[picker.key] !== haSelectionSaved[picker.key])
+    $('ha-selection-state').textContent = haSelectionDirty ? '实体选择尚未保存' : '实体选择与已保存配置一致'
+    $('ha-selection-state').classList.remove('error')
+    renderHomeAssistantPickers()
+    renderHomeAssistant()
+  }
+  /**
+   * 创建当前阶段和打印状态的原生下拉框并绑定选择事件
+   */
+  const initHomeAssistantPickers = () => {
+    const container = $('ha-entity-pickers')
+    for (const picker of HA_ENTITY_PICKERS) {
+      const prefix = 'ha-' + picker.key, wrapper = document.createElement('div'), label = document.createElement('label')
+      const select = document.createElement('select'), warning = document.createElement('div')
+      wrapper.className = 'ha-picker'
+      label.className = 'ha-picker-label'
+      label.htmlFor = prefix + '-select'
+      label.textContent = picker.label
+      select.id = prefix + '-select'
+      select.name = picker.field
+      select.required = true
+      select.disabled = true
+      select.setAttribute('aria-describedby', prefix + '-warning')
+      warning.id = prefix + '-warning'
+      warning.className = 'ha-picker-warning hide'
+      wrapper.append(label, select, warning)
+      container.appendChild(wrapper)
+      select.addEventListener('change', () => selectHomeAssistantEntity(picker.key, select.value))
+    }
+    renderHomeAssistantPickers()
+  }
+  /**
+   * 取消过期的实体列表请求
+   * 已下载条目保留供显示，完成标记清除，避免读取失败时误报已选实体消失
+   */
+  const cancelHomeAssistantEntities = () => {
+    ++haEntitiesRequest
+    if (haEntitiesAbort) haEntitiesAbort.abort()
+    haEntitiesAbort = null
+    haEntitiesLoading = false
+    haEntitiesComplete = false
+  }
+  /**
+   * 按需分页获取 HA 实体并合并到浏览器列表
+   * @param {boolean} refresh 是否在第一次请求时刷新 HA 实体快照
+   * @return {Promise<void>} 全部分页完成或失败后的 Promise
+   * 未准备好的页面间隔四百毫秒重试，同一轮只发送一次刷新标记，连接代次改变时重新读取配置
+   */
+  const loadHomeAssistantEntities = async (refresh = false) => {
+    if (!haConnectionConfigured || haConfigDirty || haConfigLoading || haConfigSaving || haSelectionSaving || otaBusy) return
+    cancelHomeAssistantEntities()
+    const request = haEntitiesRequest, generation = haGeneration, collected = new Map(), started = performance.now()
+    let offset = 0, first = true
+    haEntitiesLoading = true
+    haEntitiesTotal = 0
+    $('ha-entities-state').textContent = '正在获取 HA 实体列表…'
+    $('ha-entities-state').classList.remove('error')
+    renderHomeAssistant()
+    renderHomeAssistantPickers()
+    try {
+      while (request === haEntitiesRequest) {
+        if (performance.now() - started > 120000) throw Error('获取实体列表超时，请稍后刷新列表')
+        const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 8000)
+        haEntitiesAbort = controller
+        let response, data
+        try {
+          const query = new URLSearchParams({offset, generation})
+          if (first && refresh) query.set('refresh', '1')
+          first = false
+          response = await apiFetch('/api/home-assistant/entities?' + query, {signal: controller.signal, cache: 'no-store'})
+          data = await response.json()
+        } finally {
+          clearTimeout(timer)
+          if (haEntitiesAbort === controller) haEntitiesAbort = null
+        }
+        if (request !== haEntitiesRequest) return
+        if (response.status === 409 || (response.ok && Number.isInteger(data.generation) && data.generation !== generation)) {
+          cancelHomeAssistantEntities()
+          $('ha-entities-state').textContent = 'HA 连接已改变，正在重新读取配置…'
+          await loadHomeAssistant({preserveDrafts: true})
+          return
+        }
+        if (!response.ok || data.error) throw Error(data.error || data.msg || '读取 HA 实体列表失败')
+        if (data.generation !== generation || data.offset !== offset || !Array.isArray(data.entities) || !Number.isInteger(data.total) || data.total < 0)
+          throw Error('HA 实体列表响应不完整')
+        haEntitiesTotal = data.total
+        if (!data.ready) {
+          await new Promise(resolve => setTimeout(resolve, 400))
+          continue
+        }
+        for (const entity of data.entities) {
+          if (!entity || typeof entity.entity_id !== 'string' || !/^sensor\.[a-z0-9_]+$/.test(entity.entity_id) ||
+                  entity.entity_id.length > 127 || !['stage', 'status'].includes(entity.kind))
+            throw Error('HA 实体列表包含无效条目')
+          collected.set(entity.entity_id, {
+            entity_id: entity.entity_id, kind: entity.kind,
+            name: typeof entity.name === 'string' ? entity.name : '', printer: typeof entity.printer === 'string' ? entity.printer : '',
+            state: typeof entity.state === 'string' ? entity.state : ''
+          })
+        }
+        haEntities = new Map(collected)
+        if (data.next_offset === null) {
+          if (collected.size !== data.total) throw Error('实体列表数量发生变化，请重新刷新列表')
+          haEntitiesComplete = true
+          $('ha-entities-state').textContent = '已获取 ' + haEntities.size + ' 个实体，请从下拉框选择'
+          renderHomeAssistantPickers()
+          return
+        }
+        if (!Number.isInteger(data.next_offset) || data.next_offset <= offset) throw Error('HA 实体列表分页无效')
+        offset = data.next_offset
+        $('ha-entities-state').textContent = '已获取 ' + haEntities.size + ' / ' + haEntitiesTotal + ' 个实体，正在继续…'
+        renderHomeAssistantPickers()
+      }
+    } catch (error) {
+      if (request !== haEntitiesRequest) return
+      console.error('获取 HA 实体列表失败', error)
+      $('ha-entities-state').textContent = (error.name === 'AbortError' ? '获取实体列表超时' : error.message || '获取实体列表失败') +
+              '；已保留选择，可重试刷新列表'
+      $('ha-entities-state').classList.add('error')
+    } finally {
+      if (request === haEntitiesRequest) {
+        haEntitiesLoading = false
+        renderHomeAssistantPickers()
+        renderHomeAssistant()
+      }
+    }
+  }
+  /**
+   * 标记 HA 配置草稿并刷新控件
+   * 有未保存连接修改时暂停实体列表读取，避免使用旧连接继续选择
+   */
+  const markHomeAssistantDirty = () => {
+    haConfigDirty = true
+    cancelHomeAssistantEntities()
+    $('ha-entities-state').textContent = '连接修改尚未保存，保存后重新获取实体列表'
+    $('ha-entities-state').classList.remove('error')
+    $('ha-config-state').textContent = '连接配置尚未保存，请先保存连接再选择实体'
+    $('ha-config-state').classList.remove('error')
+    renderHomeAssistantPickers()
+    renderHomeAssistant()
+  }
+  /**
+   * 读取 HA 已保存连接与实体选择
+   * @param {Object} options 草稿保留和列表刷新选项
+   * @return {Promise<boolean>} 配置是否成功读取
+   * 默认保留两份独立草稿；连接地址改变时清除旧来源的选择，令牌不回显
+   */
+  const loadHomeAssistant = async ({preserveDrafts = true, refreshEntities = true, forceRefresh = false} = {}) => {
+    if (haConfigLoading || haConfigSaving || haSelectionSaving || otaBusy) return false
+    cancelHomeAssistantEntities()
+    haConfigLoading = true
+    $('ha-config-state').textContent = '正在读取 HA 配置…'
+    $('ha-config-state').classList.remove('error')
+    renderHomeAssistant()
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 5000)
+    let loaded = false
+    try {
+      const response = await apiFetch('/api/home-assistant', {signal: ac.signal, cache: 'no-store'})
+      const data = await response.json()
+      if (!response.ok) throw Error(data.msg || '读取 HA 配置失败')
+      if (typeof data.enabled !== 'boolean' || typeof data.token_set !== 'boolean' || typeof data.configured !== 'boolean' ||
+              typeof data.url !== 'string' || !Number.isInteger(data.generation) || data.generation < 1) throw Error('HA 配置响应不完整')
+      const sourceChanged = haConfigLoaded && haConnectionUrl !== data.url
+      if (data.generation !== haGeneration || sourceChanged) {
+        haEntities = new Map()
+        haEntitiesComplete = false
+        haPreferredPrinter = ''
+      }
+      haGeneration = data.generation
+      haConnectionConfigured = data.configured
+      haConnectionUrl = data.url
+      if (!preserveDrafts || !haConfigDirty) {
+        $('ha-enabled').checked = data.configured ? data.enabled : true
+        $('ha-url').value = data.url
+        $('ha-token').value = ''
+        haConfigDirty = false
+      }
+      const savedSelection = {}
+      for (const picker of HA_ENTITY_PICKERS) savedSelection[picker.key] = typeof data[picker.field] === 'string' ? data[picker.field] : ''
+      haSelectionSaved = savedSelection
+      if (!preserveDrafts || !haSelectionDirty || sourceChanged) haSelection = {...savedSelection}
+      haSelectionDirty = HA_ENTITY_PICKERS.some(picker => haSelection[picker.key] !== haSelectionSaved[picker.key])
+      haTokenSet = data.token_set
+      $('ha-token').placeholder = haTokenSet ? '已保存令牌，留空保留；填写新值可替换' : '粘贴 HA 长期访问令牌'
+      haConfigLoaded = true
+      $('ha-config-state').textContent = haConfigDirty ? '已读取设备配置，保留尚未保存的连接修改' : '已读取 HA 连接配置'
+      $('ha-selection-state').textContent = haSelectionDirty ? '已保留尚未保存的实体选择' : sourceChanged ?
+              'HA 地址已改变，请为新的连接选择实体' : data.selected ? '已读取实体选择，可重新选择并单独保存' : '请选择当前阶段和打印状态'
+      $('ha-selection-state').classList.remove('error')
+      if (!haConnectionConfigured) $('ha-entities-state').textContent = '保存连接后获取实体列表'
+      loaded = true
+    } catch (error) {
+      console.error('读取 HA 配置失败', error)
+      $('ha-config-state').textContent = error.name === 'AbortError' ? '读取超时，请重新读取 HA 配置' : error.message || '读取 HA 配置失败'
+      $('ha-config-state').classList.add('error')
+    } finally {
+      clearTimeout(timer)
+      haConfigLoading = false
+      renderHomeAssistantPickers()
+      renderHomeAssistant()
+    }
+    if (loaded && refreshEntities && haConnectionConfigured && !haConfigDirty) loadHomeAssistantEntities(forceRefresh)
+    return loaded
+  }
+  /**
+   * 保存 HA 连接和可选的新令牌后获取实体列表
+   * @param {SubmitEvent} event 配置表单提交事件
+   * @return {Promise<void>} 保存请求和状态刷新完成的 Promise
+   * 仅发送连接字段，空令牌保留设备已存值；成功后重新读取配置以同步连接代次和已选实体
+   */
+  const saveHomeAssistant = async (event) => {
+    event.preventDefault()
+    if (haConfigSaving || haConfigLoading || haSelectionSaving || !haConfigLoaded || otaBusy) return
+    const url = $('ha-url').value.trim()
+    if (url && !url.startsWith('http://')) {
+      $('ha-config-state').textContent = '请填写局域网 http:// 地址，本版不支持 HTTPS'
+      $('ha-config-state').classList.add('error')
+      return
+    }
+    if (!$('ha-form').reportValidity()) return
+    cancelHomeAssistantEntities()
+    haConfigSaving = true
+    $('ha-config-state').textContent = '正在保存 HA 配置…'
+    $('ha-config-state').classList.remove('error')
+    renderHomeAssistant()
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 8000)
+    try {
+      const token = $('ha-token').value.trim(), body = new URLSearchParams({enabled: $('ha-enabled').checked ? '1' : '0', url, token})
+      const response = await apiFetch('/api/home-assistant', {
+        method: 'POST', signal: ac.signal, headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString()
+      })
+      const data = await response.json()
+      if (!response.ok || !data.ok) throw Error(data.msg || '保存 HA 配置失败')
+      haTokenSet = haTokenSet || !!token
+      $('ha-token').value = ''
+      $('ha-token').placeholder = haTokenSet ? '已保存令牌，留空保留；填写新值可替换' : '粘贴 HA 长期访问令牌'
+      haConfigDirty = false
+      haConnectionConfigured = false
+      haConfigSaving = false
+      if (await loadHomeAssistant({preserveDrafts: true, forceRefresh: true}))
+        $('ha-config-state').textContent = data.msg || 'HA 连接已保存，正在获取实体'
+      toast(data.msg || 'HA 连接已保存')
+      await refreshStatus()
+    } catch (error) {
+      console.error('保存 HA 配置失败', error)
+      $('ha-config-state').textContent = error.name === 'AbortError' ? '保存请求超时，请重新读取确认结果' : error.message || '保存 HA 配置失败'
+      $('ha-config-state').classList.add('error')
+    } finally {
+      clearTimeout(timer)
+      haConfigSaving = false
+      renderHomeAssistant()
+    }
+  }
+  /**
+   * 单独保存当前阶段和打印状态实体
+   * @param {SubmitEvent} event 实体选择表单提交事件
+   * @return {Promise<void>} 保存及状态刷新完成的 Promise
+   * 连同当前连接代次提交，代次冲突时重读配置，失败保留实体草稿
+   */
+  const saveHomeAssistantSelection = async (event) => {
+    event.preventDefault()
+    renderHomeAssistant()
+    if ($('ha-selection-save').disabled) return
+    if (!/^sensor\.[a-z0-9_]+$/.test(haSelection.stage) || !/^sensor\.[a-z0-9_]+$/.test(haSelection.status)) {
+      $('ha-selection-state').textContent = '请从列表选择当前阶段和打印状态传感器'
+      $('ha-selection-state').classList.add('error')
+      return
+    }
+    if (haSelection.stage === haSelection.status) {
+      $('ha-selection-state').textContent = '当前阶段和打印状态需选择不同实体'
+      $('ha-selection-state').classList.add('error')
+      return
+    }
+    const submitted = {...haSelection}, generation = haGeneration
+    haSelectionSaving = true
+    $('ha-selection-state').textContent = '正在保存实体选择…'
+    $('ha-selection-state').classList.remove('error')
+    renderHomeAssistant()
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 8000)
+    try {
+      const body = new URLSearchParams({generation})
+      for (const picker of HA_ENTITY_PICKERS) body.set(picker.field, submitted[picker.key])
+      const response = await apiFetch('/api/home-assistant/selection', {
+        method: 'POST', signal: ac.signal, headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString()
+      })
+      const data = await response.json()
+      if (response.status === 409) {
+        haSelectionSaving = false
+        await loadHomeAssistant({preserveDrafts: true})
+        throw Error(data.msg || 'HA 连接已改变，请确认选择后重新保存')
+      }
+      if (!response.ok || !data.ok) throw Error(data.msg || '保存实体选择失败')
+      haSelectionSaved = submitted
+      haSelectionDirty = false
+      $('ha-selection-state').textContent = data.msg || '实体选择已保存'
+      toast(data.msg || '实体选择已保存')
+      await refreshStatus()
+    } catch (error) {
+      console.error('保存 HA 实体选择失败', error)
+      $('ha-selection-state').textContent = error.name === 'AbortError' ? '保存请求超时，请重新读取配置确认结果' : error.message || '保存实体选择失败'
+      $('ha-selection-state').classList.add('error')
+    } finally {
+      clearTimeout(timer)
+      haSelectionSaving = false
+      renderHomeAssistantPickers()
+      renderHomeAssistant()
+    }
+  }
+  initHomeAssistantPickers()
+  $('ha-form').addEventListener('submit', saveHomeAssistant)
+  $('ha-form').addEventListener('input', markHomeAssistantDirty)
+  $('ha-selection-form').addEventListener('submit', saveHomeAssistantSelection)
 
   // 暂停实验请求只在浏览器内防重，实际状态由固件主循环返回。
   let pauseTestPending = false
@@ -1530,17 +2042,17 @@
     const seconds = Number.isFinite(detection.idle_ms) ? Math.floor(detection.idle_ms / 1000) : 0
     switch (detection.state) {
       case 'pending':
-        return '使用通道已保存 · 等待打印机确认后开始检测'
+        return '使用通道已保存 · 等待打印机确认及 HA 两项状态均为打印中'
       case 'waiting':
         return '等待有效采样 · 超时 ' + config.timeout_s + ' 秒'
       case 'monitoring':
         return '检测中 · ' + seconds + ' 秒无有效转动 / 超时 ' + config.timeout_s + ' 秒'
       case 'timeout':
-        return '停转超时 · 已 ' + seconds + ' 秒无有效转动（仅提示）'
+        return '停转超时 · 已 ' + seconds + ' 秒无有效转动，已触发 BambuBus 暂停请求'
       case 'sensor_error':
         return '霍尔采样异常 · 停转计时已重置'
       default:
-        return '待命 · 仅检测当前使用通道 / 超时 ' + config.timeout_s + ' 秒'
+        return '待命 · 需当前使用通道且 HA 两项状态均有效并为打印中 / 超时 ' + config.timeout_s + ' 秒'
     }
   }
   /**
@@ -2086,6 +2598,10 @@
     updateProjectControls()
     $('project-select').focus()
   }
+  $('project-preview').addEventListener('cancel', event => {
+    event.preventDefault()
+    closeProjectPreview()
+  })
   /**
    * 选择项目并弹出接线预览
    * 选择“自定义”时恢复当前选择；仅弹窗中的应用按钮提交配置
@@ -2492,7 +3008,7 @@
    */
   const savePcf = async () => {
     if ($('save-pcf').disabled) return
-    const sdaNone = pcfPinIsNone($('pcf-sda')), sclNone = pcfPinIsNone($('pcf-scl'))
+    const sdaNone = pcfPinIsNone($('pcf-sda'))
     const configured = !sdaNone
     const changed = configured !== PCF_DEV_ENABLED
     if (changed && !confirm(configured ? '保存 I2C 总线配置：会清空与 SDA/SCL 冲突的通道引脚并重启，确定继续？' : '关闭 I2C 总线：会清空所有 PCF8575 扩展脚并重启，确定继续？')) return
@@ -2591,7 +3107,7 @@
   }
   /**
    * 刷新通道与总微动引脚选项的占用文字
-   * 把同一引脚的当前用途追加到选项文本，并同步下拉框警告提示和徽标
+   * 把同一引脚的当前用途追加到选项文本，并同步下拉框警告提示
    */
   const refreshIoOptionLabels = () => {
     const uses = ioUsageMap(), selects = document.querySelectorAll('#iobody select, #io-switch');
@@ -2608,14 +3124,8 @@
         if (uses[pin] && uses[pin].length) label += ' (' + uses[pin].join('、') + ')'
         op.textContent = label
       }
-      const selected = selects[i].selectedOptions[0], warning = selected ? selected.title : '';
-      selects[i].title = warning
-      const badge = $(selects[i].id + '-warning');
-      if (badge) {
-        badge.hidden = !warning
-        badge.title = warning
-        badge.setAttribute('aria-label', warning || '无引脚警告')
-      }
+      const selected = selects[i].selectedOptions[0];
+      selects[i].title = selected ? selected.title : ''
     }
   }
   /**
@@ -3121,23 +3631,27 @@
   let otaProgressKey = ''
   /**
    * 同步更新控件的禁用状态
-   * 检查、升级与重连期间锁定更新卡片；空闲时按维护条件恢复操作，状态尚未取得时保持更新按钮禁用
+   * 检查、升级与重连期间锁定更新卡片；检查无需维护状态，安装按钮仍按维护条件恢复
    */
   const updateOtaControls = () => {
-    for (const el of $('card-ota').querySelectorAll('button,input,select')) el.disabled = otaBusy
-    $('btn-otacheck').disabled = otaBusy || !S?.maintenance
-    $('btn-otapull').disabled = otaBusy || !gOtaLatest || !S?.maintenance
-    $('btn-otaupload').disabled = otaBusy || !S?.maintenance
+    const locked = otaChecking || otaBusy
+    for (const el of $('card-ota').querySelectorAll('button,input,select')) el.disabled = locked
+    $('btn-otacheck').disabled = locked
+    $('btn-otapull').disabled = locked || !gOtaLatest || !S?.maintenance
+    $('btn-otaupload').disabled = locked || !S?.maintenance
   }
   /**
    * 开始显示一次 OTA 操作
    * @param {string} msg 起始阶段说明
-   * 清空上次过程并锁定更新控件，暂停实时数据连接
+   * @param {boolean} pauseData 是否暂停实时数据，仅安装固件时启用
+   * 清空上次过程并锁定更新控件；版本检查保留状态、霍尔和日志连接
    */
-  const beginOtaProgress = (msg) => {
-    otaBusy = true;
-    stopDataTransport()
-    $('data-state').textContent = '升级期间暂停'
+  const beginOtaProgress = (msg, pauseData = true) => {
+    if (pauseData) {
+      otaBusy = true;
+      stopDataTransport()
+      $('data-state').textContent = '升级期间暂停'
+    }
     otaProgressKey = ''
     $('u-steps').replaceChildren()
     $('u-progress').classList.remove('hide')
@@ -3178,21 +3692,56 @@
    * 结束 OTA 进度展示
    * @param {boolean} ok 是否成功
    * @param {string} msg 最终提示
-   * 停止活动指示并保留过程；失败保留已有百分比，恢复操作按钮和实时数据连接
+   * 停止活动指示并保留过程；失败保留已有百分比，仅实际升级结束时恢复实时数据连接
    */
   const finishOtaProgress = (ok, msg) => {
     if (ok) $('u-bar').value = 100
     else if (!$('u-bar').hasAttribute('value')) $('u-bar').classList.add('hide')
     $('u-stat').textContent = msg
     $('u-stat').classList.toggle('error', !ok)
-    otaBusy = false
-    socketRetryAt = 0
-    pollData()
+    if (otaBusy) {
+      otaBusy = false
+      socketRetryAt = 0
+      pollData()
+    }
     updateOtaControls()
   }
   /**
-   * 请求 OTA 操作并逐行解析进度响应
-   * @param {string} path 检查或下载接口路径及查询参数
+   * 启动后台版本检查并轮询进度，保留实时数据连接
+   * @param {boolean} force 是否忽略自动提示开关
+   * @return {Promise<Object>} 设备明确返回的检查结果或跳过标记
+   * 每次请求限时 5 秒，总等待限时 10 分钟；任务失效或响应异常时交由调用方显示错误
+   */
+  const requestOtaCheck = async (force) => {
+    let id = null
+    const deadline = Date.now() + 600000
+    while (Date.now() < deadline) {
+      const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 5000)
+      try {
+        const path = '/api/ota/check' + (id === null ? (force ? '?force=1' : '') : '?id=' + id)
+        const r = await apiFetch(path, {method: id === null ? 'POST' : 'GET', signal: ac.signal, cache: 'no-store'})
+        const d = await r.json()
+        if (!r.ok || !d?.ok) throw Error(d?.msg || '检查请求失败（HTTP ' + r.status + '）')
+        if (id === null && d.skipped) return d
+        if (!Number.isInteger(d.id) || d.id <= 0 || (id !== null && d.id !== id) || typeof d.running !== 'boolean') {
+          throw Error('设备返回的检查状态无效，请重新检查')
+        }
+        id = d.id
+        if (d.progress) showOtaProgress(d.progress)
+        if (!d.running) {
+          if (!d.result || typeof d.result.ok !== 'boolean') throw Error('设备未返回检查结果，请重新检查')
+          return d.result
+        }
+      } finally {
+        clearTimeout(timer)
+      }
+      await new Promise(resolve => setTimeout(resolve, 400))
+    }
+    throw Error('检查更新超时，请稍后重新检查')
+  }
+  /**
+   * 请求在线安装并逐行解析进度响应
+   * @param {string} path 下载接口路径及查询参数
    * @return {Promise<Object>} 设备明确返回的最终结果
    * 支持跨网络分片的 JSON 行及普通 JSON 拒绝响应；HTTP 错误或缺少最终结果时不推断升级成功
    * 捕获异常时在控制台输出上下文与完整异常
@@ -3304,15 +3853,15 @@
    * 检查服务器是否存在新固件
    * @param {boolean} force 是否强制检查并弹出结果提示
    * @return {Promise<void>} 检查完成后的 Promise
-   * 逐步显示检查渠道与解析阶段，避免重复请求；失败清空旧更新结果，手动模式额外弹出提示
+   * 保持实时数据刷新，逐步显示检查渠道与解析阶段；失败清空旧更新结果，手动模式额外弹出提示
    * 捕获异常时在控制台输出上下文与完整异常
    */
   const checkUpdate = async (force) => {
     if (otaChecking || otaBusy) return
     otaChecking = true
-    beginOtaProgress('正在请求设备检查更新')
+    beginOtaProgress('正在请求设备检查更新', false)
     try {
-      const d = await requestOta('/api/ota/check' + (force ? '?force=1' : ''))
+      const d = await requestOtaCheck(force)
       if (d.skipped) {
         finishOtaProgress(true, '已关闭自动提示，仍可手动检查');
         return
@@ -3332,6 +3881,7 @@
       if (force) toast('检查失败：' + e.message, 8000)
     } finally {
       otaChecking = false
+      updateOtaControls()
     }
   }
 
@@ -3342,7 +3892,7 @@
    * 捕获异常时在控制台输出上下文与完整异常
    */
   const pullUpdate = async () => {
-    if (otaBusy || !S?.maintenance || !gOtaLatest) return
+    if (otaChecking || otaBusy || !S?.maintenance || !gOtaLatest) return
     if (!confirm('请确认打印已停止，打印机总线已断开且所有电机已停止确定下载并安装新固件？过程中请勿断电')) return
     beginOtaProgress('正在请求在线更新，请勿断电')
     try {
@@ -3362,7 +3912,7 @@
    * 捕获异常时在控制台输出上下文与完整异常
    */
   const uploadFw = () => {
-    if (otaBusy || !S?.maintenance) return
+    if (otaChecking || otaBusy || !S?.maintenance) return
     const f = $('u-file').files[0];
     if (!f) {
       toast('请先选择 .bin 固件文件');
@@ -3481,14 +4031,14 @@
     });
   }
   /**
-   * 请求恢复默认配置并保留 WiFi
+   * 请求恢复默认配置并保留 WiFi 与 HA 配置
    * @return {Promise<void>} 请求处理完成的 Promise
    * 确认重置范围后提交请求，等待期间阻止重复提交，失败时显示原因并允许重试
    * 捕获异常时在控制台输出上下文与完整异常
    */
   const doConfigReset = async () => {
     const button = $('btn-config-reset')
-    if (button.disabled || !confirm('确定恢复默认配置？接线、通道参数、AMS 身份和更新设置将恢复默认，WiFi 配置会保留，设备将重启。')) return
+    if (button.disabled || !confirm('确定恢复默认配置？接线、通道参数、AMS 身份和更新设置将恢复默认，WiFi 与 HA 配置会保留，设备将重启')) return
     button.disabled = true
     try {
       const data = JSON.parse(await api('/api/settings/reset', {method: 'POST'}))
@@ -3502,11 +4052,11 @@
     }
   }
   /**
-   * 请求恢复出厂设置
-   * 明确提示 WiFi 凭据会被清空，确认后调用 /api/factory 并显示结果
+   * 请求恢复出厂设置并清除 WiFi 与 HA 配置
+   * 明确提示 WiFi 凭据与 HA 配置会被清空，确认后调用 /api/factory 并显示结果
    */
   const doFactory = () => {
-    if (confirm('确定恢复出厂设置？WiFi 凭据也会被清空')) api('/api/factory', {method: 'POST'}).then((t) => {
+    if (confirm('确定恢复出厂设置？WiFi 凭据与 HA 配置也会被清空')) api('/api/factory', {method: 'POST'}).then((t) => {
       toast(JSON.parse(t).msg, 6000);
     });
   }
@@ -3814,10 +4364,11 @@
   const initMainLogFilters = () => {
     let saved = {};
     try {
-      saved = JSON.parse(localStorage.getItem(mainLogFilterStorage) || '{}') || {}
+      saved = JSON.parse(localStorage.getItem(mainLogFilterStorage) || '{"hall":false}') || {}
     } catch (e) {
       console.error('读取主板日志筛选失败', e)
     }
+      console.log(saved)
     for (const item of MAIN_LOG_TYPES) {
       mainLogFilters[item.type] = saved[item.type] !== false
       const label = document.createElement('label'), input = document.createElement('input'),
@@ -4388,6 +4939,7 @@
   })
   setInterval(renderMotorControls, 200)
   setInterval(renderPauseTest, 200)
+  setInterval(renderHomeAssistant, 1000)
 
 </script>
 </body>

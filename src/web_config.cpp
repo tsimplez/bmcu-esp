@@ -19,8 +19,10 @@
 #include <esp_random.h>
 #include <cJSON.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 #include <lwip/sockets.h>
 #include <new>
+#include <memory>
 #include <utility>
 
 #include "log_bus.h"
@@ -35,6 +37,7 @@
 #include "hall_sensor.h"
 #include "lan_ams.h"
 #include "PCF8575_PinMap.h"
+#include <web_page_gzip.h>
 
 // ============================================================
 // 常量
@@ -78,26 +81,6 @@ static bool     mdns_started = false;
 static char     ap_ssid[16] = {};
 
 // ============================================================
-// 页面
-// ============================================================
-// 页面本体在 web/index.html，由 PlatformIO 的 board_build.embed_txtfiles 编进固件，
-// 改完 html 直接 pio run -t upload 即可，不需要单独烧文件系统
-extern const uint8_t web_index_html_start[] asm("_binary_web_index_html_start");
-extern const uint8_t web_index_html_end[] asm("_binary_web_index_html_end");
-#define PAGE_HTML ((const char *)web_index_html_start)
-
-// embed_txtfiles 会在末尾补一个 '\0'，发给浏览器时要去掉，否则 HTML 尾巴上会多一个空字节
-/**
- * 获取嵌入网页的长度
- * @return 不包含末尾 NUL 的 HTML 字节数
- * PlatformIO 嵌入文件时会在末尾补 0，发送给浏览器前需要去掉
- */
-static size_t page_html_len() {
-    size_t n = (size_t)(web_index_html_end - web_index_html_start);
-    if (n && web_index_html_start[n - 1] == 0) n--;
-    return n;
-}
-// ============================================================
 // 小工具
 // ============================================================
 /**
@@ -130,6 +113,833 @@ static String json_escape(const char *s) {
         else out += c;
     }
     return out;
+}
+
+// HA 配置独立存放，避免增加网络凭据时改变电机和接线记录格式
+static constexpr uint32_t HA_RECORD_MAGIC = 0x48413032;
+static constexpr uint32_t HA_FRESH_MS = 6000;
+static constexpr uint32_t HA_REQUEST_MS = 4000;
+static constexpr size_t HA_BODY_LIMIT = 8192;
+struct HaConfig {
+    char url[192] = {};
+    char token[512] = {};
+    char stage_entity[128] = {};
+    char status_entity[128] = {};
+    uint8_t enabled = 0;
+    uint8_t reserved[3] = {};
+};
+struct HaRecord {
+    uint32_t magic = HA_RECORD_MAGIC;
+    HaConfig config;
+    uint32_t checksum = 0;
+};
+struct HaStatus {
+    bool connected = false, sampled = false;
+    uint32_t received = 0;
+    char stage[96] = {}, print_status[40] = {};
+    char error[160] = {};
+};
+static HaConfig ha_config;
+static HaStatus ha_status;
+static uint32_t ha_generation = 1;
+static uint32_t ha_connection_generation = 1;
+static portMUX_TYPE ha_lock = portMUX_INITIALIZER_UNLOCKED;
+static TaskHandle_t ha_task = nullptr;
+struct HaEntityPage {
+    uint32_t generation = 0, offset = 0, request = 0, completed = 0;
+    bool requested = false, loading = false, ready = false, delivered = false;
+    String body;
+    char error[160] = {};
+};
+static HaEntityPage ha_entity_page;
+static SemaphoreHandle_t ha_entity_mutex = nullptr;
+
+// 在 HA 侧只筛选打印机的阶段和状态传感器，ESP32 每次接收一个小页
+static const char HA_ENTITY_TEMPLATE[] = R"HA(
+{%- set offset = offset | int(0) -%}
+{%- set sensors = states.sensor | list -%}
+{%- set candidates = sensors | selectattr('entity_id', 'match', '^sensor\\.[a-z0-9_]+_(current_stage|print_status)$') | selectattr('entity_id', 'match', '^sensor\\.[a-z0-9_]{1,120}$') | sort(attribute='entity_id') | list -%}
+{%- set printers = sensors | selectattr('entity_id', 'search', '_printer_name$') | list -%}
+{%- set related = namespace(entities=[]) -%}
+{%- for entity in candidates -%}
+    {%- set identity = entity.entity_id -%}
+    {%- set object_id = identity[7:] -%}
+    {%- set printer = namespace(name='', prefix_length=0) -%}
+    {%- for item in printers -%}
+      {%- set prefix = item.entity_id[7:-13] -%}
+      {%- if prefix and object_id.startswith(prefix ~ '_') and (prefix | length) > printer.prefix_length -%}
+        {%- set printer.name = ((item.state if item.state not in ['unknown', 'unavailable', ''] else item.name | default(prefix, true)) | string)[:48] -%}
+        {%- set printer.prefix_length = prefix | length -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {%- if printer.prefix_length -%}
+      {%- set kind = 'stage' if object_id.endswith('_current_stage') else 'status' -%}
+      {%- set related.entities = related.entities + [{'entity_id': identity, 'name': (entity.name | default(identity, true) | string)[:48], 'state': (entity.state | string)[:48], 'printer': printer.name, 'kind': kind}] -%}
+    {%- endif -%}
+{%- endfor -%}
+{%- set total = related.entities | length -%}
+{%- set page = namespace(entities=[], full=false) -%}
+{%- for row in related.entities[offset:offset + 16] -%}
+  {%- if not page.full -%}
+    {%- set trial_offset = offset + (page.entities | length) + 1 -%}
+    {%- set trial = {'total': total, 'next_offset': trial_offset if trial_offset < total else none, 'entities': page.entities + [row]} -%}
+    {%- set encoded = trial | to_json(ensure_ascii=False) -%}
+    {%- if (encoded.encode('utf-8') | length) <= 7600 -%}
+      {%- set page.entities = page.entities + [row] -%}
+    {%- else -%}
+      {%- set page.full = true -%}
+    {%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- set next_offset = offset + (page.entities | length) -%}
+{{- {'total': total, 'next_offset': next_offset if next_offset < total else none, 'entities': page.entities} | to_json(ensure_ascii=False) -}}
+)HA";
+
+/**
+ * 检查 HA 实体 ID 的域及字符范围
+ * @param entity 实体 ID
+ * @param domain 包含结尾点号的实体域
+ * @return 空串或有效实体 ID 时返回 true
+ */
+static bool ha_entity_valid(const char *entity, const char *domain) {
+    if (!*entity) return true;
+    const size_t prefix = strlen(domain);
+    if (strncmp(entity, domain, prefix) || !entity[prefix]) return false;
+    for (const char *p = entity + prefix; *p; ++p)
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_')) return false;
+    return true;
+}
+
+/**
+ * 校验 HA 局域网 HTTP 地址
+ * @param url 不带结尾斜杠的服务地址
+ * @return 空串或主机、端口及可选路径前缀有效时返回 true
+ * 拒绝凭据、控制字符、查询串和重定向目标；HTTPS 不隐式关闭证书校验
+ */
+static bool ha_url_valid(const char *url) {
+    if (!*url) return true;
+    if (strncmp(url, "http://", 7)) return false;
+    const char *p = url + 7, *host = p;
+    while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+           (*p >= '0' && *p <= '9') || *p == '.' || *p == '-') ++p;
+    if (p == host || *host == '.' || *host == '-' || p[-1] == '.' || p[-1] == '-') return false;
+    if (*p == ':') {
+        const char *start = ++p;
+        uint32_t port = 0;
+        while (*p >= '0' && *p <= '9') {
+            port = port * 10u + static_cast<unsigned>(*p++ - '0');
+            if (port > 65535u || p - start > 5) return false;
+        }
+        if (p == start || !port) return false;
+    }
+    if (*p && *p != '/') return false;
+    for (; *p; ++p)
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+              (*p >= '0' && *p <= '9') || strchr("/._~-", *p))) return false;
+    return true;
+}
+
+/**
+ * 判断 HA 连接信息是否完整
+ * @param config 已校验的配置
+ * @return 地址和令牌均已填写时返回 true
+ */
+static bool ha_configured(const HaConfig &config) {
+    return config.url[0] && config.token[0];
+}
+
+/**
+ * 判断是否已选择两个打印状态实体
+ * @param config 已校验的配置
+ * @return 当前阶段与打印状态均已选择时返回 true
+ */
+static bool ha_entities_selected(const HaConfig &config) {
+    return config.stage_entity[0] && config.status_entity[0];
+}
+
+/**
+ * 校验 HA 当前格式的配置范围
+ * @param config 待检查的配置
+ * @return 字符串有界、格式有效且启用时连接信息完整则返回 true；实体允许稍后选择
+ */
+static bool ha_config_valid(const HaConfig &config) {
+    if (!memchr(config.url, 0, sizeof(config.url)) || !memchr(config.token, 0, sizeof(config.token)) ||
+        !memchr(config.stage_entity, 0, sizeof(config.stage_entity)) ||
+        !memchr(config.status_entity, 0, sizeof(config.status_entity)) || config.enabled > 1 ||
+        config.reserved[0] || config.reserved[1] || config.reserved[2]) return false;
+    for (const char *p = config.token; *p; ++p)
+        if (static_cast<uint8_t>(*p) < 33 || static_cast<uint8_t>(*p) > 126) return false;
+    return ha_url_valid(config.url) && ha_entity_valid(config.stage_entity, "sensor.") &&
+           ha_entity_valid(config.status_entity, "sensor.") &&
+           (!config.enabled || ha_configured(config));
+}
+
+/**
+ * 计算 HA 记录格式标识与配置的 CRC32
+ * @param record 待检查的记录
+ * @return 不包含 checksum 字段的 CRC32
+ */
+static uint32_t ha_record_crc(const HaRecord &record) {
+    uint32_t crc = 0xFFFFFFFFu;
+    const auto *bytes = reinterpret_cast<const uint8_t *>(&record);
+    for (size_t i = 0; i < offsetof(HaRecord, checksum); ++i) {
+        crc ^= bytes[i];
+        for (int bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+    return ~crc;
+}
+
+/**
+ * 检查 HA 存储记录的格式、配置及 CRC
+ * @param record 已按当前长度读取的记录
+ * @return 当前格式且内容完整时返回 true
+ */
+static bool ha_record_valid(const HaRecord &record) {
+    return record.magic == HA_RECORD_MAGIC && ha_config_valid(record.config) &&
+           record.checksum == ha_record_crc(record);
+}
+
+/**
+ * 加载独立 HA 配置
+ * 只接受当前长度、格式及 CRC；缺失或损坏时保持未配置默认值，不迁移旧记录
+ */
+static void ha_load_config() {
+    ha_connection_generation = esp_random();
+    if (!ha_connection_generation) ha_connection_generation = 1;
+    Preferences prefs;
+    HaRecord record;
+    if (!prefs.begin("home_assistant", true)) return;
+    const bool valid = prefs.getBytesLength("config") == sizeof(record) &&
+                       prefs.getBytes("config", &record, sizeof(record)) == sizeof(record) && ha_record_valid(record);
+    prefs.end();
+    if (valid) ha_config = record.config;
+}
+
+/**
+ * 保存 HA 候选记录并回读验证
+ * @param config 已校验的新配置
+ * @return 写入及回读一致时返回 true；失败时尝试回写原配置并保持运行配置不变
+ */
+static bool ha_save_config(const HaConfig &config) {
+    HaRecord candidate, previous, verified;
+    candidate.config = config;
+    candidate.checksum = ha_record_crc(candidate);
+    previous.config = ha_config;
+    previous.checksum = ha_record_crc(previous);
+    Preferences prefs;
+    if (!prefs.begin("home_assistant", false)) return false;
+    const bool saved = prefs.putBytes("config", &candidate, sizeof(candidate)) == sizeof(candidate) &&
+                       prefs.getBytesLength("config") == sizeof(verified) &&
+                       prefs.getBytes("config", &verified, sizeof(verified)) == sizeof(verified) &&
+                       ha_record_valid(verified) && !memcmp(&candidate, &verified, sizeof(candidate));
+    if (!saved) {
+        const bool restored = prefs.putBytes("config", &previous, sizeof(previous)) == sizeof(previous) &&
+                              prefs.getBytesLength("config") == sizeof(verified) &&
+                              prefs.getBytes("config", &verified, sizeof(verified)) == sizeof(verified) &&
+                              ha_record_valid(verified) && !memcmp(&previous, &verified, sizeof(previous));
+        LOG_MAIN("[ha] 配置保存或回读失败，原记录回滚%s", restored ? "成功" : "失败，需重新保存");
+    }
+    prefs.end();
+    return saved;
+}
+
+// HTTPClient 的正文循环可能在空读后继续等待，由底层客户端统一终止过期连接
+class HaClient final : public WiFiClient {
+    uint32_t started = millis();
+    /**
+     * 检查本次请求的总期限，过期时关闭连接
+     * @return 请求仍在期限内时返回 true
+     */
+    bool within_deadline() {
+        if (millis() - started < HA_REQUEST_MS) return true;
+        WiFiClient::stop();
+        return false;
+    }
+public:
+    /**
+     * 查询请求期限内可读取的字节数
+     * @return 连接过期时为 0，否则为网络缓冲字节数
+     */
+    int available() override { return within_deadline() ? WiFiClient::available() : 0; }
+    /**
+     * 查询请求期限内的连接状态
+     * @return 连接未过期且仍有效时返回非零值
+     */
+    uint8_t connected() override { return within_deadline() ? WiFiClient::connected() : 0; }
+    /**
+     * 读取请求期限内的一个字节
+     * @return 字节值，连接过期或没有数据时为 -1
+     */
+    int read() override { return within_deadline() ? WiFiClient::read() : -1; }
+    /**
+     * 读取请求期限内的响应片段
+     * @param buffer 输出缓冲
+     * @param size 缓冲容量
+     * @return 实际读取字节数，连接过期时为 -1
+     */
+    int read(uint8_t *buffer, size_t size) override {
+        return within_deadline() ? WiFiClient::read(buffer, size) : -1;
+    }
+};
+
+class HaBodyStream final : public Stream {
+public:
+    String body;
+    bool failed = false;
+    /**
+     * 将响应单字节写入有界缓冲
+     * @param value 待追加字节
+     * @return 成功追加的字节数
+     */
+    size_t write(uint8_t value) override { return write(&value, 1); }
+    /**
+     * 将 HTTP 响应片段写入有界缓冲
+     * @param data 响应片段
+     * @param size 片段长度
+     * @return 成功追加的字节数，超限或内存不足时返回 0
+     */
+    size_t write(const uint8_t *data, size_t size) override {
+        if (failed || size > HA_BODY_LIMIT - body.length() || !body.concat(reinterpret_cast<const char *>(data), size)) {
+            failed = true;
+            return 0;
+        }
+        return size;
+    }
+    /**
+     * 查询只写缓冲可读取的字节数
+     * @return 始终为 0
+     */
+    int available() override { return 0; }
+    /**
+     * 读取只写缓冲
+     * @return 始终为 -1
+     */
+    int read() override { return -1; }
+    /**
+     * 查看只写缓冲的首字节
+     * @return 始终为 -1
+     */
+    int peek() override { return -1; }
+    /**
+     * 完成内存写入，无需刷新外设
+     */
+    void flush() override {}
+};
+
+/**
+ * 在独立任务发起一次有界 HA REST 请求
+ * @param config 本轮不可变配置
+ * @param path API 路径
+ * @param payload 非空时发送 POST，否则发送 GET
+ * @param body 输出响应正文
+ * @param error 输出不包含令牌和响应正文的错误信息
+ * @return HTTP 状态码；传输或正文读取失败时返回负数
+ * 禁止跟随重定向；连接及空闲读写限时，客户端总期限终止迟迟不结束的正文；析构期间客户端仍然存活
+ */
+static int ha_http(const HaConfig &config, const String &path, const char *payload, String &body, String &error) {
+    HaClient client;
+    HTTPClient http;
+    http.setConnectTimeout(1500);
+    http.setTimeout(1500);
+    http.setReuse(false);
+    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+    if (!http.begin(client, String(config.url) + path)) {
+        error = "无法创建 HA 请求";
+        return -1;
+    }
+    http.addHeader("Authorization", String("Bearer ") + config.token);
+    http.addHeader("Accept", "application/json");
+    if (payload) http.addHeader("Content-Type", "application/json");
+    const int code = payload ? http.POST(String(payload)) : http.GET();
+    if (code < 200 || code >= 300) {
+        error = code <= 0 ? "HA 连接失败或请求超时" :
+                code == 401 ? "HA 令牌无效或已过期（401）" :
+                code == 403 ? "HA 拒绝访问，请检查权限（403）" :
+                code == 404 ? "HA 实体或接口不存在（404）" :
+                code >= 300 && code < 400 ? "HA 地址发生重定向，请填写最终局域网 HTTP 地址" :
+                String("HA 请求失败（HTTP ") + String(code) + "）";
+        return code;
+    }
+    HaBodyStream sink;
+    if (http.getSize() > static_cast<int>(HA_BODY_LIMIT) || http.writeToStream(&sink) < 0 || sink.failed) {
+        error = "HA 响应过大或读取不完整";
+        return -1;
+    }
+    body = std::move(sink.body);
+    return code;
+}
+
+/**
+ * 读取并严格解析一个 HA 实体状态
+ * @param config 本轮配置
+ * @param entity 要读取的实体 ID
+ * @param state 输出原始状态
+ * @param capacity 状态缓冲容量
+ * @param error 输出错误原因
+ * @return HTTP、JSON、实体 ID 和状态字符串全部有效时返回 true
+ */
+static bool ha_read_entity(const HaConfig &config, const char *entity, char *state, size_t capacity, String &error) {
+    String body;
+    const int code = ha_http(config, String("/api/states/") + entity, nullptr, body, error);
+    if (code < 200 || code >= 300) return false;
+    cJSON *json = cJSON_ParseWithOpts(body.c_str(), nullptr, true);
+    const auto *id = cJSON_GetObjectItemCaseSensitive(json, "entity_id");
+    const auto *value = cJSON_GetObjectItemCaseSensitive(json, "state");
+    bool valid = cJSON_IsString(id) && !strcmp(id->valuestring, entity) && cJSON_IsString(value) &&
+                 value->valuestring[0] && strlen(value->valuestring) < capacity;
+    if (valid) {
+        for (const char *p = value->valuestring; *p; ++p)
+            if (static_cast<uint8_t>(*p) < 32) valid = false;
+    }
+    if (valid) copy_str(state, capacity, value->valuestring);
+    else error = "HA 实体响应缺少有效状态";
+    cJSON_Delete(json);
+    return valid;
+}
+
+/**
+ * 提交当前代次的网络读取结果
+ * @param generation 请求使用的配置代次
+ * @param status 新的实体快照
+ * @return 配置仍一致且快照已发布时返回 true
+ * 旧配置的网络读取不能覆盖当前配置的快照
+ */
+static bool ha_publish_status(uint32_t generation, const HaStatus &status) {
+    portENTER_CRITICAL(&ha_lock);
+    const bool current = generation == ha_generation;
+    if (current) ha_status = status;
+    portEXIT_CRITICAL(&ha_lock);
+    return current;
+}
+
+/**
+ * 读取一轮 HA 当前阶段和打印状态
+ * @param config 本轮配置
+ * @param generation 配置代次
+ * @param status 输出实体快照
+ * @return 两个传感器读取成功且配置代次未改变时返回 true
+ */
+static bool ha_poll(const HaConfig &config, uint32_t generation, HaStatus &status) {
+    const uint32_t started = millis();
+    String error;
+    status = HaStatus();
+    const bool valid = ha_read_entity(config, config.stage_entity, status.stage, sizeof(status.stage), error) &&
+                       ha_read_entity(config, config.status_entity, status.print_status, sizeof(status.print_status), error);
+    if (valid) {
+        status.connected = status.sampled = true;
+        status.received = started;
+    } else {
+        status.stage[0] = status.print_status[0] = 0;
+        copy_str(status.error, sizeof(status.error), error.c_str());
+    }
+    return ha_publish_status(generation, status) && valid;
+}
+
+/**
+ * 校验 HA 实体分页响应的范围、推进方向和候选字段
+ * @param body HA 模板返回的 JSON
+ * @param offset 本轮请求的偏移
+ * @return 小页结构完整、实体类型正确且游标可以前进时返回 true
+ */
+static bool ha_entity_page_valid(const String &body, uint32_t offset) {
+    cJSON *json = cJSON_ParseWithOpts(body.c_str(), nullptr, true);
+    const auto *total = cJSON_GetObjectItemCaseSensitive(json, "total");
+    const auto *next = cJSON_GetObjectItemCaseSensitive(json, "next_offset");
+    const auto *entities = cJSON_GetObjectItemCaseSensitive(json, "entities");
+    const int count = cJSON_GetArraySize(entities);
+    bool valid = cJSON_IsNumber(total) && total->valuedouble == total->valueint &&
+                 total->valueint >= 0 && total->valueint <= 100000 && cJSON_IsArray(entities) && count <= 16;
+    if (valid) {
+        const uint32_t end = offset + static_cast<uint32_t>(count);
+        valid = count ? end <= static_cast<uint32_t>(total->valueint) : offset >= static_cast<uint32_t>(total->valueint);
+        valid = valid && (cJSON_IsNull(next) ? end >= static_cast<uint32_t>(total->valueint) :
+            cJSON_IsNumber(next) && next->valuedouble == next->valueint && count > 0 &&
+            next->valueint == static_cast<int32_t>(end) && next->valueint < total->valueint);
+    }
+    const cJSON *row = nullptr;
+    cJSON_ArrayForEach(row, entities) {
+        const auto *id = cJSON_GetObjectItemCaseSensitive(row, "entity_id");
+        const auto *kind = cJSON_GetObjectItemCaseSensitive(row, "kind");
+        if (!cJSON_IsString(id) || !id->valuestring[0] || strlen(id->valuestring) >= 128 ||
+            !cJSON_IsString(kind)) { valid = false; break; }
+        if ((strcmp(kind->valuestring, "stage") && strcmp(kind->valuestring, "status")) ||
+            !ha_entity_valid(id->valuestring, "sensor.")) {
+            valid = false;
+            break;
+        }
+        const char *fields[] = {"name", "state", "printer"};
+        for (const char *field : fields) {
+            const auto *value = cJSON_GetObjectItemCaseSensitive(row, field);
+            if (!cJSON_IsString(value) || strlen(value->valuestring) > 192) valid = false;
+        }
+    }
+    cJSON_Delete(json);
+    return valid;
+}
+
+/**
+ * 请求实体列表的一页，只更新后台任务队列
+ * @param generation 当前连接代次
+ * @param offset 候选偏移
+ * @param refresh 是否重新读取同一页
+ * @return 队列和缓存可以访问时返回 true
+ * 锁内不进行网络操作，新连接和显式刷新作废旧响应；普通请求等待在途页完成并被取走
+ * 已完成页最多保留五秒等待原客户端，避免关闭网页后阻挡其他客户端
+ */
+static bool ha_queue_entity_page(uint32_t generation, uint32_t offset, bool refresh) {
+    if (!ha_entity_mutex || xSemaphoreTake(ha_entity_mutex, 0) != pdTRUE) return false;
+    const bool serving_other = !refresh && ha_entity_page.generation == generation && ha_entity_page.offset != offset &&
+        (ha_entity_page.loading || (!ha_entity_page.delivered && (ha_entity_page.ready || ha_entity_page.error[0]) &&
+                                   millis() - ha_entity_page.completed < 5000u));
+    if (!serving_other && (refresh || ha_entity_page.generation != generation || ha_entity_page.offset != offset ||
+        (!ha_entity_page.ready && !ha_entity_page.loading && !ha_entity_page.error[0]))) {
+        const uint32_t request = ha_entity_page.request + 1u;
+        ha_entity_page = HaEntityPage();
+        ha_entity_page.generation = generation;
+        ha_entity_page.offset = offset;
+        ha_entity_page.request = request;
+        ha_entity_page.requested = ha_entity_page.loading = true;
+    }
+    xSemaphoreGive(ha_entity_mutex);
+    return true;
+}
+
+/**
+ * 在后台执行一次已排队的实体发现请求
+ * @param config 本轮连接配置
+ * @param generation 运行配置代次
+ * @param connection_generation 连接代次
+ * 分页正文只在互斥锁内交换，不持锁等待网络；旧连接和旧页请求均不能覆盖新缓存
+ */
+static void ha_discover_entities(const HaConfig &config, uint32_t generation, uint32_t connection_generation) {
+    if (!ha_entity_mutex || xSemaphoreTake(ha_entity_mutex, 0) != pdTRUE) return;
+    const bool requested = ha_entity_page.requested && ha_entity_page.generation == connection_generation;
+    const uint32_t offset = ha_entity_page.offset, request = ha_entity_page.request;
+    if (requested) ha_entity_page.requested = false;
+    xSemaphoreGive(ha_entity_mutex);
+    if (!requested) return;
+
+    String body, error;
+    bool valid = false;
+    if (WiFi.status() != WL_CONNECTED) error = "WiFi 未连接，请恢复后刷新实体列表";
+    else {
+        cJSON *payload = cJSON_CreateObject();
+        cJSON *variables = cJSON_AddObjectToObject(payload, "variables");
+        const bool built = cJSON_AddStringToObject(payload, "template", HA_ENTITY_TEMPLATE) &&
+                           cJSON_AddNumberToObject(variables, "offset", offset);
+        char *encoded = built ? cJSON_PrintUnformatted(payload) : nullptr;
+        if (!encoded) error = "内存不足，无法准备实体查询";
+        else {
+            const int code = ha_http(config, "/api/template", encoded, body, error);
+            if (code >= 200 && code < 300) {
+                valid = ha_entity_page_valid(body, offset);
+                if (!valid) error = "HA 实体列表格式不完整，请刷新重试";
+            } else if (code == 403) error = "发现实体需要 HA 管理员的长期访问令牌（403）";
+        }
+        cJSON_free(encoded);
+        cJSON_Delete(payload);
+    }
+    bool published = false;
+    if (xSemaphoreTake(ha_entity_mutex, portMAX_DELAY) == pdTRUE) {
+        if (ha_entity_page.generation == connection_generation && ha_entity_page.request == request) {
+            ha_entity_page.loading = false;
+            ha_entity_page.ready = valid;
+            ha_entity_page.completed = millis();
+            ha_entity_page.body = valid ? std::move(body) : String();
+            copy_str(ha_entity_page.error, sizeof(ha_entity_page.error), error.c_str());
+            published = true;
+        }
+        xSemaphoreGive(ha_entity_mutex);
+    }
+    // 已选实体的状态由轮询更新，列表发现失败不能遮盖正常的打印状态
+    if (published) {
+        portENTER_CRITICAL(&ha_lock);
+        if (generation == ha_generation && !ha_entities_selected(ha_config)) {
+            ha_status.connected = valid;
+            copy_str(ha_status.error, sizeof(ha_status.error), error.c_str());
+        }
+        portEXIT_CRITICAL(&ha_lock);
+    }
+}
+
+/**
+ * 在后台持续读取 HA 当前阶段和打印状态
+ * @param arg 未使用的任务参数
+ * 按需分页发现实体，选择齐全后轮询打印状态；代次改变后丢弃旧响应
+ */
+static void ha_worker(void *arg) {
+    (void)arg;
+    uint32_t seen_generation = 0, next_poll = 0;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        HaConfig config;
+        uint32_t generation, connection_generation;
+        portENTER_CRITICAL(&ha_lock);
+        config = ha_config;
+        generation = ha_generation;
+        connection_generation = ha_connection_generation;
+        portEXIT_CRITICAL(&ha_lock);
+        if (seen_generation != generation) { seen_generation = generation; next_poll = 0; }
+        if (!ha_configured(config)) continue;
+        ha_discover_entities(config, generation, connection_generation);
+        portENTER_CRITICAL(&ha_lock);
+        const bool changed = generation != ha_generation;
+        portEXIT_CRITICAL(&ha_lock);
+        if (changed || !config.enabled || !ha_entities_selected(config)) continue;
+        if (WiFi.status() != WL_CONNECTED) {
+            HaStatus offline;
+            copy_str(offline.error, sizeof(offline.error), "WiFi 未连接，等待恢复");
+            ha_publish_status(generation, offline);
+            continue;
+        }
+        if (next_poll && static_cast<int32_t>(millis() - next_poll) < 0) continue;
+        HaStatus status;
+        ha_poll(config, generation, status);
+        next_poll = millis() + 1000u;
+    }
+}
+
+/**
+ * 按需启动 HA 后台网络任务
+ * 连接信息齐全后允许按需发现实体，启用并选好实体后持续轮询；创建失败时在状态接口显示原因
+ */
+static void ha_start_worker() {
+    if (!ha_configured(ha_config) || ha_task) return;
+    if (!ha_entity_mutex) ha_entity_mutex = xSemaphoreCreateMutex();
+    if (!ha_entity_mutex) {
+        copy_str(ha_status.error, sizeof(ha_status.error), "内存不足，无法准备实体列表，请稍后重新保存");
+        return;
+    }
+    if (xTaskCreate(ha_worker, "ha_network", 8192, nullptr, 1, &ha_task) != pdPASS) {
+        ha_task = nullptr;
+        portENTER_CRITICAL(&ha_lock);
+        copy_str(ha_status.error, sizeof(ha_status.error), "内存不足，无法启动 HA 读取，请稍后重新保存");
+        portEXIT_CRITICAL(&ha_lock);
+    }
+}
+
+/**
+ * 返回 HA 配置并隐藏已保存令牌
+ * 令牌只返回是否已设置，禁止回显到网页、状态或日志
+ */
+static void handle_ha_get() {
+    String json = String("{\"enabled\":") + (ha_config.enabled ? "true" : "false") +
+        ",\"configured\":" + (ha_configured(ha_config) ? "true" : "false") +
+        ",\"selected\":" + (ha_entities_selected(ha_config) ? "true" : "false") +
+        ",\"generation\":" + String(ha_connection_generation) +
+        ",\"url\":\"" + json_escape(ha_config.url) + "\",\"stage_entity\":\"" + ha_config.stage_entity +
+        "\",\"status_entity\":\"" + ha_config.status_entity +
+        "\",\"token_set\":" + (ha_config.token[0] ? "true" : "false") + "}";
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", json);
+}
+
+/**
+ * 拒绝 HA 表单中的未知字段和重复字段
+ * @param keys 允许的字段名数组
+ * @param count 字段数量
+ * @return 所有提交字段均已识别且未重复时返回 true
+ */
+static bool ha_fields_valid(const char *const *keys, size_t count) {
+    for (int i = 0; i < server.args(); ++i) {
+        const String key = server.argName(i);
+        bool known = false;
+        for (size_t k = 0; k < count; ++k) known |= key == keys[k];
+        for (int other = 0; other < i; ++other) if (server.argName(other) == key) return false;
+        if (!known) return false;
+    }
+    return true;
+}
+
+/**
+ * 严格解析 HA 请求中的无符号整数
+ * @param key 请求参数名
+ * @param value 输出整数
+ * @return 参数存在、无多余字符且未溢出时返回 true
+ */
+static bool ha_argument_uint(const char *key, uint32_t &value) {
+    if (!server.hasArg(key)) return false;
+    const String text = server.arg(key);
+    if (text.isEmpty()) return false;
+    uint32_t result = 0;
+    for (size_t i = 0; i < text.length(); ++i) {
+        if (text[i] < '0' || text[i] > '9') return false;
+        const uint32_t digit = text[i] - '0';
+        if (result > (UINT32_MAX - digit) / 10u) return false;
+        result = result * 10u + digit;
+    }
+    value = result;
+    return true;
+}
+
+/**
+ * 持久化并应用 HA 候选配置
+ * @param candidate 已完成范围校验的配置
+ * @param new_connection 是否开始新的连接与实体列表代次
+ * @return 保存及回读成功时返回 true，失败时已回复错误并保留原配置
+ */
+static bool ha_apply_config(const HaConfig &candidate, bool new_connection) {
+    if (memcmp(&candidate, &ha_config, sizeof(candidate)) && !ha_save_config(candidate)) {
+        server.send(500, "application/json", "{\"ok\":false,\"msg\":\"HA 保存或回读失败，原配置仍生效，请重试\"}");
+        return false;
+    }
+    portENTER_CRITICAL(&ha_lock);
+    ha_config = candidate;
+    if (++ha_generation == 0) ++ha_generation;
+    if (new_connection && ++ha_connection_generation == 0) ++ha_connection_generation;
+    ha_status = HaStatus();
+    portEXIT_CRITICAL(&ha_lock);
+    ha_start_worker();
+    return true;
+}
+
+/**
+ * 只保存 HA 连接信息并排队验证连接、加载首个实体页
+ * 地址和令牌可先独立保存，空令牌保留原值；更换地址时清除旧实体选择，避免关联到另一台设备
+ */
+static void handle_ha_save() {
+    const char *keys[] = {"enabled", "url", "token"};
+    bool valid = ha_fields_valid(keys, 3) && server.hasArg("url") &&
+                 (!server.hasArg("enabled") || server.arg("enabled") == "0" || server.arg("enabled") == "1");
+    HaConfig candidate = ha_config;
+    String url = server.arg("url"), token = server.arg("token");
+    url.trim();
+    while (url.endsWith("/")) url.remove(url.length() - 1);
+    valid &= url.length() < sizeof(candidate.url) && token.length() < sizeof(candidate.token) &&
+             url.length() == strlen(url.c_str()) && token.length() == strlen(token.c_str());
+    if (valid) {
+        if (url != candidate.url) {
+            memset(candidate.stage_entity, 0, sizeof(candidate.stage_entity));
+            memset(candidate.status_entity, 0, sizeof(candidate.status_entity));
+        }
+        memset(candidate.url, 0, sizeof(candidate.url));
+        copy_str(candidate.url, sizeof(candidate.url), url.c_str());
+        if (!token.isEmpty()) {
+            memset(candidate.token, 0, sizeof(candidate.token));
+            copy_str(candidate.token, sizeof(candidate.token), token.c_str());
+        }
+        candidate.enabled = !server.hasArg("enabled") || server.arg("enabled") == "1";
+    }
+    if (!valid || !ha_configured(candidate) || !ha_config_valid(candidate)) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请填写有效的局域网 HTTP 地址和令牌，实体可在连接后选择\"}");
+        return;
+    }
+    if (!ha_apply_config(candidate, true)) return;
+    ha_queue_entity_page(ha_connection_generation, 0, true);
+    LOG_MAIN("[ha] 连接信息已保存，正在验证连接和发现实体");
+    server.send(200, "application/json", String("{\"ok\":true,\"generation\":") + String(ha_connection_generation) +
+                ",\"msg\":\"连接信息已保存，正在加载实体列表\"}");
+}
+
+/**
+ * 保存已选择的 HA 实体并开始状态轮询
+ * 校验连接代次，两个传感器必须不同且完整选择，不从候选列表自动替换失踪实体
+ */
+static void handle_ha_selection() {
+    uint32_t generation = 0;
+    if (!ha_argument_uint("generation", generation) || generation != ha_connection_generation) {
+        server.send(409, "application/json", "{\"ok\":false,\"msg\":\"HA 连接配置已改变，请重新读取配置和实体列表\"}");
+        return;
+    }
+    const char *keys[] = {"stage_entity", "status_entity", "generation"};
+    bool valid = ha_fields_valid(keys, 3) && ha_configured(ha_config);
+    HaConfig candidate = ha_config;
+    char *destinations[] = {candidate.stage_entity, candidate.status_entity};
+    for (unsigned i = 0; i < 2; ++i) {
+        const String value = server.arg(keys[i]);
+        if (!server.hasArg(keys[i]) || value.length() >= sizeof(candidate.stage_entity) ||
+            value.length() != strlen(value.c_str())) { valid = false; continue; }
+        memset(destinations[i], 0, sizeof(candidate.stage_entity));
+        copy_str(destinations[i], sizeof(candidate.stage_entity), value.c_str());
+    }
+    if (!valid || !ha_config_valid(candidate) || !ha_entities_selected(candidate) ||
+        !strcmp(candidate.stage_entity, candidate.status_entity)) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请选择不同的当前阶段和打印状态传感器\"}");
+        return;
+    }
+    if (!ha_apply_config(candidate, false)) return;
+    LOG_MAIN("[ha] 实体选择已保存，状态读取%s", candidate.enabled ? "启用" : "停用");
+    server.send(200, "application/json", "{\"ok\":true,\"msg\":\"实体选择已保存\"}");
+}
+
+/**
+ * 返回一页实体候选或后台加载进度
+ * 只保留一个有界小页，浏览器按 next_offset 合并；其他客户端占用缓存时返回等待，回调不等待 HA 网络
+ * 显式刷新和改连接会作废旧响应，已取走的页允许后续请求替换
+ */
+static void handle_ha_entities() {
+    server.sendHeader("Cache-Control", "no-store");
+    const char *keys[] = {"offset", "generation", "refresh"};
+    uint32_t offset = 0, generation = 0;
+    if (!ha_fields_valid(keys, 3) || !ha_argument_uint("offset", offset) || offset > 100000u ||
+        (server.hasArg("refresh") && server.arg("refresh") != "1")) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"实体分页参数无效\"}");
+        return;
+    }
+    if (!ha_argument_uint("generation", generation) || generation != ha_connection_generation) {
+        server.send(409, "application/json", "{\"ok\":false,\"msg\":\"HA 连接配置已改变，请重新读取配置\"}");
+        return;
+    }
+    if (!ha_configured(ha_config)) {
+        server.send(409, "application/json", "{\"ok\":false,\"msg\":\"请先保存 HA 地址和令牌\"}");
+        return;
+    }
+    ha_start_worker();
+    if (!ha_task || !ha_queue_entity_page(generation, offset, server.hasArg("refresh")) ||
+        xSemaphoreTake(ha_entity_mutex, 0) != pdTRUE) {
+        server.send(503, "application/json", "{\"ok\":false,\"msg\":\"实体列表暂时忙或内存不足，请稍后刷新\"}");
+        return;
+    }
+    const bool matching = ha_entity_page.generation == generation && ha_entity_page.offset == offset;
+    const bool ready = matching && ha_entity_page.ready;
+    String json = String("{\"generation\":") + String(generation) + ",\"offset\":" + String(offset) +
+        ",\"loading\":" + (!matching || ha_entity_page.loading ? "true" : "false") +
+        ",\"ready\":" + (ready ? "true" : "false") + ",\"error\":\"" + json_escape(matching ? ha_entity_page.error : "") + "\",";
+    json += ready ? ha_entity_page.body.substring(1) : String("\"total\":0,\"next_offset\":null,\"entities\":[]}");
+    if (matching && !ha_entity_page.loading) ha_entity_page.delivered = true;
+    xSemaphoreGive(ha_entity_mutex);
+    server.send(200, "application/json", json);
+}
+
+/**
+ * 判断 HA 是否确认打印机正在打印
+ * @return HA 已启用、配置完整且两项新鲜状态分别为 printing 和 running 时返回 true
+ * 只读取加锁快照，不等待网络；WiFi 断开、读取失败或状态过期时不允许霍尔停转检测
+ */
+bool web_config_ha_printing() {
+    HaStatus status;
+    portENTER_CRITICAL(&ha_lock);
+    status = ha_status;
+    const bool enabled = ha_config.enabled && ha_configured(ha_config) && ha_entities_selected(ha_config);
+    portEXIT_CRITICAL(&ha_lock);
+    return enabled && WiFi.status() == WL_CONNECTED && status.connected && status.sampled &&
+           millis() - status.received < HA_FRESH_MS &&
+           !strcmp(status.stage, "printing") && !strcmp(status.print_status, "running");
+}
+
+/**
+ * 向 HTTP 与 WebSocket 状态追加 HA 快照
+ * @param json 正在构建的状态对象
+ * 配置后即显示两个状态；WiFi 断开或数据过期时不把缓存值标为新鲜
+ */
+static void append_ha_status(String &json) {
+    HaStatus status;
+    portENTER_CRITICAL(&ha_lock);
+    status = ha_status;
+    const bool configured = ha_configured(ha_config);
+    const bool selected = ha_entities_selected(ha_config);
+    const bool enabled = ha_config.enabled;
+    portEXIT_CRITICAL(&ha_lock);
+    const uint32_t age = millis() - status.received;
+    const bool connected = enabled && WiFi.status() == WL_CONNECTED && status.connected;
+    const bool fresh = connected && status.sampled && age < HA_FRESH_MS;
+    json += String(",\"home_assistant\":{\"configured\":") + (configured ? "true" : "false") +
+        ",\"selected\":" + (selected ? "true" : "false") +
+        ",\"enabled\":" + (enabled ? "true" : "false") + ",\"connected\":" + (connected ? "true" : "false") +
+        ",\"fresh\":" + (fresh ? "true" : "false") + ",\"age_ms\":" + (status.sampled ? String(age) : String(-1)) +
+        ",\"stage\":\"" + json_escape(status.stage) + "\",\"print_status\":\"" + json_escape(status.print_status) +
+        "\",\"error\":\"" + json_escape(status.error) + "\"}";
 }
 
 /**
@@ -445,12 +1255,13 @@ static void handle_project_save() {
 
 /**
  * 处理首页请求
- * 禁用浏览器缓存并发送嵌入固件的 HTML 管理页面
+ * 禁用浏览器缓存并发送构建时压缩的 HTML 管理页面，由浏览器解压
  */
 static void handle_root() {
     // 页面必须和固件配套：禁掉缓存，避免升级后浏览器仍用旧页面（旧页面不认新字段）
     server.sendHeader("Cache-Control", "no-store");
-    server.send_P(200, "text/html; charset=utf-8", (PGM_P)PAGE_HTML, page_html_len());
+    server.sendHeader("Content-Encoding", "gzip");
+    server.send_P(200, "text/html; charset=utf-8", (PGM_P)PAGE_HTML_GZ, sizeof(PAGE_HTML_GZ));
 }
 
 /**
@@ -468,7 +1279,7 @@ static String sensor_json_value(bool valid, float value, int digits) {
 /**
  * 生成运行状态快照，供 HTTP 与 WebSocket 共用
  * @return 完整状态 JSON；预留内存失败时为空
- * 汇总 WiFi、项目、总线、局域网换料、有效当前通道、暂停实验、电机、耗材和传感器；陈旧通道不会被标为正在使用
+ * 汇总 WiFi、项目、总线、局域网换料、HA 阶段与暂停测试、有效当前通道、电机、耗材和传感器
  * mdns 保留配置名称，mdns_active 返回重名避让后的实际名称，离线或尚未读取时为空
  * filament_colors 按启用的全局通道顺序返回记录中的 #RRGGBB，供网页以不透明圆点显示
  * filament_alpha 按相同顺序返回 0-255 的 A 分量，0 为完全透明，255 为不透明
@@ -477,7 +1288,7 @@ static String status_json() {
     IPAddress ip = ap_mode ? WiFi.softAPIP() : WiFi.localIP();
 
     String j;
-    if (!j.reserve(2500)) return String();
+    if (!j.reserve(3200)) return String();
     j  = "{\"mode\":\"" + String(ap_mode ? "AP" : "STA") + "\"";
     j += ",\"ip\":\"" + ip.toString() + "\"";
     j += ",\"ssid\":\"" + json_escape(ap_mode ? "" : sta_ssid) + "\"";
@@ -499,6 +1310,7 @@ static String status_json() {
     j += ']';
     j += ",\"maxams\":" + String(BMCU_max_ams_count());
     j += ",\"printer\":" + String(BambuBus_printer_status());
+    append_ha_status(j);
     const auto lan = lan_ams_status();
     j += ",\"lan_ams\":{\"enabled\":" + String(lan_ams_enabled() ? "true" : "false") +
          ",\"connected\":" + String(lan.connected ? "true" : "false") +
@@ -1812,17 +2624,26 @@ static void handle_scan() {
     server.send(200, "application/json", j);
 }
 
+static bool ota_check_running();
+
 /**
  * 处理日志读取请求
  * both=1 时一次读取两路日志，以主板字节块、总线字节块顺序返回，头部携带长度和独立游标
+ * 发送缓冲按请求分配，后台检查期间缩小分块以给 TLS 握手留出内存；日志仍按游标连续读取
  * 合并读取支持启动标识、清空位图和抓取边界；旧单通道接口仍供已有客户端使用
+ * 单通道请求未指定或传入无效通道时默认读取主板日志
  */
 static void handle_log() {
-    // 两个接口共用原有大小的发送缓冲；合并请求每路最多 8 KiB，不增加设备日志容量。
-    static char buf[LOG_PULL_MAX + 64];
+    const size_t capacity = ota_check_running() ? 4096 : LOG_PULL_MAX;
+    const std::unique_ptr<char[]> storage(new (std::nothrow) char[capacity + 64]);
+    if (!storage) {
+        server.send(503, "application/json", "{\"ok\":false,\"msg\":\"内存不足，请稍后重试读取日志\"}");
+        return;
+    }
+    char *buf = storage.get();
     static const String boot_id = String(esp_random(), HEX) + String(esp_random(), HEX);
     if (server.arg("both") == "1") {
-        constexpr size_t chunk = LOG_PULL_MAX / 2;
+        const size_t chunk = capacity / 2;
         const bool reset = server.hasArg("boot") && server.arg("boot") != boot_id;
         const unsigned clear_mask = server.hasArg("clear_mask") ? server.arg("clear_mask").toInt() & 3 : 0;
         uint32_t seq[2] = {
@@ -1858,7 +2679,7 @@ static void handle_log() {
         if (bus_len) server.sendContent(buf + chunk + 1, bus_len);
         return;
     }
-    int ch = server.hasArg("ch") ? server.arg("ch").toInt() : LOG_CH_MAIN;
+    int ch = server.hasArg("ch") ? server.arg("ch").toInt() : static_cast<long>(LOG_CH_MAIN);
     if (ch < 0 || ch >= LOG_CH_COUNT) ch = LOG_CH_MAIN;
 
     if (server.hasArg("clear")) {
@@ -1872,7 +2693,7 @@ static void handle_log() {
 
     uint32_t seq = server.hasArg("seq") ? strtoul(server.arg("seq").c_str(), nullptr, 10) : 0;
 
-    log_bus_read(ch, &seq, buf, sizeof(buf));
+    const size_t length = log_bus_read(ch, &seq, buf, capacity + 64);
 
     server.sendHeader("X-Log-Seq", String(seq));
     server.sendHeader("X-Uptime-Ms", String(millis()));
@@ -1882,7 +2703,9 @@ static void handle_log() {
                           ch == LOG_CH_BUS ? "attachment; filename=bambubus.log"
                                            : "attachment; filename=main.log");
     }
-    server.send(200, "text/plain; charset=utf-8", buf);
+    server.setContentLength(length);
+    server.send(200, "text/plain; charset=utf-8", "");
+    if (length) server.sendContent(buf, length);
 }
 
 /**
@@ -1899,14 +2722,25 @@ static void handle_reboot() {
 
 /**
  * 处理恢复出厂设置请求
- * 恢复默认参数、清除 WiFi 凭据并重启
+ * 恢复默认参数、清除 HA 与 WiFi 凭据并重启；HA 清除失败时保留运行配置并报告错误
  */
 static void handle_factory_reset() {
     if (!maintenance_required()) return;
+    const HaConfig defaults;
+    if (!ha_save_config(defaults)) {
+        server.send(500, "application/json", "{\"ok\":false,\"msg\":\"HA 配置清除失败，请重试\"}");
+        return;
+    }
+    portENTER_CRITICAL(&ha_lock);
+    ha_config = defaults;
+    if (++ha_generation == 0) ++ha_generation;
+    if (++ha_connection_generation == 0) ++ha_connection_generation;
+    ha_status = HaStatus();
+    portEXIT_CRITICAL(&ha_lock);
     settings_reset_to_defaults();
     settings_save_to_flash();
     forget_wifi_creds();
-    LOG_MAIN("[web] 已恢复出厂设置（含 WiFi 凭据），即将重启");
+    LOG_MAIN("[web] 已恢复出厂设置（含 WiFi 与 HA 凭据），即将重启");
     server.send(200, "application/json", "{\"ok\":true,\"msg\":\"已恢复默认，设备重启中\"}");
     delay(300);
     ESP.restart();
@@ -1914,7 +2748,7 @@ static void handle_factory_reset() {
 
 /**
  * 恢复默认配置并保留 WiFi 设置
- * 维护状态下生成默认快照，写入并回读校验成功后重启；当前运行配置保持到重启，不清除 WiFi 凭据或 mDNS 名称
+ * 维护状态下生成默认快照，写入并回读校验成功后重启；保留独立存放的 WiFi、mDNS 与 HA 网络配置
  */
 static void handle_config_reset() {
     if (!maintenance_required()) return;
@@ -1958,6 +2792,29 @@ static String g_ota_file;
 static bool g_ota_streaming = false;
 static String g_ota_progress_source;
 
+namespace {
+    // 版本检查独占 OTA 清单缓存；运行期间拒绝安装请求，进度与结果通过互斥锁交给主循环
+    struct OtaCheckState {
+        uint32_t id = 0;
+        bool running = false;
+        String base, progress, result;
+    };
+}
+static OtaCheckState ota_check;
+static SemaphoreHandle_t ota_check_mutex = nullptr;
+
+/**
+ * 查询后台版本检查是否仍占用 OTA 清单缓存
+ * @return 正在检查或状态暂时被锁定时返回 true
+ */
+static bool ota_check_running() {
+    if (!ota_check_mutex) return false;
+    if (xSemaphoreTake(ota_check_mutex, 0) != pdTRUE) return true;
+    const bool running = ota_check.running;
+    xSemaphoreGive(ota_check_mutex);
+    return running;
+}
+
 /**
  * 按请求参数开启 OTA 进度响应
  * 通过当前连接分块回传，避免同步更新期间另开轮询请求
@@ -1991,12 +2848,30 @@ static void ota_progress(const char *stage, const String &msg, size_t loaded = 0
 }
 
 /**
+ * 发布清单检查阶段，后台检查只更新快照，安装流程沿用当前 HTTP 进度响应
+ * @param background 是否由版本检查任务调用
+ * @param stage 阶段标识
+ * @param msg 当前阶段说明
+ */
+static void ota_manifest_progress(bool background, const char *stage, const String &msg) {
+    if (!background) {
+        ota_progress(stage, msg);
+        return;
+    }
+    String progress = "{\"stage\":\"" + String(stage) + "\",\"msg\":\"" + json_escape(msg.c_str());
+    progress += "\",\"source\":\"" + json_escape(g_ota_progress_source.c_str()) + "\"}";
+    xSemaphoreTake(ota_check_mutex, portMAX_DELAY);
+    ota_check.progress = std::move(progress);
+    xSemaphoreGive(ota_check_mutex);
+}
+
+/**
  * 结束 OTA 请求并返回最终结果
  * @param status 普通 JSON 响应的 HTTP 状态码
  * @param data 最终结果 JSON
  * 流式响应以 result 事件及空块结束，已发送响应头后的失败由 data.ok 表达
  */
-static void ota_send_result(int status, const String &data) {
+static void ota_send_result(const int status, const String &data) {
     if (g_ota_streaming) {
         server.sendContent("{\"event\":\"result\",\"data\":" + data + "}\n");
         server.sendContent("");
@@ -2255,21 +3130,23 @@ namespace {
  * @param url 清单或固件地址
  * @param err 失败原因
  * @param resource 当前下载的资源名称
+ * @param background 是否仅在后台读取清单；此时不访问运动状态或主循环看门狗
  * @return true 表示服务器返回 HTTP 200
- * 回传连接与跳转阶段，每次跳转前检查设备状态并喂狗，连接及读取各等待至多 2 秒；失败保留 TLS 诊断
+ * 回传连接与跳转阶段，安装时每次跳转前检查设备状态并喂狗，连接及读取各等待至多 2 秒；失败保留 TLS 诊断
  */
-static bool ota_http_open(HTTPClient &http, WiFiClient &client, const String &url, String &err, const char *resource) {
+static bool ota_http_open(HTTPClient &http, WiFiClient &client, const String &url, String &err, const char *resource,
+                          bool background = false) {
     http.setConnectTimeout(2000);
     http.setTimeout(2000);
     http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     if (!http.begin(client, url)) { err = "地址无法解析"; return false; }
     for (int redirects = 0; redirects <= 4; ++redirects) {
-        if (!BMCU_can_maintain()) { err = "请先停止所有电机运动"; return false; }
-        ota_progress(redirects ? "redirect" : "connect",
+        if (!background && !BMCU_can_maintain()) { err = "请先停止所有电机运动"; return false; }
+        ota_manifest_progress(background, redirects ? "redirect" : "connect",
                      String(redirects ? "正在连接跳转后的服务器，获取" : "正在连接更新服务器，获取") + resource);
-        hal_watchdog_feed();
+        if (!background) hal_watchdog_feed();
         const int code = http.GET();
-        hal_watchdog_feed();
+        if (!background) hal_watchdog_feed();
         if (code == HTTP_CODE_OK) return true;
         if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
             const String location = http.getLocation();
@@ -2293,17 +3170,18 @@ static bool ota_http_open(HTTPClient &http, WiFiClient &client, const String &ur
  * @param url 请求地址
  * @param body 响应正文
  * @param err 错误信息
+ * @param background 是否由后台版本检查任务调用
  * @return true 表示请求成功
  * 回传清单下载阶段；清单必须有长度且不超过 8 KB，避免代理错误页占满内存
  */
-static bool ota_http_get(const String &url, String &body, String &err) {
+static bool ota_http_get(const String &url, String &body, String &err, bool background = false) {
     const OtaClientHolder client(url);
     HTTPClient http;
-    if (!ota_http_open(http, client.ref(), url, err, "版本清单")) {
+    if (!ota_http_open(http, client.ref(), url, err, "版本清单", background)) {
         http.end();
         return false;
     }
-    if (!BMCU_can_maintain()) {
+    if (!background && !BMCU_can_maintain()) {
         err = "下载前检测到打印机通信或电机动作";
         http.end();
         return false;
@@ -2314,9 +3192,9 @@ static bool ota_http_get(const String &url, String &body, String &err) {
         http.end();
         return false;
     }
-    ota_progress("manifest", "正在下载版本清单");
+    ota_manifest_progress(background, "manifest", "正在下载版本清单");
     body = http.getString();
-    hal_watchdog_feed();
+    if (!background) hal_watchdog_feed();
     http.end();
     if (body.length() != static_cast<unsigned int>(length)) { err = "清单下载不完整"; return false; }
     return true;
@@ -2327,16 +3205,17 @@ static bool ota_http_get(const String &url, String &body, String &err) {
  * @param base 当前尝试的更新源目录
  * @param source 内置渠道编号；-1 为自定义
  * @param err 错误信息
+ * @param background 是否由后台版本检查任务调用
  * @return true 表示成功取得当前板型固件信息
  * 读取 manifest.json，回传解析阶段，提取目标平台的 url、md5、version、notes 和 size，并校验版本与 MD5 格式
  */
-static bool ota_fetch_manifest_from(const String &base, int source, String &err) {
+static bool ota_fetch_manifest_from(const String &base, int source, String &err, bool background = false) {
     g_ota_url = g_ota_md5 = g_ota_ver = g_ota_notes = g_ota_file = "";
     g_ota_size = 0;
     g_ota_source = -1;
     String body;
-    if (!ota_http_get(base + "/manifest.json", body, err)) return false;
-    ota_progress("manifest", "正在解析版本清单并核对板型");
+    if (!ota_http_get(base + "/manifest.json", body, err, background)) return false;
+    ota_manifest_progress(background, "manifest", "正在解析版本清单并核对板型");
 
     String obj;
     if (!json_get_object(body, FW_TARGET, obj)) {
@@ -2391,11 +3270,12 @@ static bool ota_fetch_manifest_from(const String &base, int source, String &err)
 /**
  * 按用户设置获取第一个有效的 OTA 清单
  * @param err 全部失败时的最后渠道及错误原因
+ * @param background 是否在后台使用启动时保存的更新源快照
  * @return true 表示已取得有效清单
  * 回传当前渠道和失败原因；自动模式顺序回退，固定或自定义源只尝试一次，失败不保留旧下载信息
  */
-static bool ota_fetch_manifest(String &err) {
-    const String base = ota_base();
+static bool ota_fetch_manifest(String &err, bool background = false) {
+    const String base = background ? ota_check.base : ota_base();
     const int selected = ota_source_index(base);
     const int count = selected == 0 ? OTA_SOURCE_COUNT : 1;
     for (int i = 0; i < count; ++i) {
@@ -2405,14 +3285,14 @@ static bool ota_fetch_manifest(String &err) {
         g_ota_progress_source = name;
         err = "";
         if (!candidate.length()) err = "还没有配置更新源地址";
-        else if (ota_fetch_manifest_from(candidate, source, err)) {
+        else if (ota_fetch_manifest_from(candidate, source, err, background)) {
             LOG_MAIN("[ota] 已选渠道: %s", name.c_str());
             return true;
         }
         LOG_MAIN("[ota] 渠道 %s 检查失败: %s", name.c_str(), err.c_str());
         err = name + "：" + err;
-        ota_progress("retry", "渠道检查失败：" + err + (i + 1 < count ? "，准备切换渠道" : ""));
-        if (!BMCU_can_maintain()) break;
+        ota_manifest_progress(background, "retry", "渠道检查失败：" + err + (i + 1 < count ? "，准备切换渠道" : ""));
+        if (!background && !BMCU_can_maintain()) break;
     }
     g_ota_url = g_ota_md5 = g_ota_ver = g_ota_notes = g_ota_file = "";
     g_ota_size = 0;
@@ -2432,53 +3312,117 @@ static String ota_json_err(const String &msg) {
 }
 
 /**
- * 检查 OTA 前设备是否空闲
+ * 检查安装固件前设备是否空闲
  * @return true 表示允许继续
- * 复用 maintenance_required() 的检查和 409 响应
+ * 拒绝与后台版本检查并发安装，再复用 maintenance_required() 的检查和 409 响应
  */
 static bool ota_require_stopped() {
+    if (ota_check_running()) {
+        server.send(409, "application/json", ota_json_err("正在检查更新，请等待检查结束后再安装"));
+        return false;
+    }
     return maintenance_required();
 }
 
 // ---- 检查更新 ----
 /**
- * 处理检查更新请求
- * 可配置关闭自动提示；返回版本、更新说明、实际渠道和下载信息，progress=1 时同时回传执行阶段
+ * 在后台读取版本清单并发布最终结果
+ * @param arg 未使用的任务参数
+ * 独占清单缓存，不访问 WebServer 或运动状态，网络对象析构后释放任务
+ */
+static void ota_check_worker(void *arg) {
+    (void)arg;
+    {
+        String err, result;
+        if (!ota_fetch_manifest(err, true)) {
+            LOG_MAIN("[ota] 检查更新失败: %s", err.c_str());
+            result = ota_json_err(err);
+        } else {
+            const bool has = version_newer(g_ota_ver, String(FW_VERSION));
+            result.reserve(320);
+            result = "{\"ok\":true";
+            result += ",\"current\":\"" + String(FW_VERSION) + "\"";
+            result += ",\"target\":\"" + String(FW_TARGET) + "\"";
+            result += ",\"source\":\"" + String(g_ota_source >= 0 ? OTA_SOURCE_NAMES[g_ota_source] : "自定义") + "\"";
+            result += ",\"latest\":\"" + json_escape(g_ota_ver.c_str()) + "\"";
+            result += ",\"has_update\":" + String(has ? "true" : "false");
+            result += ",\"notes\":\"" + json_escape(g_ota_notes.c_str()) + "\"";
+            result += ",\"size\":" + String(static_cast<unsigned long>(g_ota_size));
+            result += ",\"md5\":\"" + json_escape(g_ota_md5.c_str()) + "\"";
+            result += ",\"url\":\"" + json_escape(g_ota_url.c_str()) + "\"}";
+            LOG_MAIN("[ota] 检查更新: 本机 %s, 服务器 %s, %s", FW_VERSION, g_ota_ver.c_str(),
+                     has ? "有新版" : "已是最新");
+        }
+        xSemaphoreTake(ota_check_mutex, portMAX_DELAY);
+        ota_check.result = std::move(result);
+        ota_check.running = false;
+        xSemaphoreGive(ota_check_mutex);
+    }
+    vTaskDelete(nullptr);
+}
+
+/**
+ * 返回后台版本检查的进度或结果快照
+ * GET 必须携带当前任务 id，过期或无效 id 返回 409，锁外发送响应以免阻塞后台任务
+ */
+static void ota_check_send_status() {
+    if (!ota_check_mutex) {
+        server.send(409, "application/json", ota_json_err("没有可查询的版本检查，请重新检查"));
+        return;
+    }
+    xSemaphoreTake(ota_check_mutex, portMAX_DELAY);
+    const bool valid = ota_check.id &&
+                       (server.method() != HTTP_GET || server.arg("id") == String(ota_check.id));
+    String response;
+    if (valid) {
+        response = "{\"ok\":true,\"id\":" + String(ota_check.id);
+        response += ",\"running\":" + String(ota_check.running ? "true" : "false");
+        response += ",\"progress\":" + ota_check.progress;
+        response += ",\"result\":" + (ota_check.result.length() ? ota_check.result : String("null")) + "}";
+    }
+    xSemaphoreGive(ota_check_mutex);
+    server.send(valid ? 200 : 409, "application/json",
+                valid ? response : ota_json_err("版本检查已失效，请重新检查"));
+}
+
+/**
+ * 启动或查询后台版本检查，无需进入维护状态
+ * POST 创建任务或加入正在执行的检查，GET 按 id 轮询；关闭自动提示时仅 force=1 启动检查
  */
 static void handle_ota_check() {
-    if (!ota_require_stopped()) return;
-    // 关掉"自动提示"后，进页面时的静默检查直接跳过，不白跑一趟网络请求；
-    // 用户手动点"检查更新"会带 force=1 绕过这个开关
-    if (OTA_NOTIFY == 0 && !server.hasArg("force")) {
+    server.sendHeader("Cache-Control", "no-store");
+    if (server.method() == HTTP_GET) {
+        ota_check_send_status();
+        return;
+    }
+    if (OTA_NOTIFY == 0 && server.arg("force") != "1") {
         server.send(200, "application/json", "{\"ok\":true,\"skipped\":true}");
         return;
     }
-
-    ota_progress_begin();
-    ota_progress("check", "正在检查可用更新");
-    String err;
-    if (!ota_fetch_manifest(err)) {
-        LOG_MAIN("[ota] 检查更新失败: %s", err.c_str());
-        ota_send_result(200, ota_json_err(err));
+    if (!ota_check_mutex) ota_check_mutex = xSemaphoreCreateMutex();
+    if (!ota_check_mutex) {
+        server.send(503, "application/json", ota_json_err("内存不足，无法启动版本检查"));
         return;
     }
-
-    const bool has = version_newer(g_ota_ver, String(FW_VERSION));
-    String j;
-    j.reserve(320);
-    j  = "{\"ok\":true";
-    j += ",\"current\":\"" + String(FW_VERSION) + "\"";
-    j += ",\"target\":\"" + String(FW_TARGET) + "\"";
-    j += ",\"source\":\"" + String(g_ota_source >= 0 ? OTA_SOURCE_NAMES[g_ota_source] : "自定义") + "\"";
-    j += ",\"latest\":\"" + json_escape(g_ota_ver.c_str()) + "\"";
-    j += ",\"has_update\":" + String(has ? "true" : "false");
-    j += ",\"notes\":\"" + json_escape(g_ota_notes.c_str()) + "\"";
-    j += ",\"size\":" + String((unsigned long)g_ota_size);
-    j += ",\"md5\":\"" + json_escape(g_ota_md5.c_str()) + "\"";
-    j += ",\"url\":\"" + json_escape(g_ota_url.c_str()) + "\"}";
-    LOG_MAIN("[ota] 检查更新: 本机 %s, 服务器 %s, %s", FW_VERSION, g_ota_ver.c_str(),
-             has ? "有新版" : "已是最新");
-    ota_send_result(200, j);
+    xSemaphoreTake(ota_check_mutex, portMAX_DELAY);
+    const bool start = !ota_check.running;
+    if (start) {
+        if (++ota_check.id == 0) ++ota_check.id;
+        ota_check.base = ota_base();
+        ota_check.progress = "{\"stage\":\"check\",\"msg\":\"正在检查可用更新\"}";
+        ota_check.result = "";
+        ota_check.running = true;
+    }
+    xSemaphoreGive(ota_check_mutex);
+    if (start && xTaskCreate(ota_check_worker, "ota_check", 8192, nullptr, 1, nullptr) != pdPASS) {
+        xSemaphoreTake(ota_check_mutex, portMAX_DELAY);
+        ota_check.result = ota_json_err("内存不足，无法启动版本检查");
+        ota_check.running = false;
+        xSemaphoreGive(ota_check_mutex);
+        server.send(503, "application/json", ota_json_err("内存不足，无法启动版本检查"));
+        return;
+    }
+    ota_check_send_status();
 }
 
 // ---- 在线更新：下载 → 写 flash → 重启 ----
@@ -2680,7 +3624,7 @@ static String ota_up_err;
 
 /**
  * 处理浏览器固件上传
- * 按开始、写入、结束、中断四个阶段驱动 Update 接口，并在上传过程中喂狗和检查设备状态
+ * 拒绝与版本检查并发安装，按开始、写入、结束、中断四个阶段驱动 Update，并喂狗和检查设备状态
  */
 static void handle_ota_upload() {
     HTTPUpload &up = server.upload();
@@ -2688,6 +3632,11 @@ static void handle_ota_upload() {
     if (up.status == UPLOAD_FILE_START) {
         ota_up_failed = false;
         ota_up_err = "";
+        if (ota_check_running()) {
+            ota_up_failed = true;
+            ota_up_err = "正在检查更新，请等待检查结束后再安装";
+            return;
+        }
         if (!BMCU_can_maintain()) {
             ota_up_failed = true;
             ota_up_err = "电机正在运动，拒绝更新";
@@ -2790,7 +3739,7 @@ static bool handle_local_preview_cors(WebServer &request, Middleware::Callback n
 
 /**
  * 注册 Web 路由与 localhost 预览跨域处理
- * 把首页、状态、设置、接线、局域网换料、电机、WiFi、日志、重启、恢复默认配置、恢复出厂和 OTA 接口绑定到处理函数
+ * 把首页、状态、设置、接线、局域网换料、HA、电机、WiFi、日志、重启、恢复默认配置、恢复出厂和 OTA 绑定到处理函数
  */
 static void setup_routes() {
     const char *headers[] = {"Origin"};
@@ -2798,6 +3747,10 @@ static void setup_routes() {
     server.addMiddleware(handle_local_preview_cors);
     server.on("/", HTTP_GET, handle_root);
     server.on("/api/status", HTTP_GET, handle_status);
+    server.on("/api/home-assistant", HTTP_GET, handle_ha_get);
+    server.on("/api/home-assistant", HTTP_POST, handle_ha_save);
+    server.on("/api/home-assistant/selection", HTTP_POST, handle_ha_selection);
+    server.on("/api/home-assistant/entities", HTTP_GET, handle_ha_entities);
     server.on("/api/ws-token", HTTP_GET, handle_ws_token);
     server.on("/api/hall", HTTP_GET, handle_hall);
     server.on("/api/hall/detection", HTTP_POST, handle_hall_detection_save);
@@ -2820,6 +3773,7 @@ static void setup_routes() {
     server.on("/api/settings/reset", HTTP_POST, handle_config_reset);
     server.on("/api/factory", HTTP_POST, handle_factory_reset);
     server.on("/api/ota/check", HTTP_POST, handle_ota_check);
+    server.on("/api/ota/check", HTTP_GET, handle_ota_check);
     server.on("/api/ota/pull", HTTP_POST, handle_ota_pull);
     server.on("/api/ota/upload", HTTP_POST, handle_ota_upload_done, handle_ota_upload);
     server.onNotFound(handle_not_found);
@@ -2827,10 +3781,11 @@ static void setup_routes() {
 
 /**
  * 初始化 Web 管理服务
- * 读取 WiFi 凭据并异步连接已保存网络，未配置时启动配网热点；重连由主循环统一调度，随后启动 HTTP 和 WebSocket 服务
+ * 读取 WiFi 和 HA 配置并异步联网，未配置 WiFi 时启动热点；启动 HTTP、WebSocket 和按需启用的 HA 后台读取
  */
 void web_config_init() {
     load_wifi_creds();
+    ha_load_config();
     WiFi.persistent(false);
     WiFi.setAutoReconnect(false);
 
@@ -2843,6 +3798,7 @@ void web_config_init() {
     setup_routes();
     server.begin();
     websocket_init();
+    ha_start_worker();
     LOG_MAIN("[web] HTTP 管理服务已启动");
 }
 

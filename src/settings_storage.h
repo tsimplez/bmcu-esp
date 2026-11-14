@@ -40,9 +40,9 @@ struct HallDetectionConfig {
     uint32_t timeout_s;             // 0 表示关闭停转检测
 };
 
-// 5v 默认 3350
-// 3v 默认 2250
-constexpr HallDetectionConfig DEFAULT_HALL_DETECTION = {.lower = 2900, .upper = 3800, .timeout_s = 3};
+// 霍尔默认超时配置
+// 5v 默认 3350 3v 默认 2250
+constexpr HallDetectionConfig DEFAULT_HALL_DETECTION = {.lower = 3100, .upper = 3600, .timeout_s = 5};
 constexpr uint32_t MAX_HALL_TIMEOUT_S = 36;
 extern HallDetectionConfig HALL_DETECTION[IO_CONFIG_MAX_CHANNELS];
 

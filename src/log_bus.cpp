@@ -72,13 +72,15 @@ static bool ring_ref(const int ch, RingRef &r) {
 
 /**
  * 初始化日志环形缓冲
- * 清空两路日志缓冲区并把累计写游标和清空下限归零
+ * 清空两路日志缓冲区，并依次把每路清空下限和累计写游标归零
  */
 void log_bus_init() {
     memset(ring_main.buf, 0, sizeof(ring_main.buf));
     memset(ring_bus.buf, 0, sizeof(ring_bus.buf));
-    ring_main.total = ring_main.floor = 0;
-    ring_bus.total = ring_bus.floor = 0;
+    ring_main.floor = 0;
+    ring_main.total = 0;
+    ring_bus.floor = 0;
+    ring_bus.total = 0;
 }
 
 /**

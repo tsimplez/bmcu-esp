@@ -250,6 +250,7 @@ bool settings_lan_config_valid(const LanAmsConfig &config, const bool require_cr
  * 校验并应用设置到运行期变量
  * @param data 从存储或快照得到的设置
  * 逐项检查范围后更新全局配置；各 AMS 身份、霍尔检测和局域网配置独立校验，保留未启用通道的配置
+ * 通道模式不在有效范围时恢复为自动模式
  * I2C 仅由 SDA/SCL 决定，接线无效时恢复平台默认映射
  */
 static void apply_settings_values(const SettingsData& data) {
@@ -257,7 +258,7 @@ static void apply_settings_values(const SettingsData& data) {
         PULLBACK_TIMEOUT[i] = data.pullback_timeout[i] >= 3 && data.pullback_timeout[i] <= 30
                                   ? data.pullback_timeout[i] : DEFAULT_PULLBACK_TIMEOUT;
         CHANNEL_MODE[i] = data.channel_mode[i] >= 0 && data.channel_mode[i] <= 2
-                              ? data.channel_mode[i] : CHANNEL_MODE_AUTO;
+                              ? data.channel_mode[i] : static_cast<int32_t>(CHANNEL_MODE_AUTO);
         HALL_DETECTION[i] = settings_hall_detection_valid(data.hall_detection[i])
                                 ? data.hall_detection[i] : DEFAULT_HALL_DETECTION;
     }

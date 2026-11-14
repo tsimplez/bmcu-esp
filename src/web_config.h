@@ -13,6 +13,9 @@
 void web_config_init();  // setup() 中调用
 void web_config_run();   // loop() 中调用
 
+// HA 两项状态均有效且确认打印中时，允许当前使用通道执行霍尔停转检测
+bool web_config_ha_printing();
+
 #else
 
 /**
@@ -25,5 +28,11 @@ static inline void web_config_init() {}
  * RP2040 不处理 Web 请求，保持空实现以维持主循环结构一致
  */
 static inline void web_config_run() {}
+
+/**
+ * 非 ESP32 平台无法通过 HA 确认打印状态
+ * @return 始终返回 false，不启用依赖 HA 状态的霍尔停转检测
+ */
+static inline bool web_config_ha_printing() { return false; }
 
 #endif
