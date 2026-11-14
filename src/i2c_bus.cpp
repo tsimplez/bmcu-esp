@@ -31,8 +31,6 @@ bool i2c_bus_begin() {
 
 /**
  * 查询 I2C 总线是否已经完成初始化
- * @return true 表示可以访问总线
- * 供 PCF8575 和温湿度模块判断当前能否发起 I2C 访问
  */
 bool i2c_bus_ready() {
     return i2c_bus_initialized;

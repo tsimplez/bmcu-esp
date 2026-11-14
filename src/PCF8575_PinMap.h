@@ -8,13 +8,12 @@
  * 使用方法：
  * 1. 在配置中使用虚拟引脚号，首片为 50～57、60～67，末片为 110～117、120～127
  * 2. 调用PCF8575_init()初始化PCF8575
- * 3. 调用PCF8575_update()更新引脚状态
+ * 3. 在主循环调用 PCF8575_poll() 更新在线状态，写引脚时自动更新输出
  */
 
 #pragma once
 #include <Arduino.h>
 
-// PCF8575配置
 #define PCF8575_VIRTUAL_PIN_BASE 50
 #define PCF8575_ADDR 0x20           // 首片地址，后续芯片依次加 1
 #define PCF8575_DEVICE_COUNT 4
@@ -42,28 +41,28 @@ bool PCF8575_init();
 /**
  * 查询指定 PCF8575 是否在线
  * @param device 芯片索引 0～3，默认 0 对应原有的 0x20 芯片
- * @return true 表示芯片已完成初始化且可以读写
- * 未配置 I2C 或芯片未应答时返回 false，调用方应停用扩展虚拟引脚
+ * @return true 表示芯片最近一次初始化、探测或读写未失败
+ * 只查询缓存，不发起 I2C 访问；未配置总线或芯片离线时返回 false，调用方应停用扩展虚拟引脚
  */
 bool PCF8575_is_online(uint8_t device = 0);
 
 /**
  * 查询虚拟引脚所属芯片是否在线
  * @param pin 虚拟引脚号（50～127，尾数 8、9 无效）
- * @return true 表示引脚有效且所属芯片已经初始化
+ * @return true 表示引脚有效且所属芯片当前缓存状态为在线
  * 电机及微动按各自接线判断，其他芯片在线不能代替当前芯片
  */
 bool PCF8575_pin_is_online(uint8_t pin);
 
 /**
- * 定期重试离线 PCF8575
- * 各离线芯片独立每 5 秒重试，恢复时清空输出电平并保留已配置模式
+ * 定期探测在线芯片并重试离线 PCF8575
+ * 主循环中每秒检查在线芯片应答，各离线芯片独立每 5 秒重试；恢复时清空输出电平并保留已配置模式
  */
 void PCF8575_poll();
 
 /**
- * 更新所有PCF8575引脚状态
- * 需要在loop()中定期调用
+ * 将缓存输出写入所有在线 PCF8575
+ * 写入失败立即标记离线；普通写引脚已自动写入，无需定期调用本函数
  */
 void PCF8575_update();
 
@@ -84,7 +83,7 @@ void PCF8575_digitalWrite(uint8_t pin, uint8_t value);
 /**
  * 读取PCF8575虚拟引脚电平（模拟digitalRead）
  * @param pin 虚拟引脚号（50～127，尾数 8、9 无效）
- * @return 引脚电平（HIGH/LOW）
+ * @return 引脚电平（HIGH/LOW）；无效、离线或传输失败返回 LOW，读取后须检查所属芯片在线状态
  */
 int PCF8575_digitalRead(uint8_t pin);
 

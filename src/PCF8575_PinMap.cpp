@@ -1,10 +1,8 @@
-/**
- * PCF8575 引脚映射实现：四片独立缓存，共用已配置的 I2C 总线
- */
 #include "PCF8575_PinMap.h"
 #include "PCF8575.h"
 #include "platform.h"
 #include "i2c_bus.h"
+#include "log_bus.h"
 
 // 对象和输出状态归映射层管理，地址固定为 0x20～0x23
 static PCF8575 pcf8575[PCF8575_DEVICE_COUNT] = {
@@ -15,6 +13,24 @@ static uint16_t pcf8575_pin_states[PCF8575_DEVICE_COUNT] = {};
 static uint16_t pcf8575_pin_modes[PCF8575_DEVICE_COUNT] = {}; // 1=输出，0=输入
 static bool pcf8575_initialized[PCF8575_DEVICE_COUNT] = {};
 static uint32_t pcf8575_last_attempt_ms[PCF8575_DEVICE_COUNT] = {};
+static constexpr uint32_t PCF8575_PROBE_INTERVAL_MS = 1000;
+static constexpr uint32_t PCF8575_RETRY_INTERVAL_MS = 5000;
+
+/**
+ * 标记单片 PCF8575 离线并丢弃旧输出
+ * @param device 已校验的芯片索引 0～3
+ * 只在在线转离线时记录日志，从失败时刻开始等待重试，不影响其他芯片
+ * 尝试一次全低写入，避免仅输入读取失败时仍保留电机高电平；无论结果如何都等待重新初始化
+ */
+static void pcf8575_mark_offline(const uint8_t device) {
+    if (pcf8575_initialized[device])
+        LOG_MAIN("[i2c] PCF8575 0x%02X 失去应答，暂停使用并稍后重试", PCF8575_ADDR + device);
+    pcf8575_initialized[device] = false;
+    pcf8575_pin_states[device] = 0;
+    pcf8575[device].write16(0);
+    pcf8575[device].lastError();
+    pcf8575_last_attempt_ms[device] = millis();
+}
 
 /**
  * 初始化单片 PCF8575
@@ -47,8 +63,8 @@ bool PCF8575_init() {
 /**
  * 查询指定 PCF8575 是否在线
  * @param device 芯片索引 0～3
- * @return true 表示总线已初始化且该芯片初始化成功
- * 非法索引返回 false，不访问其他芯片
+ * @return true 表示总线已初始化且该芯片最近一次初始化、探测或读写未失败
+ * 只读取缓存，由主循环定期探测和读写结果更新；非法索引返回 false
  */
 bool PCF8575_is_online(const uint8_t device) {
     return device < PCF8575_DEVICE_COUNT && i2c_bus_ready() && pcf8575_initialized[device];
@@ -57,7 +73,7 @@ bool PCF8575_is_online(const uint8_t device) {
 /**
  * 查询虚拟引脚所属芯片是否在线
  * @param pin 虚拟引脚号
- * @return true 表示引脚有效且所属芯片已初始化
+ * @return true 表示引脚有效且所属芯片当前缓存状态为在线
  * 真实 GPIO 和 PIN_NONE 不属于扩展芯片，返回 false
  */
 bool PCF8575_pin_is_online(const uint8_t pin) {
@@ -65,25 +81,47 @@ bool PCF8575_pin_is_online(const uint8_t pin) {
 }
 
 /**
- * 定期重试离线 PCF8575
- * 每片独立限频为 5 秒；其他芯片已经在线时仍继续尝试缺失地址
+ * 定期探测在线芯片并重试离线 PCF8575
+ * 在线芯片每秒检查应答且不改动输出，离线芯片每 5 秒独立重试；仅由主循环调用
  */
 void PCF8575_poll() {
     if (!i2c_bus_ready()) return;
     const uint32_t now = millis();
     for (uint8_t device = 0; device < PCF8575_DEVICE_COUNT; ++device) {
-        if (!pcf8575_initialized[device] && now - pcf8575_last_attempt_ms[device] >= 5000)
-            pcf8575_init_device(device);
+        const uint32_t interval = pcf8575_initialized[device] ?
+                                  PCF8575_PROBE_INTERVAL_MS : PCF8575_RETRY_INTERVAL_MS;
+        if (now - pcf8575_last_attempt_ms[device] < interval) continue;
+        if (pcf8575_initialized[device]) {
+            pcf8575_last_attempt_ms[device] = now;
+            if (!i2c_bus_probe(PCF8575_ADDR + device)) pcf8575_mark_offline(device);
+        } else if (pcf8575_init_device(device)) {
+            LOG_MAIN("[i2c] 已重新检测到 PCF8575 0x%02X，输出已清零", PCF8575_ADDR + device);
+        }
     }
 }
 
 /**
+ * 写入单片 PCF8575 并检查传输结果
+ * @param device 已校验的芯片索引 0～3
+ * @param states 要写入的 16 位电平
+ * @return true 表示芯片在线且写入成功
+ * 写入失败立即标记离线，避免后续操作覆盖本次错误
+ */
+static bool pcf8575_write_device(const uint8_t device, const uint16_t states) {
+    if (!PCF8575_is_online(device)) return false;
+    pcf8575[device].write16(states);
+    if (pcf8575[device].lastError() == PCF8575_OK) return true;
+    pcf8575_mark_offline(device);
+    return false;
+}
+
+/**
  * 刷新所有在线 PCF8575 的输出状态
- * 每片只写入自身的 16 位缓存，离线芯片不访问总线
+ * 每片只写入自身的 16 位缓存，离线芯片不访问总线，写入失败立即更新在线状态
  */
 void PCF8575_update() {
     for (uint8_t device = 0; device < PCF8575_DEVICE_COUNT; ++device) {
-        if (PCF8575_is_online(device)) pcf8575[device].write16(pcf8575_pin_states[device]);
+        pcf8575_write_device(device, pcf8575_pin_states[device]);
     }
 }
 
@@ -105,7 +143,7 @@ void PCF8575_pinMode(const uint8_t pin, const uint8_t mode) {
  * 设置 PCF8575 虚拟引脚电平
  * @param pin 虚拟引脚号
  * @param value HIGH 或 LOW
- * 只更新所属芯片的输出缓存并写入该芯片，P10～P17 使用位序 8～15
+ * 只更新所属芯片的输出缓存并写入该芯片，失败标记离线；P10～P17 使用位序 8～15
  */
 void PCF8575_digitalWrite(const uint8_t pin, const uint8_t value) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) return;
@@ -113,14 +151,15 @@ void PCF8575_digitalWrite(const uint8_t pin, const uint8_t value) {
     const uint16_t mask = uint16_t(1U << VIRTUAL_TO_PCF8575_BIT(pin));
     if (value == HIGH) pcf8575_pin_states[device] |= mask;
     else pcf8575_pin_states[device] &= ~mask;
-    if (PCF8575_is_online(device)) pcf8575[device].write16(pcf8575_pin_states[device]);
+    pcf8575_write_device(device, pcf8575_pin_states[device]);
 }
 
 /**
  * 读取 PCF8575 虚拟引脚电平
  * @param pin 虚拟引脚号
- * @return HIGH 或 LOW；无效或离线返回 LOW，调用方须先检查在线状态
+ * @return HIGH 或 LOW；无效、离线或传输失败返回 LOW，调用方须在读取后检查在线状态
  * 输出返回自身缓存；输入先释放对应位，读取后恢复该芯片的原输出，不影响其他芯片
+ * 每次传输后立即检查错误，失败标记离线，不把库缓存的旧输入当作有效读数
  */
 int PCF8575_digitalRead(const uint8_t pin) {
     if (!PCF8575_pin_is_online(pin)) return LOW;
@@ -128,9 +167,13 @@ int PCF8575_digitalRead(const uint8_t pin) {
     const uint16_t mask = uint16_t(1U << VIRTUAL_TO_PCF8575_BIT(pin));
     if (pcf8575_pin_modes[device] & mask)
         return pcf8575_pin_states[device] & mask ? HIGH : LOW;
-    pcf8575[device].write16(pcf8575_pin_states[device] | mask);
+    if (!pcf8575_write_device(device, pcf8575_pin_states[device] | mask)) return LOW;
     const uint16_t inputs = pcf8575[device].read16();
-    pcf8575[device].write16(pcf8575_pin_states[device]);
+    if (pcf8575[device].lastError() != PCF8575_OK) {
+        pcf8575_mark_offline(device);
+        return LOW;
+    }
+    if (!pcf8575_write_device(device, pcf8575_pin_states[device])) return LOW;
     return inputs & mask ? HIGH : LOW;
 }
 

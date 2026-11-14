@@ -40,7 +40,7 @@ void loop(){
     while (true) {
         // 原有核心逻辑：喂狗 → 串口调试 → BMCU业务
         hal_watchdog_feed();
-        BMCU_run();      // Handles BMCU protocol and BambuBus
+        BMCU_run();
         BambuBus_save_run(); // 总线空闲时限频保存离线设置和耗材记录
         hall_sensor_run(); // 每轮最多一个 ADC 转换，持续保留最近一分钟的统计
         env_sensor_run(); // 非阻塞刷新 AHT20/BMP280 读数

@@ -2332,10 +2332,45 @@ static void handle_not_found() {
 }
 
 /**
- * 注册 Web 路由
+ * 为 localhost 预览的 API 请求添加跨域许可并处理预检
+ * @param request 当前 HTTP 请求
+ * @param next 后续路由处理回调
+ * @return 预检已处理或后续路由的处理结果
+ * 仅允许 HTTP localhost 来源，暴露日志响应头；预检不执行实际接口
+ */
+static bool handle_local_preview_cors(WebServer &request, Middleware::Callback next) {
+    if (!request.uri().startsWith("/api/")) return next();
+    const String origin = request.header("Origin");
+    const String local_origin = "http://localhost";
+    if (origin != local_origin) {
+        if (!origin.startsWith(local_origin + ":")) return next();
+        const String port = origin.substring(local_origin.length() + 1);
+        if (port.isEmpty() || port.length() > 5) return next();
+        for (size_t i = 0; i < port.length(); ++i) {
+            if (port[i] < '0' || port[i] > '9') return next();
+        }
+        if (port.toInt() > 65535) return next();
+    }
+    request.sendHeader("Access-Control-Allow-Origin", origin);
+    request.sendHeader("Vary", "Origin");
+    request.sendHeader("Access-Control-Expose-Headers", "*");
+    if (request.method() == HTTP_OPTIONS) {
+        request.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        request.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+        request.send(204, "text/plain", "");
+        return true;
+    }
+    return next();
+}
+
+/**
+ * 注册 Web 路由与 localhost 预览跨域处理
  * 把首页、状态、设置、接线、局域网换料、电机、WiFi、日志、重启、恢复默认配置、恢复出厂和 OTA 接口绑定到处理函数
  */
 static void setup_routes() {
+    const char *headers[] = {"Origin"};
+    server.collectHeaders(headers, 1);
+    server.addMiddleware(handle_local_preview_cors);
     server.on("/", HTTP_GET, handle_root);
     server.on("/api/status", HTTP_GET, handle_status);
     server.on("/api/hall", HTTP_GET, handle_hall);

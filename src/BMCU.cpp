@@ -322,7 +322,7 @@ int BMCU_channel_filament_state(const int motorNum) {
 
 /**
  * 按通道模式刷新在线状态
- * 在线模式直接标记有料；自动模式按微动所属芯片判断可读性；其余模式标记无料
+ * 在线模式直接标记有料；自动模式读取微动后检查所属芯片状态，离线或读取失败时标记无料；其余模式标记无料
  */
 void BMCU_apply_channel_modes() {
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
@@ -331,10 +331,8 @@ void BMCU_apply_channel_modes() {
         if (enabled && CHANNEL_MODE[i] == CHANNEL_MODE_AUTO &&
             IO_CONFIG.microswitch[i] != PIN_NONE) {
             int pin = IO_CONFIG.microswitch[i];
-            if (!IS_PCF8575_VIRTUAL_PIN(pin) || PCF8575_pin_is_online(pin))
-                online_now = !digitalRead_PCF8575(pin);
-            else
-                online_now = false;
+            online_now = !digitalRead_PCF8575(pin) &&
+                         (!IS_PCF8575_VIRTUAL_PIN(pin) || PCF8575_pin_is_online(pin));
         }
         set_filament_online(i / 4, i % 4, online_now);
     }
@@ -579,8 +577,9 @@ void BMCU_apply_pullback_timeout(const int motorNum, const uint32_t previous_tim
 }
 
 /**
- * 处理停止请求和限时电机
- * 先处理网页停止请求，局域网换料期间同时取消整个会话，再停止已到期的限时动作；队列等本轮打印机状态处理完成后再启动
+ * 处理停止请求、失效电机接线和限时动作
+ * 先处理网页停止请求和失效接线，局域网换料期间同时取消整个会话，再停止已到期的限时动作；队列等本轮打印机状态处理完成后再启动
+ * 扩展芯片离线时停止受影响的运行通道并清理排队，不保留等待重连的旧动作
  */
 static void motor_tick() {
     const uint32_t now = millis();
@@ -588,6 +587,12 @@ static void motor_tick() {
         auto &ch = channel_state[i];
         auto &m = ch.motor;
         if (ch.stop_requested) {
+            if (lan_ams_busy()) lan_ams_cancel();
+            BMCU_stop_motor(i);
+            continue;
+        }
+        if ((m.direction || queue_position(i)) && !BMCU_channel_motor_ready(i)) {
+            LOG_MAIN("[motor] 通道 %d 电机接线不可用，停止并清理排队", i + 1);
             if (lan_ams_busy()) lan_ams_cancel();
             BMCU_stop_motor(i);
             continue;
@@ -786,7 +791,7 @@ float AS5600_get_speed(const uint8_t channel) {
 
 /**
  * 在主循环轮询五通总微动，下降沿触发当前空闲电机进料 200ms
- * 使用配置的真实或扩展输入；未配置、扩展器离线时跳过，首次有效读数只建立基线；通道无料时不进料
+ * 使用配置的真实或扩展输入；未配置、扩展器离线或读取失败时跳过，首次有效读数只建立基线；通道无料时不进料
  * 局域网只使用已确认且状态新鲜的装料通道，换料期间不触发辅助进料
  * 本函数由运动调度调用，不是硬件中断回调
  */
@@ -801,6 +806,10 @@ static void switchInterrupt() {
         return;
     }
     const int switchState = digitalRead_PCF8575(pin);
+    if (IS_PCF8575_VIRTUAL_PIN(pin) && !PCF8575_pin_is_online(pin)) {
+        lastSwitchState = -1;
+        return;
+    }
     if (switchState == LOW && lastSwitchState > LOW) {
         const int n = lan_ams_enabled() ? lan_ams_active_channel() : get_now_filament_num();
         if (is_active_channel(n) && is_filament_online(n) && !channel_state[n].motor.direction)
@@ -827,7 +836,8 @@ static bool autoload_blocked(const int motorNum) {
 
 /**
  * 检测微动开关并触发自动进料
- * 轮询各通道微动状态，按所属扩展芯片检查在线状态并做 30ms 防抖；自动模式下由无料变有料触发辅助进料
+ * 轮询各通道微动状态，读取后检查所属扩展芯片状态并做 30ms 防抖；自动模式下由无料变有料触发辅助进料
+ * 离线或读取失败时清除有料及防抖状态，恢复后的首次读数只建立基线
  */
 void check_microswitch_status() {
     const uint32_t now = millis();
@@ -849,14 +859,15 @@ void check_microswitch_status() {
             ch.msw_previous = ch.msw_raw = -1;
             continue;
         }
-        // PCF8575 未检测到时不能读取扩展输入，保持未知状态并跳过辅助进料
+        // sw 微动高低电平 默认拉低是在线；离线读取不访问总线
+        const bool sw = digitalRead_PCF8575(pin);
+        // 读取本身也可能发现断线，不能把失败返回的低电平当作有料
         if (IS_PCF8575_VIRTUAL_PIN(pin) && !PCF8575_pin_is_online(pin)) {
             ch.msw_previous = ch.msw_raw = -1;
+            set_filament_online(i / 4, i % 4, false);
             continue;
         }
 
-        // sw 微动高低电平 默认拉低是在线
-        const bool sw = digitalRead_PCF8575(pin);
         const bool online = !sw;
         set_filament_online(i / 4, i % 4, online); // 通道状态立即生效，界面实时刷新
 
@@ -908,13 +919,13 @@ void BMCU_init() {
 
 /**
  * BMCU主运行逻辑
- * 先应用待处理接线，再处理停止请求、打印机目标和共用队列；有线总线故障取消打印机运行及排队，保留本地手动任务
+ * 先应用待处理接线并探测扩展芯片，再处理停止请求、打印机目标和共用队列；有线总线故障取消打印机运行及排队，保留本地手动任务
  * 双空接线时由局域网会话提供换料目标，跳过有线状态机，仍使用共用定时和队列保护
  */
 void BMCU_run() {
     if (io_apply_pending) apply_io_config();
-    motor_tick();
     PCF8575_poll();
+    motor_tick();
     if (lan_ams_enabled()) {
         lan_ams_run();
         switchInterrupt();
