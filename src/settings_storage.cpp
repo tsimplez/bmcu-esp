@@ -20,6 +20,9 @@ int MANUAL_PULSE_MS = DEFAULT_MANUAL_PULSE_MS;
 int AUTO_LOAD_MS = DEFAULT_AUTO_LOAD_MS;
 // 打印机进料结束后继续运行的时长，单位毫秒；0 表示立即停车
 int FEED_STOP_DELAY_MS = DEFAULT_FEED_STOP_DELAY_MS;
+// 五通总微动独立配置压下电平和每次触发的进料时长
+int TOTAL_SWITCH_ACTIVE_LEVEL = DEFAULT_TOTAL_SWITCH_ACTIVE_LEVEL;
+int TOTAL_SWITCH_FEED_MS = DEFAULT_TOTAL_SWITCH_FEED_MS;
 // 允许同时运行的电机数量上限，运行时由设置加载值限制到 active_channel_count()
 int MOTOR_LIMIT = 1;
 // BambuBus 的 RS485 收发模式：RS485_MODE_RXTX 或 RS485_MODE_DE
@@ -249,7 +252,7 @@ bool settings_lan_config_valid(const LanAmsConfig &config, const bool require_cr
 /**
  * 校验并应用设置到运行期变量
  * @param data 从存储或快照得到的设置
- * 逐项检查范围后更新全局配置；各 AMS 身份、霍尔检测和局域网配置独立校验，保留未启用通道的配置
+ * 逐项检查范围后更新全局配置；各 AMS 身份、霍尔检测、五通总微动和局域网配置独立校验，保留未启用通道的配置
  * 通道模式不在有效范围时恢复为自动模式
  * I2C 仅由 SDA/SCL 决定，接线无效时恢复平台默认映射
  */
@@ -271,6 +274,10 @@ static void apply_settings_values(const SettingsData& data) {
                        ? data.auto_load_ms : DEFAULT_AUTO_LOAD_MS;
     FEED_STOP_DELAY_MS = data.feed_stop_delay_ms >= 0 && data.feed_stop_delay_ms < MAX_PULSE_MS
                             ? data.feed_stop_delay_ms : DEFAULT_FEED_STOP_DELAY_MS;
+    TOTAL_SWITCH_ACTIVE_LEVEL = data.total_switch_active_level == LOW || data.total_switch_active_level == HIGH
+                                    ? data.total_switch_active_level : DEFAULT_TOTAL_SWITCH_ACTIVE_LEVEL;
+    TOTAL_SWITCH_FEED_MS = data.total_switch_feed_ms > 0 && data.total_switch_feed_ms < MAX_PULSE_MS
+                               ? data.total_switch_feed_ms : DEFAULT_TOTAL_SWITCH_FEED_MS;
     RS485_MODE = data.rs485_mode == RS485_MODE_RXTX || data.rs485_mode == RS485_MODE_DE
                      ? data.rs485_mode : hal_default_project_preset().bus.mode;
     BUS_LOG_ENABLE = data.bus_log_enable == 0 || data.bus_log_enable == 1
@@ -370,7 +377,7 @@ void settings_load_from_flash() {
 /**
  * 生成当前设置快照
  * @return 包含所有运行期设置及 CRC32 的 SettingsData
- * 收集当前生效参数、全部 AMS 身份、霍尔检测、局域网和接线配置；I2C 只存两根引脚，计算 checksum 后返回副本
+ * 收集当前生效参数、全部 AMS 身份、霍尔检测、五通总微动、局域网和接线配置；I2C 只存两根引脚，计算 checksum 后返回副本
  */
 SettingsData settings_snapshot() {
     SettingsData data = {};
@@ -383,6 +390,8 @@ SettingsData settings_snapshot() {
     data.manual_pulse_ms = MANUAL_PULSE_MS;
     data.auto_load_ms = AUTO_LOAD_MS;
     data.feed_stop_delay_ms = FEED_STOP_DELAY_MS;
+    data.total_switch_active_level = TOTAL_SWITCH_ACTIVE_LEVEL;
+    data.total_switch_feed_ms = TOTAL_SWITCH_FEED_MS;
     data.rs485_mode = RS485_MODE;
     data.bus_log_enable = BUS_LOG_ENABLE;
     data.ota_notify = OTA_NOTIFY;
@@ -426,9 +435,11 @@ bool settings_save_to_flash() {
  * 保存候选设置并完整回读校验
  * @param candidate 已完成范围和接线校验的候选设置
  * @return true 表示写入成功且回读完全一致
- * 校验全部霍尔检测和局域网参数并重算魔数和 CRC，不修改运行期设置，供项目切换在重启后统一生效
+ * 校验全部霍尔检测、五通总微动和局域网参数并重算魔数和 CRC，不修改运行期设置，供项目切换在重启后统一生效
  */
 bool settings_save_snapshot(const SettingsData &candidate) {
+    if ((candidate.total_switch_active_level != LOW && candidate.total_switch_active_level != HIGH) ||
+        candidate.total_switch_feed_ms <= 0 || candidate.total_switch_feed_ms >= MAX_PULSE_MS) return false;
     if (!settings_lan_config_valid(candidate.lan_ams)) return false;
     for (const auto &config : candidate.hall_detection)
         if (!settings_hall_detection_valid(config)) return false;
@@ -446,7 +457,7 @@ bool settings_save_snapshot(const SettingsData &candidate) {
 /**
  * 恢复所有设置默认值
  * 接线和 AMS 数量复用平台默认项目；霍尔检测使用默认值，全部 AMS 使用自动序列号和默认版本，OTA 恢复默认发布目录
- * 清空局域网配对凭据并恢复默认换料参数
+ * 清空局域网配对凭据并恢复默认换料参数；五通总微动恢复 LOW 压下和 200ms 进料
  * 本函数不直接写存储
  */
 void settings_reset_to_defaults() {
@@ -459,6 +470,8 @@ void settings_reset_to_defaults() {
     MANUAL_PULSE_MS = DEFAULT_MANUAL_PULSE_MS;
     AUTO_LOAD_MS = DEFAULT_AUTO_LOAD_MS;
     FEED_STOP_DELAY_MS = DEFAULT_FEED_STOP_DELAY_MS;
+    TOTAL_SWITCH_ACTIVE_LEVEL = DEFAULT_TOTAL_SWITCH_ACTIVE_LEVEL;
+    TOTAL_SWITCH_FEED_MS = DEFAULT_TOTAL_SWITCH_FEED_MS;
     MOTOR_LIMIT = 1;
     RS485_MODE = hal_default_project_preset().bus.mode;
     BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
@@ -507,11 +520,12 @@ static const char *channel_mode_name(const int mode) {
 
 /**
  * 打印当前全部设置
- * 启动和保存设置时，把总线、各 AMS 身份、通道接线、霍尔检测、局域网和 OTA 等参数写入主板日志，不输出访问码
+ * 启动和保存设置时，把总线、各 AMS 身份、通道接线、霍尔检测、五通总微动、局域网和 OTA 等参数写入主板日志，不输出访问码
  */
 void settings_log_all() {
-    LOG_MAIN("[settings] 进料停止延迟=%dms，五通总微动=%s", FEED_STOP_DELAY_MS,
-             io_config_pin_label(IO_CONFIG.switch_pin).c_str());
+    LOG_MAIN("[settings] 进料停止延迟=%dms，五通总微动=%s，压下电平=%s，进料时长=%dms", FEED_STOP_DELAY_MS,
+             io_config_pin_label(IO_CONFIG.switch_pin).c_str(),
+             TOTAL_SWITCH_ACTIVE_LEVEL == LOW ? "LOW" : "HIGH", TOTAL_SWITCH_FEED_MS);
     LOG_MAIN("[settings] RS485 收发模式=%d，BambuBus 原始报文日志=%s",
              RS485_MODE, BUS_LOG_ENABLE ? "已启用" : "已关闭");
     LOG_MAIN("[settings] BambuBus RX=%s，TX=%s，DE=%s（%s）", io_config_pin_label(BUS_RX).c_str(),

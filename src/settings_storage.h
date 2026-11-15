@@ -25,6 +25,8 @@ extern int AMS_COUNT;              // 唯一的数量设置（1-4），每个 AM
 extern int MANUAL_PULSE_MS;        // 手动进退料点动时长（毫秒）
 extern int AUTO_LOAD_MS;           // 微动辅助进料时长（毫秒，0=关闭）
 extern int FEED_STOP_DELAY_MS;     // 打印机进料结束后的延迟停车时间（毫秒，0=立即停车）
+extern int TOTAL_SWITCH_ACTIVE_LEVEL; // 五通总微动压下电平（LOW/HIGH）
+extern int TOTAL_SWITCH_FEED_MS;   // 五通总微动每次压下的进料时长（毫秒）
 extern int MOTOR_LIMIT;            // 同时运行的电机数（1..active_channel_count()）
 extern int RS485_MODE;             // RS485 收发模式（见下方 RS485_MODE_*）
 extern int BUS_LOG_ENABLE;         // BambuBus 原始报文日志开关（0=关 1=开）
@@ -86,10 +88,12 @@ struct SettingsData {
     int32_t ams_version[AMS_IDENTITY_COUNT][4]; // 各 AMS 版本（A.B.C.D，每段 0..255）
     HallDetectionConfig hall_detection[IO_CONFIG_MAX_CHANNELS]; // 各通道的双阈值与无转动超时
     LanAmsConfig lan_ams;            // 局域网打印机凭据和换料参数
+    int32_t total_switch_active_level; // 五通总微动压下电平（LOW/HIGH）
+    int32_t total_switch_feed_ms;    // 五通总微动每次压下的进料时长（毫秒）
 };
 
-// 当前布局包含局域网打印机配置；旧布局均恢复整份默认设置，不迁移
-#define SETTINGS_MAGIC_NUMBER    0x53415430
+// 当前布局包含五通总微动电平和进料时长；旧布局均恢复整份默认设置，不迁移
+#define SETTINGS_MAGIC_NUMBER    0x53415431
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**
@@ -105,6 +109,8 @@ constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设�
 #define DEFAULT_MANUAL_PULSE_MS     10000  // 手动点动默认时长（毫秒）
 #define DEFAULT_AUTO_LOAD_MS        8000 // 微动辅助进料默认时长（毫秒）
 #define DEFAULT_FEED_STOP_DELAY_MS  1000 // 进料停止延迟默认时长（毫秒）
+constexpr int DEFAULT_TOTAL_SWITCH_ACTIVE_LEVEL = LOW;
+constexpr int DEFAULT_TOTAL_SWITCH_FEED_MS = 200;
 
 // 旧版使用 90.00.00.00 新版使用 1.0.6.87
 #define DEFAULT_AMS_VERSION_MAJOR   90   // 默认 AMS 版本 A 段
@@ -112,7 +118,7 @@ constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设�
 #define DEFAULT_AMS_VERSION_PATCH   0    // 默认 AMS 版本 C 段
 #define DEFAULT_AMS_VERSION_BUILD   0    // 默认 AMS 版本 D 段
 
-// 点动、辅助进料和进料停止延迟的时长上限（毫秒）：必须小于 30 秒
+// 点动、通道/五通辅助进料和进料停止延迟的时长上限（毫秒）：必须小于 30 秒
 #define MAX_PULSE_MS                30000
 
 #define RS485_MODE_RXTX             1   // 只用 RXD/TXD，不驱动 DE（模块自动收发方向）

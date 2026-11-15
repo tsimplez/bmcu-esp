@@ -66,6 +66,7 @@ static bool printer_bus_fault = false;
 static bool io_apply_pending = false;
 // 五通总微动上次读数；-1 表示尚未建立有效输入基线
 static int lastSwitchState = -1;
+static bool total_switch_triggered = false; // 仅当前主循环有效的压下边沿，不排队补触发
 
 // 等待启动的电机任务，按提交顺序执行，同一通道只保留一个目标动作
 static MotorJob motor_queue[IO_CONFIG_MAX_CHANNELS];
@@ -123,6 +124,7 @@ static const char *motor_source_name(const MotorSource source) {
         case MOTOR_MANUAL: return "手动";
         case MOTOR_AUTOLOAD: return "微动辅助";
         case MOTOR_LAN: return "局域网换料";
+        case MOTOR_TOTAL_SWITCH: return "五通总微动";
         default: return "空闲";
     }
 }
@@ -238,19 +240,23 @@ void BMCU_apply_io_config() {
 
 /**
  * 在主循环应用通道与五通总微动接线
- * 先释放所有变更输入和通道，再按接线切换控制台并绑定新引脚；未变化通道保持运行，新总微动重新建立输入基线
+ * 先释放所有变更输入和通道，再按接线切换控制台并绑定新引脚；未变化通道保持运行，总微动改线或切换压下电平时重新建立输入基线
  */
 static void apply_io_config() {
     // 上一次已应用到硬件的引脚配置，用与 IO_CONFIG 比较找出变更通道
     static IoConfig applied_io = {};
     // 上一次已应用的启用通道数，用于识别通道增减
     static int applied_channels = 0;
+    static int applied_switch_active_level = -1;
     const int channels = active_channel_count();
     const bool switch_changed = !applied_channels || applied_io.switch_pin != IO_CONFIG.switch_pin;
     if (switch_changed) {
         if (applied_channels && applied_io.switch_pin != PIN_NONE)
             pinMode_PCF8575(applied_io.switch_pin, INPUT);
+    }
+    if (switch_changed || applied_switch_active_level != TOTAL_SWITCH_ACTIVE_LEVEL) {
         lastSwitchState = -1;
+        total_switch_triggered = false;
     }
     bool changed[IO_CONFIG_MAX_CHANNELS] = {};
     // 先释放所有变更/停用通道，再绑定新引脚，避免引脚交换时旧通道拉低新输出
@@ -282,6 +288,7 @@ static void apply_io_config() {
                        IS_PCF8575_VIRTUAL_PIN(IO_CONFIG.switch_pin) ? INPUT : INPUT_PULLUP);
     applied_io = IO_CONFIG;
     applied_channels = channels;
+    applied_switch_active_level = TOTAL_SWITCH_ACTIVE_LEVEL;
     io_apply_pending = false;
 }
 
@@ -499,7 +506,7 @@ bool BMCU_manual_pulse(const int motorNum, const int cmd, const uint32_t duratio
  * @param duration_ms 限时动作时长，0 表示不自动停止
  * @return true 表示命令已执行或已排队
  * 打印机可接管本通道；同方向不重复驱动，反方向直接切换，同来源重复命令不续期
- * 并发名额不足时按通道合并排队，实际启动后才计算时长；故障总线不能启动打印机任务，局域网任务仅允许当前会话通道
+ * 并发名额不足时通道和五通微动辅助均拒绝，其他来源按通道合并排队并在启动后计时；故障总线不能启动打印机任务，局域网任务仅允许当前会话通道
  */
 bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const uint32_t duration_ms) {
     if (!valid_channel(motorNum) || cmd < -1 || cmd > 1) return false;
@@ -529,7 +536,7 @@ bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const
     if (source != MOTOR_PRINTER &&
         ((m.direction && m.source != source) || (pos && motor_queue[pos - 1].source != source))) return false;
     if (!m.direction && (BMCU_running_count() >= MOTOR_LIMIT || (motor_queued && pos != 1))) {
-        if (source == MOTOR_AUTOLOAD) return false;
+        if (source == MOTOR_AUTOLOAD || source == MOTOR_TOTAL_SWITCH) return false;
         return queue_motor_job(motorNum, cmd, source, duration_ms);
     }
     if (pos) remove_job(pos - 1);
@@ -790,16 +797,12 @@ float AS5600_get_speed(const uint8_t channel) {
 // ------------------------------ 总微动(五通) start ------------------------------
 
 /**
- * 在主循环轮询五通总微动，下降沿触发当前空闲电机进料 200ms
- * 使用配置的真实或扩展输入；未配置、扩展器离线或读取失败时跳过，首次有效读数只建立基线；通道无料时不进料
- * 局域网只使用已确认且状态新鲜的装料通道，换料期间不触发辅助进料
- * 本函数由运动调度调用，不是硬件中断回调
+ * 在主循环采样五通总微动，按配置的压下电平检测边沿
+ * 不依赖打印机或电机状态；未配置、扩展器离线或读取失败时清除基线，首次有效读数只建立基线
+ * 边沿只保留到本轮结束，避免换料或电机忙时的压下在之后补触发
  */
-static void switchInterrupt() {
-    if (lan_ams_busy()) {
-        lastSwitchState = -1;
-        return;
-    }
+static void sample_total_switch() {
+    total_switch_triggered = false;
     const int pin = IO_CONFIG.switch_pin;
     if (pin == PIN_NONE || (IS_PCF8575_VIRTUAL_PIN(pin) && !PCF8575_pin_is_online(pin))) {
         lastSwitchState = -1;
@@ -810,12 +813,33 @@ static void switchInterrupt() {
         lastSwitchState = -1;
         return;
     }
-    if (switchState == LOW && lastSwitchState > LOW) {
-        const int n = lan_ams_enabled() ? lan_ams_active_channel() : get_now_filament_num();
-        if (is_active_channel(n) && is_filament_online(n) && !channel_state[n].motor.direction)
-            motorCmd(n, 1, MOTOR_AUTOLOAD, 200);
-    }
+    total_switch_triggered = lastSwitchState >= 0 && lastSwitchState != switchState &&
+                             switchState == TOTAL_SWITCH_ACTIVE_LEVEL;
     lastSwitchState = switchState;
+}
+
+/**
+ * 获取五通总微动最近一次采样的压下状态
+ * @return 1 表示已压下，0 表示未压下，-1 表示输入不可用或等待采样
+ * 只读取缓存；改线或电平尚未应用、扩展器离线时不返回旧状态
+ */
+int BMCU_total_switch_state() {
+    if (const int pin = IO_CONFIG.switch_pin; io_apply_pending || pin == PIN_NONE || lastSwitchState < 0 ||
+                                              (IS_PCF8575_VIRTUAL_PIN(pin) && !PCF8575_pin_is_online(pin))) return -1;
+    return lastSwitchState == TOTAL_SWITCH_ACTIVE_LEVEL ? 1 : 0;
+}
+
+/**
+ * 在运动调度允许时响应五通总微动的压下边沿，按配置时长进料
+ * 只触发当前有料且空闲的通道，保留并发和接线保护；局域网使用已确认且状态新鲜的装料通道，换料期间不触发
+ * 本函数由主循环调用，不是硬件中断回调；五通动作独立于通道自吸时长
+ */
+static void switchInterrupt() {
+    if (!total_switch_triggered || lan_ams_busy()) return;
+    total_switch_triggered = false;
+    const int n = lan_ams_enabled() ? lan_ams_active_channel() : get_now_filament_num();
+    if (is_active_channel(n) && is_filament_online(n) && !channel_state[n].motor.direction)
+        motorCmd(n, 1, MOTOR_TOTAL_SWITCH, TOTAL_SWITCH_FEED_MS);
 }
 
 /**
@@ -837,7 +861,7 @@ static bool autoload_blocked(const int motorNum) {
 /**
  * 检测微动开关并触发自动进料
  * 轮询各通道微动状态，读取后检查所属扩展芯片状态并做 30ms 防抖；自动模式下由无料变有料触发辅助进料
- * 离线或读取失败时清除有料及防抖状态，恢复后的首次读数只建立基线
+ * 离线或读取失败时清除有料及防抖状态，恢复后的首次读数只建立基线；五通进料不受通道自吸设置影响，通道无料时仍停止
  */
 void check_microswitch_status() {
     const uint32_t now = millis();
@@ -846,6 +870,7 @@ void check_microswitch_status() {
         auto &ch = channel_state[i];
         if (ch.motor.source == MOTOR_AUTOLOAD && (autoload_blocked(i) || AUTO_LOAD_MS <= 0))
             motorCmd(i, 0);
+        if (ch.motor.source == MOTOR_TOTAL_SWITCH && !is_filament_online(i)) motorCmd(i, 0);
 
         // 非自动模式、超出启用通道或无微动输入的通道不参与触发
         if (CHANNEL_MODE[i] != CHANNEL_MODE_AUTO) {
@@ -919,12 +944,13 @@ void BMCU_init() {
 
 /**
  * BMCU主运行逻辑
- * 先应用待处理接线并探测扩展芯片，再处理停止请求、打印机目标和共用队列；有线总线故障取消打印机运行及排队，保留本地手动任务
+ * 先应用待处理接线并探测扩展芯片，持续采样五通状态，再处理停止请求、打印机目标和共用队列；有线总线故障取消打印机运行及排队，保留本地手动任务
  * 双空接线时由局域网会话提供换料目标，跳过有线状态机，仍使用共用定时和队列保护
  */
 void BMCU_run() {
     if (io_apply_pending) apply_io_config();
     PCF8575_poll();
+    sample_total_switch();
     motor_tick();
     if (lan_ams_enabled()) {
         lan_ams_run();
@@ -1000,7 +1026,7 @@ void BMCU_run() {
 /**
  * 电机运动逻辑
  * 按打印机目标方向接管或切换电机；重复请求保持运行，达到并发上限时排队
- * 明确的 07/00 停止供料跳过普通进料结束延迟；定时退料仅可被在线通道的新进料请求切换
+ * 明确的 07/00 停止供料跳过普通进料结束延迟；定时退料仅可被在线通道的新进料请求切换，待机时保留手动、通道和五通微动的限时动作
  */
 void BMCU_motion() {
     if (printer_bus_fault) {
@@ -1035,7 +1061,7 @@ void BMCU_motion() {
     }
 
     const bool execute_motion = channel_switch_ready(cur) || m.direction != 0;
-    if (act == waiting && (m.source == MOTOR_MANUAL || m.source == MOTOR_AUTOLOAD)) return;
+    if (act == waiting && (m.source == MOTOR_MANUAL || m.source == MOTOR_AUTOLOAD || m.source == MOTOR_TOTAL_SWITCH)) return;
 
     switch (act) {
         case need_pull_back:

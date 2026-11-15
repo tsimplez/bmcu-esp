@@ -52,12 +52,13 @@ enum MotorSource {
     MOTOR_PRINTER, // 打印机
     MOTOR_MANUAL, // 手动
     MOTOR_AUTOLOAD, // 微动辅助
-    MOTOR_LAN // 局域网换料
+    MOTOR_LAN, // 局域网换料
+    MOTOR_TOTAL_SWITCH // 五通总微动辅助进料
 };
 
 struct MotorStatus {
     int direction; // 当前方向：1=进料，-1=退料，0=停止
-    MotorSource source; // 当前动作来源：打印机、手动点动、微动辅助或局域网换料
+    MotorSource source; // 当前动作来源：打印机、手动点动、通道微动、局域网换料或五通总微动
     int32_t remaining_ms; // -1 表示结束时间由打印机决定
     int queue_position; // 0=未排队，1=下一个执行
     int queued_direction; // 排队任务的目标方向：1=进料，-1=退料，0=无排队任务
@@ -95,6 +96,9 @@ int BMCU_motor_count();
 int BMCU_max_ams_count();
 
 int BMCU_channel_filament_state(int motorNum);
+
+// 主循环采样的五通总微动状态：1=已压下，0=未压下，-1=输入不可用或等待采样
+int BMCU_total_switch_state();
 
 void BMCU_apply_channel_modes();
 

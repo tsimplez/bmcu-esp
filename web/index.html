@@ -469,12 +469,23 @@
                     数量联动新增通道或修改接线前请停止电机动作；引脚不能重复带警告的引脚可能影响芯片启动
                 </div>
                 <div class="row" style="margin-top:10px">
-                    <label for="io-switch">五通总微动</label><span id="io-switch-control">
+                    <label for="io-switch">五通总微动</label>
+                    <span id="total-switch-state" class="hint" role="status" style="margin:0">状态待确认</span>
+                    <span id="io-switch-control">
                         <select id="io-switch" disabled><option value="255">加载中…</option></select>
                     </span>
                 </div>
-                <div class="hint">选“无”关闭；支持主控 GPIO 和已配置 I2C 的 PCF8575 扩展脚。拉低触发时，当前选中且空闲的通道进料
-                    200 毫秒。与下方通道接线一起保存。
+                <div class="row" style="margin-top:10px">
+                    <label for="total-switch-level">压下电平</label>
+                    <select id="total-switch-level" disabled onchange="IO_DIRTY = true; updateIoWarnings()">
+                        <option value="0">低电平（LOW）</option><option value="1">高电平（HIGH）</option>
+                    </select>
+                    <label for="total-switch-feed-ms">进料时长（毫秒）</label>
+                    <input id="total-switch-feed-ms" type="number" min="1" max="29999" step="1" value="200"
+                           style="width:110px" disabled oninput="IO_DIRTY = true; updateIoWarnings()">
+                </div>
+                <div class="hint">选“无”关闭；支持主控 GPIO 和已配置 I2C 的 PCF8575 扩展脚。从未压下变为已压下时，当前选中、有料且空闲的通道按设定时长进料，持续压住不重复触发
+                    默认 LOW 压下、进料 200 毫秒，可设 1～29999 毫秒；状态按已保存的电平判断，与下方通道接线一起保存
                 </div>
                 <table class="tbl channel-io-table">
                     <thead>
@@ -493,7 +504,7 @@
                     PCF8575 扩展脚；同时可接的霍尔数量受空闲 ADC 引脚限制。
                 </div>
                 <div class="row" style="margin-top:10px">
-                    <button id="save-io" class="primary" onclick="saveIoConfig()">保存 AMS 数量与引脚</button>
+                    <button id="save-io" class="primary" onclick="saveIoConfig()">保存 AMS 数量、引脚与五通参数</button>
                     <span id="io-state" class="hint">引脚配置未加载</span>
                 </div>
             </div>
@@ -1505,11 +1516,12 @@
   const PULLBACK_TEST_MS = 29999, pullbackTests = {}
   /**
    * 刷新通道卡片高亮、耗材颜色圆点与透明度、打印机状态标签和微动状态
-   * 根据后端模式及微动状态区分在线、有料和无料；当前使用仅高亮标签，重启恢复的通道显示等待确认，未选中时隐藏标签，状态过期时清除高亮
+   * 根据后端模式及微动状态区分在线、有料和无料，同时刷新五通压下状态；当前使用仅高亮标签，重启恢复的通道显示等待确认，未选中时隐藏标签，状态过期时清除高亮
    * 颜色缺失或无效时显示空心圆，A 分量缺失或无效时透明度显示“—”；断连或状态过期时保留最近读数并提示“上次读取”
    * A 分量按 (255-A)/255 换算为四舍五入的透明度百分比，0% 不透明，100% 完全透明
    */
   const renderChannelStatus = () => {
+    renderTotalSwitchStatus()
     const fresh = !!statusAt && performance.now() - statusAt < 3000
     const labels = {
       using: '当前使用',
@@ -2245,7 +2257,7 @@
   }
   /**
    * 根据状态刷新电机按钮和运行提示
-   * 检测中由检测按钮提供停止入口；局域网换料期间禁止新增手动动作，并显示任务来源与检测时间
+   * 检测中由检测按钮提供停止入口；局域网换料期间禁止新增手动动作，区分通道与五通微动来源并显示检测时间
    */
   const renderMotorControls = () => {
     const fresh = statusAt && performance.now() - statusAt < 3000
@@ -2262,8 +2274,8 @@
       const el = $('run' + i)
       if (!el) continue
       const left = Math.max(0, (m.remaining_ms || 0) - (performance.now() - statusAt))
-      el.textContent = queued ? (['', '打印机', '手动', '微动辅助', '局域网'][m.queued_source] || '') + ' · 等待' + (m.queued_dir > 0 ? '进料' : '退料') + ' · 排队第 ' + m.queue_position + ' 位' + (fresh ? '' : ' · 状态待确认') :
-              running ? (['', '打印机', '手动', '微动辅助', '局域网'][m.source] || '') + ' · ' + (m.dir > 0 ? '进料' : '退料') +
+      el.textContent = queued ? (['', '打印机', '手动', '微动辅助', '局域网', '五通总微动'][m.queued_source] || '') + ' · 等待' + (m.queued_dir > 0 ? '进料' : '退料') + ' · 排队第 ' + m.queue_position + ' 位' + (fresh ? '' : ' · 状态待确认') :
+              running ? (['', '打印机', '手动', '微动辅助', '局域网', '五通总微动'][m.source] || '') + ' · ' + (m.dir > 0 ? '进料' : '退料') +
                       (!fresh ? ' · 状态待确认' : m.remaining_ms < 0 ? ' · 剩余时间未知' : left > 0 ? ' · 剩余 ' + (left / 1000).toFixed(1) + ' 秒' : ' · 等待停止确认') :
                       ''
     }
@@ -3129,8 +3141,22 @@
     }
   }
   /**
-   * 校验并显示通道引脚配置问题
-   * 检查电机、微动、霍尔与总微动的空值和重复引脚，提示电机未配置的通道
+   * 显示已生效配置下的五通压下状态，断连或过期时清除旧状态
+   * 草稿接线或电平与设备不同则注明当前生效配置，避免把未保存的选择当成实时状态
+   */
+  const renderTotalSwitchStatus = () => {
+    const el = $('total-switch-state'), sw = S?.total_switch
+    const fresh = !!statusAt && performance.now() - statusAt < 3000
+    const valid = fresh && sw && (sw.pressed === 0 || sw.pressed === 1)
+    const draft = sw && (String(sw.pin) !== $('io-switch').value || String(sw.active_level) !== $('total-switch-level').value)
+    el.textContent = !fresh || !sw ? '状态待确认' : sw.pin === 255 ? '未配置' :
+            !valid ? '输入不可用' : sw.pressed === 1 ? '已压下' : '未压下'
+    if (fresh && draft) el.textContent += '（当前生效配置）'
+    el.style.color = valid && sw.pin !== 255 && sw.pressed === 1 ? 'var(--ok)' : 'var(--dim)'
+  }
+  /**
+   * 校验并显示通道引脚和五通参数问题
+   * 检查电机、微动、霍尔与总微动的空值和重复引脚，校验五通电平和时长，提示电机未配置的通道
    */
   const updateIoWarnings = () => {
     let seen = {}, duplicate = false, missing = false;
@@ -3163,11 +3189,17 @@
       }
     }
     refreshIoOptionLabels()
-    $('io-state').textContent = missing ? '请为所有启用通道选择进料和退料引脚' :
+    const level = $('total-switch-level'), feed = $('total-switch-feed-ms')
+    const invalidSwitch = !['0', '1'].includes(level.value) || !Number.isInteger(Number(feed.value)) ||
+            Number(feed.value) < 1 || Number(feed.value) > 29999
+    feed.classList.toggle('bad', invalidSwitch)
+    renderTotalSwitchStatus()
+    $('io-state').textContent = invalidSwitch ? '请选择压下电平，进料时长须为 1～29999 毫秒的整数' :
+            missing ? '请为所有启用通道选择进料和退料引脚' :
             duplicate ? '存在重复引脚，请修改后再保存' :
                     unset.length ? '通道 ' + unset.join('、') + ' 的电机引脚是「无」，这些通道无法进退料' :
                             '配置可提交；保存前请确认设备处于空闲状态'
-    $('io-state').classList.toggle('error', duplicate || missing)
+    $('io-state').classList.toggle('error', duplicate || missing || invalidSwitch)
   }
   /**
    * 交换指定通道的进料和退料引脚草稿，并刷新冲突提示
@@ -3182,7 +3214,7 @@
     updateIoWarnings()
   }
   /**
-   * 渲染总微动输入和所有通道的电机、微动及霍尔配置
+   * 渲染总微动输入、电平和进料时长，以及所有通道的电机、微动及霍尔配置
    * @param {Object} d 包含通道数量和引脚配置的 API 数据
    * 进退料引脚之间提供交换按钮，霍尔只使用 ADC 专用选项；重建下拉框后立即执行引脚冲突检查
    */
@@ -3191,6 +3223,9 @@
     IO_PIN_OPTIONS = d.io && d.io.pins || []
     IO_HALL_PIN_OPTIONS = d.io?.hall_pins || []
     $('io-switch-control').replaceChildren(ioMakeSelect('io-switch', d.io?.switch_pin ?? 255, true))
+    $('total-switch-level').value = String(d.total_switch_active_level ?? 0)
+    $('total-switch-feed-ms').value = String(d.total_switch_feed_ms ?? 200)
+    $('total-switch-level').disabled = $('total-switch-feed-ms').disabled = false
     const body = $('iobody');
     body.textContent = ''
     for (let i = 0; i < IO_CHANNELS; i++) {
@@ -3224,12 +3259,14 @@
   }
   /**
    * 预览修改 AMS 数量后的通道表
-   * 保留总微动、电机、微动和霍尔引脚草稿，按新数量扩展或收缩表格，并提示待保存通道数
+   * 保留总微动参数及电机、微动和霍尔引脚草稿，按新数量扩展或收缩表格，并提示待保存通道数
    */
   const previewAms = () => {
     if (!IO_DRAFT) return
     IO_DIRTY = true
     IO_DRAFT.io.switch_pin = $('io-switch').value
+    IO_DRAFT.total_switch_active_level = $('total-switch-level').value
+    IO_DRAFT.total_switch_feed_ms = $('total-switch-feed-ms').value
     IO_DRAFT.io.hall ??= Array(16).fill(255)
     // 在数量来回切换时保留尚未保存的引脚选择
     for (let i = 0; i < IO_CHANNELS; i++) {
@@ -3242,9 +3279,9 @@
     $('ams-hint').textContent = '待保存：' + $('p-ams').value + ' 个 AMS，共 ' + IO_CHANNELS + ' 通道；请在下方配置引脚后保存数量与引脚减少数量会停止并移除停用通道的排队动作'
   }
   /**
-   * 保存 AMS 数量、总微动和全部通道引脚
+   * 保存 AMS 数量、总微动电平和时长，以及全部通道引脚
    * @return {Promise<void>} 保存流程完成的 Promise
-   * 检查含霍尔在内的缺项和重复引脚，提交 /api/settings，成功后重新读取并渲染配置
+   * 检查五通参数范围、含霍尔在内的缺项和重复引脚，提交 /api/settings，成功后重新读取并渲染配置
    */
   const saveIoConfig = async () => {
     let seen = {}, body = new URLSearchParams({ams: $('p-ams').value}), duplicate = false;
@@ -3254,6 +3291,14 @@
       return
     }
     body.append('io_switch', sw.value)
+    const level = $('total-switch-level').value, feed = Number($('total-switch-feed-ms').value)
+    if (!['0', '1'].includes(level) || !Number.isInteger(feed) || feed < 1 || feed > 29999) {
+      toast('请选择压下电平，进料时长须为 1～29999 毫秒的整数');
+      updateIoWarnings();
+      return
+    }
+    body.append('total_switch_active_level', level)
+    body.append('total_switch_feed_ms', String(feed))
     if (sw.value !== '255') seen[Number(sw.value)] = true
     for (let i = 0; i < IO_CHANNELS; i++) {
       for (const key of ['io-mf' + i, 'io-mb' + i, 'io-sw' + i, 'io-h' + i]) {

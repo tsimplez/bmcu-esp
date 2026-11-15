@@ -1279,7 +1279,7 @@ static String sensor_json_value(bool valid, float value, int digits) {
 /**
  * 生成运行状态快照，供 HTTP 与 WebSocket 共用
  * @return 完整状态 JSON；预留内存失败时为空
- * 汇总 WiFi、项目、总线、局域网换料、HA 阶段与暂停测试、有效当前通道、电机、耗材和传感器
+ * 汇总 WiFi、项目、总线、局域网换料、HA 阶段与暂停测试、有效当前通道、电机、耗材和传感器；五通压下状态只读取主循环缓存
  * mdns 保留配置名称，mdns_active 返回重名避让后的实际名称，离线或尚未读取时为空
  * filament_colors 按启用的全局通道顺序返回记录中的 #RRGGBB，供网页以不透明圆点显示
  * filament_alpha 按相同顺序返回 0-255 的 A 分量，0 为完全透明，255 为不透明
@@ -1340,6 +1340,9 @@ static String status_json() {
          String(packet_age == UINT32_MAX ? -1 : static_cast<int32_t>(packet_age));
     j += ",\"motor_limit\":" + String(MOTOR_LIMIT);
     j += ",\"motor_running\":" + String(BMCU_running_count());
+    j += ",\"total_switch\":{\"pin\":" + String(IO_CONFIG.switch_pin) +
+         ",\"active_level\":" + String(TOTAL_SWITCH_ACTIVE_LEVEL) +
+         ",\"pressed\":" + String(BMCU_total_switch_state()) + "}";
     j += ",\"motors\":[";
     for (int i = 0; i < BMCU_motor_count(); i++) {
         if (i) j += ',';
@@ -1980,13 +1983,15 @@ static void websocket_init() {
 
 /**
  * 处理设置读取请求
- * 输出时长、AMS 身份、通道模式、霍尔检测、局域网参数及接线和可选引脚；返回已保存的访问码供设置页直接显示
+ * 输出时长、五通压下电平、AMS 身份、通道模式、霍尔检测、局域网参数及接线和可选引脚；返回已保存的访问码供设置页直接显示
  */
 static void handle_settings_get() {
     String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
                ",\"ams\":" + String(AMS_COUNT) + ",\"manual_ms\":" + String(MANUAL_PULSE_MS) +
                ",\"auto_ms\":" + String(AUTO_LOAD_MS) +
                ",\"feed_stop_delay_ms\":" + String(FEED_STOP_DELAY_MS) +
+               ",\"total_switch_active_level\":" + String(TOTAL_SWITCH_ACTIVE_LEVEL) +
+               ",\"total_switch_feed_ms\":" + String(TOTAL_SWITCH_FEED_MS) +
                ",\"motor_limit\":" + String(MOTOR_LIMIT) +
                ",\"channels\":" + String(BMCU_motor_count()) +
                ",\"maxams\":" + String(BMCU_max_ams_count()) + ",\"ams_identity\":[";
@@ -2262,7 +2267,7 @@ static void handle_lan_cancel() {
 
 /**
  * 处理常规设置保存
- * 身份字段必须指定 AMS 编号；校验时长、数量、并发、身份及通道接线，保存失败时回滚完整快照
+ * 身份字段必须指定 AMS 编号；校验时长、五通压下电平、数量、并发、身份及通道接线，保存失败时回滚完整快照
  * 霍尔字段出现时须完整提交，未出现时保留原值；接线和霍尔采样由主循环应用，回调不操作硬件
  */
 static void handle_settings_save() {
@@ -2290,6 +2295,8 @@ static void handle_settings_save() {
                  valid_number("manual_ms", 1, MAX_PULSE_MS - 1) &&
                  valid_number("auto_ms", 0, MAX_PULSE_MS - 1) &&
                  valid_number("feed_stop_delay_ms", 0, MAX_PULSE_MS - 1) &&
+                 valid_number("total_switch_active_level", LOW, HIGH) &&
+                 valid_number("total_switch_feed_ms", 1, MAX_PULSE_MS - 1) &&
                  valid_number("motor_limit", 1, candidate_channels);
     bool serial_valid = true;
     bool version_valid = true;
@@ -2390,6 +2397,8 @@ static void handle_settings_save() {
     if (server.hasArg("manual_ms")) MANUAL_PULSE_MS = server.arg("manual_ms").toInt();
     if (server.hasArg("auto_ms")) AUTO_LOAD_MS = server.arg("auto_ms").toInt();
     if (server.hasArg("feed_stop_delay_ms")) FEED_STOP_DELAY_MS = server.arg("feed_stop_delay_ms").toInt();
+    if (server.hasArg("total_switch_active_level")) TOTAL_SWITCH_ACTIVE_LEVEL = server.arg("total_switch_active_level").toInt();
+    if (server.hasArg("total_switch_feed_ms")) TOTAL_SWITCH_FEED_MS = server.arg("total_switch_feed_ms").toInt();
     if (io_requested) IO_CONFIG = candidate_io;
     for (int i = 0; i < candidate_channels; i++) {
         String kt = "to" + String(i), kc = "cm" + String(i);
@@ -2421,7 +2430,7 @@ static void handle_settings_save() {
         server.send(500, "application/json", "{\"ok\":false,\"msg\":\"保存失败，请重试\"}");
         return;
     }
-    if (io_changed || count_changed) BMCU_apply_io_config();
+    if (io_changed || count_changed || previous.total_switch_active_level != TOTAL_SWITCH_ACTIVE_LEVEL) BMCU_apply_io_config();
     BMCU_apply_channel_modes();
     for (int i = 0; i < candidate_channels; i++) {
         if (timeout_changed[i]) BMCU_apply_pullback_timeout(i, timeout_previous_ms[i]);
