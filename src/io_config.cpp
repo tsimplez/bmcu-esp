@@ -13,9 +13,9 @@
  */
 static bool is_reserved_pin(const int pin) {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
-    // Flash 不可重分配；UART0 可交给接线，经典款的 USB 焊盘可用作普通 GPIO
+    // Flash 不可重分配；UART0 可交给接线，未启用原生 USB CDC 时 USB 焊盘可用作普通 GPIO
     if (pin == 11 || (pin >= 14 && pin <= 17)) return true;
-#if !C3_BOARD_USB_TTL || ARDUINO_USB_CDC_ON_BOOT
+#if ARDUINO_USB_CDC_ON_BOOT
     if (pin == 18 || pin == 19) return true;
 #endif
 #elif defined(CONFIG_IDF_TARGET_ESP32S3)

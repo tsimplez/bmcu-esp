@@ -249,18 +249,11 @@ const char *hal_project_target() {
 /**
  * 获取平台默认项目接线
  * @return 生命周期覆盖整个固件运行期的默认预设
- * C3 复用项目表；原生 USB 板保留 UART 适配，其他平台由默认电机和微动数组生成接线及通道数
+ * C3 直接复用项目表接线，其他平台由默认电机和微动数组生成接线及通道数
  */
 const ProjectPreset &hal_default_project_preset() {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
-#if C3_BOARD_USB_TTL && !ARDUINO_USB_CDC_ON_BOOT
     return PROJECT_PRESETS[0];
-#else
-    static ProjectPreset native_usb = PROJECT_PRESETS[0];
-    native_usb.bus.rx = 20;
-    native_usb.bus.tx = 21;
-    return native_usb;
-#endif
 #else
     static constexpr int motors[IO_CONFIG_MAX_CHANNELS][2] = {
         MOTOR_PINS_1_4, MOTOR_PINS_5_8, MOTOR_PINS_9_12, MOTOR_PINS_13_16};

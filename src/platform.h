@@ -125,18 +125,14 @@ const ProjectPreset &hal_default_project_preset();
   // GPIO15  未引出 不用 SPICLK  ← 外置4MB Flash 时钟
   // GPIO16  未引出 不用 SPID    ← 外置4MB Flash D0
   // GPIO17  未引出 不用 SPIQ    ← 外置4MB Flash D1
-  // GPIO18  排针05 不用 USB_D-（FSPICLK）         -                 经典款可用；新款被原生USB占用
-  // GPIO19  排针06 不用 USB_D+（FSPICS0）         -                 经典款可用；新款被原生USB占用
+  // GPIO18  排针05 可用 USB_D-（FSPICLK）         -                 启用原生 USB CDC 时保留
+  // GPIO19  排针06 可用 USB_D+（FSPICS0）         -                 启用原生 USB CDC 时保留
   // GPIO20  排针08 可用 U0RXD            -                未分配时用作 UART0 日志口
   // GPIO21  排针09 可用 U0TXD            -                占用任一脚时关闭 UART0 控制台
 
-  // C3 项目接线统一定义在 project_presets.h；这里仅保留板型信息。
-
-  // 板型：1 = 经典款（板载 CH343 转串口，UART0 接 Type-C）→ BambuBus 用 IO18/IO19
-  //       0 = 新款/简约版（Type-C 直连芯片 USB）→ BambuBus 改用 IO20/IO21，
-  //           同时要额外加 -DARDUINO_USB_CDC_ON_BOOT=1 才能从板载 USB 看日志
-  // [合宙 airm2m_core_esp32c3](https://wiki-zh.luatos.org/chips/esp32c3/board.html)
-  #define C3_BOARD_USB_TTL 1
+  // C3 项目接线统一定义在 project_presets.h
+  // 原生 USB 控制台和 GPIO18/19 保留统一由 ARDUINO_USB_CDC_ON_BOOT 控制
+  // Type-C 直连芯片 USB 的板卡需加 -DARDUINO_USB_CDC_ON_BOOT=1 才能从该口看日志
 
   #define PIN_SWITCH       PIN_NONE  // C3 默认不接五通总微动，可在网页中配置
 
@@ -202,11 +198,10 @@ bool hal_storage_write(int region, const void* buf, uint32_t len);
 #endif
 /**
  * 初始化前的 GPIO 预处理
- * ESP32-C3 经典款上释放内部 USB Serial/JTAG 对 GPIO18/19 的占用，其他平台为空操作
+ * ESP32-C3 未启用原生 USB CDC 时释放内部 USB Serial/JTAG 对 GPIO18/19 的占用，其他情况为空操作
  */
 static inline void hal_prepare_gpio() {
-    // ESP32-C3  USB-TTL 转串口芯片
-#if defined(CONFIG_IDF_TARGET_ESP32C3) && C3_BOARD_USB_TTL && !ARDUINO_USB_CDC_ON_BOOT
+#if defined(CONFIG_IDF_TARGET_ESP32C3) && !ARDUINO_USB_CDC_ON_BOOT
     // 禁用内部 USB Serial/JTAG 外设对 USB 物理引脚的占用
     CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_USB_PAD_ENABLE);
     //  把 GPIO18 / GPIO19 切换为普通 GPIO

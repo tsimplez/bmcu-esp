@@ -51,7 +51,7 @@ jobs:
       - run: python -m pip install platformio
 
       - name: Build firmware
-        run: pio run -e esp32s3 -e esp32c3 -e airm2m_core_esp32c3
+        run: pio run -e esp32s3 -e esp32c3 -e esp32c3_classic -e esp32c3_lite
 
       - name: Generate OTA package
         shell: python
@@ -68,11 +68,11 @@ jobs:
           dist = Path("dist")
           dist.mkdir(exist_ok=True)
           manifest = {}
-          for target in ("esp32s3", "esp32c3", "airm2m_core_esp32c3"):
+          for target in ("esp32s3", "esp32c3", "esp32c3_classic", "esp32c3_lite"):
               data = Path(f".pio/build/{target}/firmware.bin").read_bytes()
               if version.encode("ascii") not in data:
                   raise SystemExit(f"{target} 固件不包含版本号 {version}，请重新编译")
-              name = f"firmware-{target}-{version}.bin"
+              name = f"{target}-{version}.bin"
               (dist / name).write_bytes(data)
               manifest[target] = {
                   "version": version, "notes": notes, "url": name,
@@ -83,6 +83,19 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
+          body: |
+            ## 固件选择
+
+            - C3 经典款：选择 `esp32c3_classic-*.bin`
+            - C3 简约款：选择 `esp32c3_lite-*.bin`
+
+            ## 烧录步骤
+
+            1. 在下方 Assets 中下载对应的固件
+            2. 使用 Type-C 数据线将 ESP32 连接到电脑
+            3. 打开 [在线烧录网站](https://web.esphome.io)
+            4. 点击连接 → 在左上角选择串行端口 → 点击安装（在“准备首次使用”旁边） → 选择下载好的固件并完成安装
+            5. 最后连接 ESP32 的 Wi-Fi（`BMCU_xxxxxx`），访问 [192.168.4.1](http://192.168.4.1) 或 [http://bmcu.local](http://bmcu.local)
           generate_release_notes: true
           files: dist/*
 

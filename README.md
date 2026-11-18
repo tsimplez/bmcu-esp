@@ -242,7 +242,7 @@ pio run -t clean             # 清理
 - `pico` 环境需 `lib_ignore` 忽略 ESP32 专用库（WiFi/DNSServer/ESPmDNS/WebServer/Preferences）；`upload_protocol = picotool`
 - C3 的 GPIO20/21 可分配给接线；启用通道、五通总微动、有线 BambuBus 或已配置 I2C 占用任一脚时，自动关闭 UART0 应用/SDK 日志，网页主板日志保留；接线应用后两脚均空闲时恢复 UART0 控制台
 - C3 启动时先暂停 UART0 输出，读取接线后决定是否开启；运行中改线由主循环先释放旧引脚，再切换控制台并绑定新引脚。此运行期控制不改变 ROM/Bootloader 启动输出
-- 若要用 C3 板载 USB 看日志需追加 `-DARDUINO_USB_CDC_ON_BOOT=1`；原生 USB CDC 保持原控制台逻辑，GPIO18/19 仍按 USB 配置保护或释放
+- C3 的原生 USB 控制台和 GPIO18/19 保留统一由 `ARDUINO_USB_CDC_ON_BOOT` 控制：设为 `1` 时日志走原生 USB 并保留 GPIO18/19；未定义或设为 `0` 时使用 UART0 控制台，并释放 GPIO18/19 为普通 GPIO
 
 ## 有关于市面上的 bmcu 项目
 - Top ams 和 天枢TTC 相似
