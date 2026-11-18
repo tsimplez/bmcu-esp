@@ -4,7 +4,7 @@
 
 /**
  * 内存
- * airm2m_core_esp32c3
+ * esp32c3_air
  * 400 KB 主 SRAM
  *
  * 16 KB 用于缓存
@@ -125,14 +125,14 @@ const ProjectPreset &hal_default_project_preset();
   // GPIO15  未引出 不用 SPICLK  ← 外置4MB Flash 时钟
   // GPIO16  未引出 不用 SPID    ← 外置4MB Flash D0
   // GPIO17  未引出 不用 SPIQ    ← 外置4MB Flash D1
-  // GPIO18  排针05 可用 USB_D-（FSPICLK）         -                 启用原生 USB CDC 时保留
-  // GPIO19  排针06 可用 USB_D+（FSPICS0）         -                 启用原生 USB CDC 时保留
+  // GPIO18  排针05 可用 USB_D-（FSPICLK）         -                 合宙未分配时用于 USB 日志，固定 USB 模式保留
+  // GPIO19  排针06 可用 USB_D+（FSPICS0）         -                 合宙未分配时用于 USB 日志，固定 USB 模式保留
   // GPIO20  排针08 可用 U0RXD            -                未分配时用作 UART0 日志口
   // GPIO21  排针09 可用 U0TXD            -                占用任一脚时关闭 UART0 控制台
 
   // C3 项目接线统一定义在 project_presets.h
-  // 原生 USB 控制台和 GPIO18/19 保留统一由 ARDUINO_USB_CDC_ON_BOOT 控制
-  // Type-C 直连芯片 USB 的板卡需加 -DARDUINO_USB_CDC_ON_BOOT=1 才能从该口看日志
+  // esp32c3_air 由 BMCU_USB_CDC_AUTO 按 GPIO18/19 占用自动启停原生 USB 日志
+  // 其他 C3 环境由 ARDUINO_USB_CDC_ON_BOOT 控制：开启时保留 GPIO18/19，否则释放
 
   #define PIN_SWITCH       PIN_NONE  // C3 默认不接五通总微动，可在网页中配置
 
@@ -190,7 +190,7 @@ uint64_t hal_get_device_id();
 void hal_storage_read(int region, void* buf, uint32_t len);
 bool hal_storage_write(int region, const void* buf, uint32_t len);
 
-// 在任何外设接线初始化之前释放 USB 焊盘，避免后续覆盖 I2C/电机的复用
+// 在控制台和外设接线初始化之前释放 USB 焊盘，运行期仅在停用原生 USB 后调用
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
 #include <soc/soc.h>
 #include <soc/usb_serial_jtag_reg.h>
@@ -198,7 +198,8 @@ bool hal_storage_write(int region, const void* buf, uint32_t len);
 #endif
 /**
  * 初始化前的 GPIO 预处理
- * ESP32-C3 未启用原生 USB CDC 时释放内部 USB Serial/JTAG 对 GPIO18/19 的占用，其他情况为空操作
+ * ESP32-C3 未使用启动时 USB CDC 时释放内部 USB Serial/JTAG 对 GPIO18/19 的占用，其他情况为空操作
+ * 合宙在启用 USB 日志之前调用，运行期先卸载驱动再释放，避免覆盖已绑定的外设
  */
 static inline void hal_prepare_gpio() {
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && !ARDUINO_USB_CDC_ON_BOOT
@@ -220,7 +221,7 @@ extern int PCF_SCL;
 bool hal_i2c_begin(int sda, int scl);
 
 // ---------- 控制台串口 ----------
-// C3 UART0 在读取配置前保持静默；按实际接线决定是否启用，网页日志不受影响
+// C3 UART0 和合宙原生 USB 在读取配置前保持静默；按实际接线决定是否启用，网页日志不受影响
 void hal_console_prepare();
 void hal_console_begin();
 void hal_console_write(const char *data, size_t len);

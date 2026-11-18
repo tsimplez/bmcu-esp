@@ -114,7 +114,7 @@ BambuBus 通信协议，支持多通道耗材管理、电机控制、编码器�
 | `pico` | RP2040（Raspberry Pi Pico） | 默认环境设置存片内 Flash；BambuBus 走 UART0；无网页（Web 层为空实现）（考虑删除中） |
 | `esp32s3` | ESP32-S3 | 16 MB Flash + OPI PSRAM，`default_16MB.csv` 分区；日志走 UART0（GPIO43/44） |
 | `esp32c3` | ESP32-C3 | 4 MB Flash，`min_spiffs.csv` 分区（双 OTA 槽）；默认 4 通道直连 GPIO |
-| `airm2m_core_esp32c3` | 合宙 AirM2M CORE ESP32-C3 | 同上分区与引脚方案，板载 LED 在 GPIO12/13 |
+| `esp32c3_air` | 合宙 ESP32-C3 经典款 / 简约款 | 共用一个固件，同上分区与引脚方案；原生 USB 日志随 GPIO18/19 占用自动启停，板载 LED 在 GPIO12/13 |
 
 平台差异集中在 `src/platform.h` / `src/platform.cpp`，其余文件保持平台无关
 
@@ -162,7 +162,7 @@ scripts/prepare_web.py  # 生成压缩网页头文件，检查完整固件镜像
 ### 主循环
 
 ```
-setup():  日志/看门狗 → 加载设置 → 按接线配置控制台 → 释放 USB 焊盘 → GPIO/I2C → BMCU_init → web_config_init
+setup():  日志/看门狗 → 加载设置 → 释放 USB 焊盘 → 按接线配置控制台 → GPIO/I2C → BMCU_init → web_config_init
 loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_config_run（网页） → yield()
 ```
 
@@ -231,8 +231,9 @@ WebSocket 使用 JSON 文本消息，支持最多 4 个客户端，网络任务�
 
 ```bash
 # 安装 PlatformIO 后
-pio run                      # 编译（默认环境 pico）
+pio run                      # 编译（默认环境 esp32c3_air）
 pio run -e esp32s3           # 指定环境
+pio run -e esp32c3_air      # 经典款 / 简约款共用固件
 pio run -e esp32c3 -t upload # 编译并上传
 pio run -t clean             # 清理
 ```
@@ -241,8 +242,11 @@ pio run -t clean             # 清理
 - 构建完成和烧录前均检查完整 `firmware.bin` 大小，超过应用分区则报错，避免段对齐等开销未计入构建摘要而导致烧录后无法启动
 - `pico` 环境需 `lib_ignore` 忽略 ESP32 专用库（WiFi/DNSServer/ESPmDNS/WebServer/Preferences）；`upload_protocol = picotool`
 - C3 的 GPIO20/21 可分配给接线；启用通道、五通总微动、有线 BambuBus 或已配置 I2C 占用任一脚时，自动关闭 UART0 应用/SDK 日志，网页主板日志保留；接线应用后两脚均空闲时恢复 UART0 控制台
-- C3 启动时先暂停 UART0 输出，读取接线后决定是否开启；运行中改线由主循环先释放旧引脚，再切换控制台并绑定新引脚。此运行期控制不改变 ROM/Bootloader 启动输出
-- C3 的原生 USB 控制台和 GPIO18/19 保留统一由 `ARDUINO_USB_CDC_ON_BOOT` 控制：设为 `1` 时日志走原生 USB 并保留 GPIO18/19；未定义或设为 `0` 时使用 UART0 控制台，并释放 GPIO18/19 为普通 GPIO
+- C3 启动时先暂停 UART0 输出，`esp32c3_air` 同时停用原生 USB，读取接线后决定是否开启；运行中改线由主循环先释放旧引脚，再切换控制台并绑定新引脚，此运行期控制不改变 ROM/Bootloader 启动输出
+- `esp32c3_air` 使用 `BMCU_USB_CDC_AUTO=1` 和 `ARDUINO_USB_CDC_ON_BOOT=0`，经典款与简约款无需选择板型；GPIO18/19 任一脚被启用通道、五通总微动、有线 BambuBus 或已配置 I2C 占用时，关闭原生 USB 日志并释放两脚，两脚空闲时恢复，USB 未连接或发送缓冲已满时跳过回显，不阻塞主循环
+- `top-ams` 预设可使用 GPIO18/19 和 GPIO20/21，此时原生 USB 与 UART0 控制台均关闭，主板日志仍可在网页查看
+- 其他 C3 环境的原生 USB 控制台由 `ARDUINO_USB_CDC_ON_BOOT` 控制：设为 `1` 时日志走原生 USB 并保留 GPIO18/19；未定义或设为 `0` 时使用 UART0 控制台，并释放 GPIO18/19 为普通 GPIO
+- 发布工作流生成 `esp32s3-版本.bin`、`esp32c3-版本.bin`、`esp32c3_air-版本.bin` 和 `manifest.json`，经典款与简约款只需下载同一个 `esp32c3_air` 文件；OTA 清单只使用这三个环境的键名
 
 ## 有关于市面上的 bmcu 项目
 - Top ams 和 天枢TTC 相似

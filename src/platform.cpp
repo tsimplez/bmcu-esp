@@ -13,6 +13,9 @@
 #include <freertos/semphr.h>
 #include "PCF8575_PinMap.h"
 #include "log_bus.h"
+#if defined(BMCU_USB_CDC_AUTO)
+#include <driver/usb_serial_jtag.h>
+#endif
 #endif
 #endif
 
@@ -24,6 +27,9 @@ StaticSemaphore_t console_mutex_storage;
 SemaphoreHandle_t console_mutex = nullptr;
 vprintf_like_t console_sdk_output = nullptr;
 bool console_muted = false, console_reported = false;
+#if defined(BMCU_USB_CDC_AUTO)
+bool console_usb_enabled = false, console_usb_reported = false;
+#endif
 
 /**
  * 丢弃 UART0 被接线占用时的 SDK 控制台输出
@@ -37,42 +43,39 @@ int console_discard(const char *format, va_list args) {
 }
 
 /**
- * 判断一根引脚是否属于 C3 的 UART0 控制台
+ * 判断一根引脚是否属于指定控制台引脚对
  * @param pin 已保存的 GPIO 编号
- * @return GPIO20 或 GPIO21 时返回 true
+ * @param first 控制台的第一根引脚
+ * @param second 控制台的第二根引脚
+ * @return 与任一控制台引脚相同时返回 true
  */
-bool console_pin(const int pin) { return pin == 20 || pin == 21; }
+bool console_pin(const int pin, const int first, const int second) { return pin == first || pin == second; }
 
 /**
- * 判断当前启用接线是否占用 UART0 控制台引脚
- * @return 任一启用的通道、总微动、I2C 或 BambuBus 使用 GPIO20/21 时返回 true
+ * 判断当前启用接线是否占用指定控制台引脚对
+ * @param first 控制台的第一根引脚
+ * @param second 控制台的第二根引脚
+ * @return 任一启用的通道、总微动、I2C 或 BambuBus 使用任一控制台引脚时返回 true
  * 未启用通道和未启用总线的 DE 不占用引脚
  */
-bool console_pins_used() {
-    if (console_pin(IO_CONFIG.switch_pin)) return true;
+bool console_pins_used(const int first, const int second) {
+    if (console_pin(IO_CONFIG.switch_pin, first, second)) return true;
     if (PCF_SDA != PIN_NONE && PCF_SCL != PIN_NONE && PCF_SDA != PCF_SCL &&
-        (console_pin(PCF_SDA) || console_pin(PCF_SCL))) return true;
-    if (io_config_bus_enabled() && (console_pin(BUS_RX) || console_pin(BUS_TX) ||
-        (RS485_MODE == RS485_MODE_DE && console_pin(BUS_DE)))) return true;
+        (console_pin(PCF_SDA, first, second) || console_pin(PCF_SCL, first, second))) return true;
+    if (io_config_bus_enabled() && (console_pin(BUS_RX, first, second) || console_pin(BUS_TX, first, second) ||
+        (RS485_MODE == RS485_MODE_DE && console_pin(BUS_DE, first, second)))) return true;
     for (int ch = 0; ch < active_channel_count(); ++ch) {
-        if (console_pin(IO_CONFIG.motor[ch][0]) || console_pin(IO_CONFIG.motor[ch][1]) ||
-            console_pin(IO_CONFIG.microswitch[ch]) || console_pin(IO_CONFIG.hall[ch])) return true;
+        if (console_pin(IO_CONFIG.motor[ch][0], first, second) || console_pin(IO_CONFIG.motor[ch][1], first, second) ||
+            console_pin(IO_CONFIG.microswitch[ch], first, second) || console_pin(IO_CONFIG.hall[ch], first, second)) return true;
     }
     return false;
 }
-#endif
-#endif
-} // namespace
 
 /**
- * 在读取接线配置前准备控制台
- * C3 UART0 先暂停应用、Arduino 和 SDK 输出并释放引脚；其他平台沿用原控制台初始化
- * 仅在启动或主循环确认 UART0 可交接时调用，不影响网页日志，也不改变 ROM/Bootloader 启动输出
+ * 停用 UART0 并释放控制台引脚
+ * 调用方持有控制台互斥锁；暂停 Arduino 和 SDK 输出，不影响网页日志
  */
-void hal_console_prepare() {
-#if defined(CONFIG_IDF_TARGET_ESP32C3) && !ARDUINO_USB_CDC_ON_BOOT
-    if (!console_mutex) console_mutex = xSemaphoreCreateMutexStatic(&console_mutex_storage);
-    xSemaphoreTake(console_mutex, portMAX_DELAY);
+void console_uart_stop() {
     if (!console_muted) {
         console_sdk_output = esp_log_set_vprintf(console_discard);
         console_muted = true;
@@ -82,6 +85,38 @@ void hal_console_prepare() {
     console_enabled = false;
     pinMode_PCF8575(20, INPUT);
     pinMode_PCF8575(21, INPUT);
+}
+
+#if defined(BMCU_USB_CDC_AUTO)
+/**
+ * 停用原生 USB 日志并把 GPIO18/19 交回普通接线
+ * 调用方持有控制台互斥锁；驱动卸载和引脚释放均由启动或主循环执行
+ */
+void console_usb_stop() {
+    if (console_usb_enabled) usb_serial_jtag_driver_uninstall();
+    console_usb_enabled = false;
+    hal_prepare_gpio(); // 驱动卸载保留 USB 焊盘状态，须显式关闭后再设置 GPIO
+    pinMode_PCF8575(18, INPUT);
+    pinMode_PCF8575(19, INPUT);
+}
+#endif
+#endif
+#endif
+} // namespace
+
+/**
+ * 在读取接线配置前准备控制台
+ * C3 UART0 先暂停应用、Arduino 和 SDK 输出，合宙同时停用原生 USB 并释放引脚；其他平台沿用原控制台初始化
+ * 仅在启动或主循环确认控制台可交接时调用，不影响网页日志，也不改变 ROM/Bootloader 启动输出
+ */
+void hal_console_prepare() {
+#if defined(CONFIG_IDF_TARGET_ESP32C3) && !ARDUINO_USB_CDC_ON_BOOT
+    if (!console_mutex) console_mutex = xSemaphoreCreateMutexStatic(&console_mutex_storage);
+    xSemaphoreTake(console_mutex, portMAX_DELAY);
+    console_uart_stop();
+#if defined(BMCU_USB_CDC_AUTO)
+    console_usb_stop();
+#endif
     xSemaphoreGive(console_mutex);
 #else
     hal_console_begin();
@@ -90,31 +125,50 @@ void hal_console_prepare() {
 
 /**
  * 根据已加载接线启用或关闭控制台
- * C3 UART0 任一引脚被占用时停止串口输出；接线释放后恢复，切换与网络任务的日志写入互斥
- * 主循环须在释放旧通道后、绑定新通道前调用；原生 USB、S3 和 RP2040 保持原输出方式
+ * C3 UART0 按 GPIO20/21 占用启停，合宙原生 USB 按 GPIO18/19 占用独立启停，切换与网络任务的日志写入互斥
+ * 主循环须在释放旧通道后、绑定新通道前调用；其他环境的固定原生 USB、S3 和 RP2040 保持原输出方式
  */
 void hal_console_begin() {
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && !ARDUINO_USB_CDC_ON_BOOT
     if (!console_mutex) hal_console_prepare();
-    if (console_pins_used()) {
-        const bool changed = console_enabled || !console_reported;
-        if (console_enabled) hal_console_prepare();
-        console_reported = true;
-        if (changed) LOG_MAIN("[system] GPIO20/21 已分配，UART0 控制台已关闭，日志请在网页查看");
-        return;
-    }
-    if (console_enabled) return;
+    const bool uart_used = console_pins_used(20, 21);
+    const bool uart_changed = !console_reported || console_enabled == uart_used;
     xSemaphoreTake(console_mutex, portMAX_DELAY);
-    Serial.begin(115200);
-    console_enabled = static_cast<bool>(Serial);
-    if (console_enabled) {
-        Serial.setDebugOutput(true);
-        esp_log_set_vprintf(console_sdk_output);
-        console_muted = false;
+    if (uart_used && console_enabled) console_uart_stop();
+#if defined(BMCU_USB_CDC_AUTO)
+    const bool usb_used = console_pins_used(18, 19);
+    const bool usb_changed = !console_usb_reported || console_usb_enabled == usb_used;
+    if (usb_used && console_usb_enabled) console_usb_stop();
+    if (!usb_used && !console_usb_enabled) {
+        pinMode_PCF8575(18, INPUT);
+        pinMode_PCF8575(19, INPUT);
+        usb_serial_jtag_driver_config_t config = {.tx_buffer_size = 1024, .rx_buffer_size = 128};
+        console_usb_enabled = usb_serial_jtag_driver_install(&config) == ESP_OK;
+        if (!console_usb_enabled) console_usb_stop();
+    }
+    console_usb_reported = true;
+#endif
+    if (!uart_used && !console_enabled) {
+        Serial.begin(115200);
+        console_enabled = static_cast<bool>(Serial);
+        if (console_enabled) {
+            Serial.setDebugOutput(true);
+            esp_log_set_vprintf(console_sdk_output);
+            console_muted = false;
+        }
     }
     xSemaphoreGive(console_mutex);
     console_reported = true;
-    LOG_MAIN("[system] UART0 控制台%s", console_enabled ? "已启用，GPIO20/21 未被占用" : "初始化失败，日志请在网页查看");
+    if (uart_changed) {
+        if (uart_used) LOG_MAIN("[system] GPIO20/21 已分配，UART0 控制台已关闭，日志请在网页查看");
+        else LOG_MAIN("[system] UART0 控制台%s", console_enabled ? "已启用，GPIO20/21 未被占用" : "初始化失败，日志请在网页查看");
+    }
+#if defined(BMCU_USB_CDC_AUTO)
+    if (usb_changed) {
+        if (usb_used) LOG_MAIN("[system] GPIO18/19 已分配，原生 USB 日志已关闭，日志请在网页查看");
+        else LOG_MAIN("[system] 原生 USB 日志%s", console_usb_enabled ? "已启用，GPIO18/19 未被占用" : "初始化失败，日志请在网页查看");
+    }
+#endif
 #elif defined(ARDUINO_ARCH_ESP32)
     if (!console_enabled) {
         Serial.begin(115200);
@@ -127,13 +181,16 @@ void hal_console_begin() {
  * 向当前可用的控制台写入日志
  * @param data 日志字节
  * @param len 字节数
- * C3 UART0 停用时跳过串口回显；调用方已保存的网页日志不受影响
+ * C3 跳过被接线占用的控制台；合宙 USB 未连接或缓冲已满时丢弃回显，不等待主机，网页日志不受影响
  */
 void hal_console_write(const char *data, size_t len) {
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && !ARDUINO_USB_CDC_ON_BOOT
     if (!console_mutex) return;
     xSemaphoreTake(console_mutex, portMAX_DELAY);
     if (console_enabled) Serial.write(reinterpret_cast<const uint8_t *>(data), len);
+#if defined(BMCU_USB_CDC_AUTO)
+    if (console_usb_enabled && usb_serial_jtag_is_connected()) usb_serial_jtag_write_bytes(data, len, 0);
+#endif
     xSemaphoreGive(console_mutex);
 #elif defined(ARDUINO_ARCH_ESP32)
     if (console_enabled) Serial.write(reinterpret_cast<const uint8_t *>(data), len);

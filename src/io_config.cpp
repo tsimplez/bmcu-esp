@@ -8,12 +8,12 @@
  * 判断引脚是否为系统保留脚
  * @param pin 引脚号
  * @return true 表示不可分配
- * 按平台过滤 Flash、USB、控制台串口等保留引脚；C3 UART0 由平台层按接线占用自动停用
+ * 按平台过滤 Flash、USB、控制台串口等保留引脚；C3 UART0 和合宙原生 USB 由平台层按接线占用自动停用
  * 总微动与其他输入统一校验
  */
 static bool is_reserved_pin(const int pin) {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
-    // Flash 不可重分配；UART0 可交给接线，未启用原生 USB CDC 时 USB 焊盘可用作普通 GPIO
+    // Flash 不可重分配；UART0 可交给接线，合宙 USB 随 GPIO18/19 占用自动启停
     if (pin == 11 || (pin >= 14 && pin <= 17)) return true;
 #if ARDUINO_USB_CDC_ON_BOOT
     if (pin == 18 || pin == 19) return true;
@@ -231,6 +231,9 @@ static const char *pin_warning_text(int pin) {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
 #if !ARDUINO_USB_CDC_ON_BOOT
     if (pin == 20 || pin == 21) return "GPIO20/21 可用作普通 IO；占用任一脚时自动关闭 UART0 控制台，主板日志仍可在网页查看";
+#if defined(BMCU_USB_CDC_AUTO)
+    if (pin == 18 || pin == 19) return "GPIO18/19 可用作普通 IO；占用任一脚时自动关闭原生 USB 日志并释放两脚，两脚空闲时恢复；主板日志仍可在网页查看";
+#endif
 #endif
     if (pin == 2) return "ESP32-C3 GPIO2 是启动绑带引脚，建议上电或复位时保持高电平，避免外部电路影响启动正常运行时可作为普通 IO";
     if (pin == 9) return "ESP32-C3 GPIO9 连接 BOOT 按键，是启动绑带引脚；上电或复位时拉低会进入下载模式，外部电路需保持高电平才能正常启动";

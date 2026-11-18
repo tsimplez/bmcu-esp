@@ -51,7 +51,7 @@ jobs:
       - run: python -m pip install platformio
 
       - name: Build firmware
-        run: pio run -e esp32s3 -e esp32c3 -e esp32c3_classic -e esp32c3_lite
+        run: pio run -e esp32s3 -e esp32c3 -e esp32c3_air
 
       - name: Generate OTA package
         shell: python
@@ -68,7 +68,7 @@ jobs:
           dist = Path("dist")
           dist.mkdir(exist_ok=True)
           manifest = {}
-          for target in ("esp32s3", "esp32c3", "esp32c3_classic", "esp32c3_lite"):
+          for target in ("esp32s3", "esp32c3", "esp32c3_air"):
               data = Path(f".pio/build/{target}/firmware.bin").read_bytes()
               if version.encode("ascii") not in data:
                   raise SystemExit(f"{target} 固件不包含版本号 {version}，请重新编译")
@@ -86,8 +86,9 @@ jobs:
           body: |
             ## 固件选择
 
-            - C3 经典款：选择 `esp32c3_classic-*.bin`
-            - C3 简约款：选择 `esp32c3_lite-*.bin`
+            - ESP32-S3：选择 `esp32s3-*.bin`
+            - 通用 ESP32-C3：选择 `esp32c3-*.bin`
+            - 合宙 C3 经典款 / 简约款：共用 `esp32c3_air-*.bin`
 
             ## 烧录步骤
 
