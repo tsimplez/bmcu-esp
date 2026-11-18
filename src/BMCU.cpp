@@ -42,6 +42,13 @@ struct MotorJob {
     uint32_t duration;                 // 持续时间（毫秒）
 };
 
+// 网页停止后的打印机进料恢复条件，仅由该通道的有效运动请求推进
+enum class PrinterFeedState : uint8_t {
+    allowed,
+    wait_other_request,                // 先等待非进料动作，重复进料保持停止
+    wait_feed_request                  // 已收到非进料动作，仍需新的进料请求才能恢复
+};
+
 // 单通道的电机、互锁和传感器运行状态
 struct ChannelState {
     MotorRun motor;
@@ -50,6 +57,7 @@ struct ChannelState {
     float pullback_start_meters = 0.0f;    // 退料开始时的耗材长度
     uint32_t msw_raw_time = 0;             // 原始状态最近变化时间
     // 单字节字段集中放在末尾，减少结构体对齐填充
+    PrinterFeedState printer_feed_state = PrinterFeedState::allowed;
     bool stop_requested = false;          // 网页提交停止请求，由主循环处理
     bool feed_stop_pending = false;       // 正在等待进料延迟停车
     int8_t msw_previous = -1;              // 防抖后的微动状态：-1 未知，0 无料，1 有料
@@ -197,7 +205,7 @@ bool BMCU_channel_motor_ready(const int motorNum) {
 
 /**
  * 启动排队中的电机动作
- * 在并发上限内依次启动队首；丢弃无效接线及已结束、换通道或缺料的打印机任务，局域网任务另按当前会话校验
+ * 在并发上限内依次启动队首；丢弃无效接线及已结束、换通道、缺料或被网页停止的打印机进料任务，局域网任务另按当前会话校验
  */
 static void run_motor_queue() {
     while (motor_queued && BMCU_running_count() < MOTOR_LIMIT) {
@@ -218,7 +226,9 @@ static void run_motor_queue() {
         if (job.source == MOTOR_PRINTER &&
             (printer_bus_fault || job.channel != get_now_filament_num() ||
              get_filament_motion(job.channel) == waiting ||
-             (job.direction > 0 && !is_filament_online(job.channel)))) {
+             (job.direction > 0 &&
+              (channel_state[job.channel].printer_feed_state != PrinterFeedState::allowed ||
+               !is_filament_online(job.channel))))) {
             remove_job(0);
             continue;
         }
@@ -423,6 +433,24 @@ void BMCU_printer_idle(const int motorNum) {
 }
 
 /**
+ * 登记打印机对指定通道的有效运动请求
+ * @param motorNum 通道编号
+ * @param feeding true 表示请求进料，false 表示已接受的非进料动作
+ * 网页停止后先等待非进料动作，再等待新的进料请求；只推进恢复条件，不驱动电机或改写协议状态
+ * 普通轮询、未知组合、其他通道请求和本地停车不应调用本通道的通知
+ */
+void BMCU_printer_motion_requested(const int motorNum, const bool feeding) {
+    if (!is_active_channel(motorNum)) return;
+    if (auto &state = channel_state[motorNum].printer_feed_state; state == PrinterFeedState::wait_other_request && !feeding) {
+        state = PrinterFeedState::wait_feed_request;
+        LOG_MAIN("[motor] 通道 %d 已收到非进料动作，等待新的打印机进料请求", motorNum + 1);
+    } else if (state == PrinterFeedState::wait_feed_request && feeding) {
+        state = PrinterFeedState::allowed;
+        LOG_MAIN("[motor] 通道 %d 已收到新的打印机进料请求，允许恢复进料", motorNum + 1);
+    }
+}
+
+/**
  * 清除通道的进料延迟停止
  * @param ch 通道编号
  * 主动停车、配置变更或打印机恢复进料时调用；只清除延迟标记，不直接驱动电机
@@ -452,26 +480,36 @@ static bool arm_feed_stop_delay(const int ch) {
 }
 
 /**
- * 停止指定通道并清理排队
+ * 停止指定通道的本地运动并清理排队
  * @param motorNum 通道编号
- * 移除该通道的排队任务、停止电机并回到 waiting；下一条打印机动作请求可以重新启动
+ * 移除排队任务、清除停止请求、电机计时、延迟停车和本地动作历史；保留协议动作、回复字段及进料恢复条件
  */
-void BMCU_stop_motor(const int motorNum) {
+static void stop_local_motor(const int motorNum) {
     if (!valid_channel(motorNum)) return;
     auto &ch = channel_state[motorNum];
     ch.stop_requested = false;
     const int pos = queue_position(motorNum);
     if (pos) remove_job(pos - 1);
     motorCmd(motorNum, 0);
-    set_filament_motion(motorNum, waiting);
-    // 清理动作历史；下一条打印机请求可以从新的动作开始。
     ch.previous_motion = waiting;
+    ch.pullback_start_meters = 0.0f;
+}
+
+/**
+ * 停止指定通道并清理排队及协议动作
+ * @param motorNum 通道编号
+ * 用于接线变更、故障和局域网会话结束，将协议动作恢复为 waiting；保留网页停止后的进料恢复条件
+ */
+void BMCU_stop_motor(const int motorNum) {
+    if (!valid_channel(motorNum)) return;
+    stop_local_motor(motorNum);
+    set_filament_motion(motorNum, waiting);
 }
 
 /**
  * 提交通道停止请求
  * @param motorNum 通道编号
- * 只设置标记，由主循环停止电机并清理排队，供网页回调使用
+ * 只设置标记，由主循环停止本地运动并清理排队；打印机进料需先收到非进料动作再收到新的进料请求才能恢复
  */
 void BMCU_request_stop_motor(const int motorNum) {
     if (!is_active_channel(motorNum)) return;
@@ -484,7 +522,7 @@ void BMCU_request_stop_motor(const int motorNum) {
  * @param cmd 1=进料，-1=退料
  * @param duration_ms 点动时长（毫秒）
  * @return true 表示已加入电机队列，等待主循环启动
- * 检查本地运行、停止请求、排队和引脚状态，局域网换料期间拒绝点动；后续有线打印机请求可以接管本通道
+ * 检查本地运行、停止请求、排队和引脚状态，局域网换料期间拒绝点动；网页停止后的重复打印机进料不接管点动，有效的新动作仍可接管
  */
 bool BMCU_manual_pulse(const int motorNum, const int cmd, const uint32_t duration_ms) {
     if (lan_ams_busy()) return false;
@@ -507,6 +545,7 @@ bool BMCU_manual_pulse(const int motorNum, const int cmd, const uint32_t duratio
  * @return true 表示命令已执行或已排队
  * 打印机可接管本通道；同方向不重复驱动，反方向直接切换，同来源重复命令不续期
  * 并发名额不足时通道和五通微动辅助均拒绝，其他来源按通道合并排队并在启动后计时；故障总线不能启动打印机任务，局域网任务仅允许当前会话通道
+ * 网页停止后的打印机进料在恢复条件满足前拒绝启动或排队，手动进退料不受此限制
  */
 bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const uint32_t duration_ms) {
     if (!valid_channel(motorNum) || cmd < -1 || cmd > 1) return false;
@@ -532,6 +571,8 @@ bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const
     if (lan_ams_enabled() && source == MOTOR_PRINTER) return false;
     if (lan_ams_busy() && source != MOTOR_LAN) return false;
     if (source == MOTOR_PRINTER && printer_bus_fault) return false;
+    if (source == MOTOR_PRINTER && cmd > 0 && ch.printer_feed_state != PrinterFeedState::allowed)
+        return false;
     const int pos = queue_position(motorNum);
     if (source != MOTOR_PRINTER &&
         ((m.direction && m.source != source) || (pos && motor_queue[pos - 1].source != source))) return false;
@@ -586,6 +627,7 @@ void BMCU_apply_pullback_timeout(const int motorNum, const uint32_t previous_tim
 /**
  * 处理停止请求、失效电机接线和限时动作
  * 先处理网页停止请求和失效接线，局域网换料期间同时取消整个会话，再停止已到期的限时动作；队列等本轮打印机状态处理完成后再启动
+ * 网页停止保留协议动作及回复，打印机运行或排队进料先锁定恢复条件，避免同一轮及后续重复报文重启电机
  * 扩展芯片离线时停止受影响的运行通道并清理排队，不保留等待重连的旧动作
  */
 static void motor_tick() {
@@ -595,7 +637,16 @@ static void motor_tick() {
         auto &m = ch.motor;
         if (ch.stop_requested) {
             if (lan_ams_busy()) lan_ams_cancel();
-            BMCU_stop_motor(i);
+            const int pos = queue_position(i);
+            const auto act = get_filament_motion(i);
+            if (!lan_ams_enabled() && ch.printer_feed_state == PrinterFeedState::allowed &&
+                (act == need_send_out || act == act_send_mm ||
+                 (m.source == MOTOR_PRINTER && m.direction > 0) ||
+                 (pos && motor_queue[pos - 1].source == MOTOR_PRINTER && motor_queue[pos - 1].direction > 0))) {
+                ch.printer_feed_state = PrinterFeedState::wait_other_request;
+                LOG_MAIN("[motor] 通道 %d 网页停止打印机进料，等待非进料动作及新的进料请求", i + 1);
+            }
+            stop_local_motor(i);
             continue;
         }
         if ((m.direction || queue_position(i)) && !BMCU_channel_motor_ready(i)) {
@@ -1026,6 +1077,7 @@ void BMCU_run() {
 /**
  * 电机运动逻辑
  * 按打印机目标方向接管或切换电机；重复请求保持运行，达到并发上限时排队
+ * 网页停止后的重复进料跳过整个进料分支，保持停止且不接管或中断手动点动
  * 明确的 07/00 停止供料跳过普通进料结束延迟；定时退料仅可被在线通道的新进料请求切换，待机时保留手动、通道和五通微动的限时动作
  */
 void BMCU_motion() {
@@ -1049,6 +1101,8 @@ void BMCU_motion() {
     auto act = get_filament_motion(cur);
     const int pos = queue_position(cur);
     if (act == waiting && pos && motor_queue[pos - 1].source == MOTOR_PRINTER) remove_job(pos - 1);
+    if ((act == need_send_out || act == act_send_mm) && ch.printer_feed_state != PrinterFeedState::allowed)
+        return;
     if (BambuBus_filament_stop_requested(cur) && m.source == MOTOR_PRINTER && m.direction > 0) {
         clear_feed_stop_delay(cur);
         motorCmd(cur, 0);

@@ -2446,6 +2446,7 @@ static void handle_settings_save() {
 /**
  * 处理手动电机控制请求
  * 方向为 0 时登记停止请求；否则校验通道和时长后提交点动，全部由主循环驱动电机
+ * 停止保留打印机协议动作和回复，重复进料不重启电机；收到有效非进料动作及新的进料请求后才恢复，手动点动仍可用
  */
 static void handle_manual_motor() {
     if (!server.hasArg("motor") || !server.hasArg("dir") ||

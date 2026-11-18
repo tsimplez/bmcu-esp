@@ -549,6 +549,7 @@ static uint8_t get_loaded_filament(const uint8_t ams_num) {
  * 计时和历史按 AMS、通道隔离；无通道请求只操作本 AMS，未知组合保持原状态
  * 对齐 BMCU-U 的 09/7F、09/A5 和 15 秒送出等待；动作与反馈分开，零毫秒与回绕均有效
  * 重启后的使用记录不被普通无通道轮询清除；明确的停止或退料请求仍可结束待确认状态
+ * 向运动层通知已接受的本通道请求，推进网页停止后的恢复条件；轮询、未知组合和其他通道的状态清理不解除限制
  */
 static bool process_motion_state_machine(
     const uint8_t ams_num,
@@ -569,6 +570,7 @@ static bool process_motion_state_machine(
                     ext.motion == filament_motion_internal::on_use ||
                     ext.motion == filament_motion_internal::before_on_use ||
                     ext.motion == filament_motion_internal::stop_on_use || remembered) {
+                    BMCU_printer_motion_requested(ams_num * 4 + loaded, false);
                     set_motion_internal(ams_num, loaded, filament_motion_internal::pull_back);
                     ext.response_use_flag = 0x02;
                     ext.response_pressure = 0x4700;
@@ -617,6 +619,8 @@ static bool process_motion_state_machine(
                         (is_on_use && allow_any) ||
                         (is_stop_on_use && allow_stop) ||
                         (is_before_pullb && allow_stop);
+    // 按实际请求通知，07/7F 的等待窗口可能仍保留 send_out，不能用内部状态判断恢复条件
+    if (accept) BMCU_printer_motion_requested(ams_num * 4 + filament_channel, is_send_out);
     if (accept && data_save.BambuBus_now_filament_num != ams_num * 4 + filament_channel) {
         const int previous = data_save.BambuBus_now_filament_num;
         if (previous >= 0 && previous < active_channel_count())

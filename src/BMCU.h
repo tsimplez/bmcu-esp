@@ -77,6 +77,9 @@ void BMCU_request_stop_motor(int motorNum);
 
 void BMCU_printer_idle(int motorNum);
 
+// 只登记该通道已接受的打印机动作，用于网页停止后等待非进料动作及新的进料请求
+void BMCU_printer_motion_requested(int motorNum, bool feeding);
+
 // 保存新的退料超时后，同步正在运行的打印机退料动作剩余时间
 void BMCU_apply_pullback_timeout(int motorNum, uint32_t previous_timeout_ms);
 
