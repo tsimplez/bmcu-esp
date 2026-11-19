@@ -27,14 +27,14 @@ extern int AUTO_LOAD_MS;           // 微动辅助进料时长（毫秒，0=关�
 extern int FEED_STOP_DELAY_MS;     // 打印机进料结束后的延迟停车时间（毫秒，0=立即停车）
 extern int TOTAL_SWITCH_ACTIVE_LEVEL; // 五通总微动压下电平（LOW/HIGH）
 extern int TOTAL_SWITCH_FEED_MS;   // 五通总微动每次压下的进料时长（毫秒）
-extern int MOTOR_LIMIT;            // 同时运行的电机数（1..active_channel_count()）
+extern int MOTOR_LIMIT;            // 普通模式的并发上限（1..active_channel_count()）；离合模式实际固定为 1
 extern int RS485_MODE;             // RS485 收发模式（见下方 RS485_MODE_*）
 extern int BUS_LOG_ENABLE;         // BambuBus 原始报文日志开关（0=关 1=开）
 extern char CUSTOM_SERIAL[AMS_IDENTITY_COUNT][CUSTOM_SERIAL_LENGTH + 1]; // 各 AMS 自定义后缀；空时按芯片 ID 和编号生成
 extern int AMS_VERSION[AMS_IDENTITY_COUNT][4]; // 各 AMS 返回给打印机的版本，依次为 A.B.C.D，每段 0..255
 extern char OTA_URL[128];          // OTA 更新源目录（设备会去取 <目录>/manifest.json）
 extern int OTA_NOTIFY;             // 进页面时自动检查更新并提示（0=关 1=开）
-extern IoConfig IO_CONFIG;          // 电机进退料、微动开关和霍尔 ADC 引脚
+extern IoConfig IO_CONFIG;          // 两种电机模式、离合、微动开关和霍尔 ADC 接线
 
 struct HallDetectionConfig {
     uint16_t lower;
@@ -92,8 +92,8 @@ struct SettingsData {
     int32_t total_switch_feed_ms;    // 五通总微动每次压下的进料时长（毫秒）
 };
 
-// 当前布局包含五通总微动电平和进料时长；旧布局均恢复整份默认设置，不迁移
-#define SETTINGS_MAGIC_NUMBER    0x53415431
+// 当前布局增加共享电机与电磁离合；已发布布局按原长度与 CRC 校验后迁移，保留原始记录直到用户保存
+#define SETTINGS_MAGIC_NUMBER    0x53415432
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**

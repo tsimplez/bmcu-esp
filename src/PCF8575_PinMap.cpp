@@ -3,6 +3,7 @@
 #include "platform.h"
 #include "i2c_bus.h"
 #include "log_bus.h"
+#include "settings_storage.h"
 
 // 对象和输出状态归映射层管理，地址固定为 0x20～0x23
 static PCF8575 pcf8575[PCF8575_DEVICE_COUNT] = {
@@ -11,23 +12,58 @@ static PCF8575 pcf8575[PCF8575_DEVICE_COUNT] = {
 };
 static uint16_t pcf8575_pin_states[PCF8575_DEVICE_COUNT] = {};
 static uint16_t pcf8575_pin_modes[PCF8575_DEVICE_COUNT] = {}; // 1=输出，0=输入
+static uint16_t pcf8575_idle_states[PCF8575_DEVICE_COUNT] = {};
+static uint16_t pcf8575_idle_known[PCF8575_DEVICE_COUNT] = {};
 static bool pcf8575_initialized[PCF8575_DEVICE_COUNT] = {};
 static uint32_t pcf8575_last_attempt_ms[PCF8575_DEVICE_COUNT] = {};
 static constexpr uint32_t PCF8575_PROBE_INTERVAL_MS = 1000;
 static constexpr uint32_t PCF8575_RETRY_INTERVAL_MS = 5000;
 
 /**
+ * 生成扩展器启动、故障与恢复时的安全空闲电平
+ * @param device 芯片索引
+ * @return 电机方向全部低，低电平闭合的离合保持高电平释放
+ * 显式绑定过的引脚使用各自空闲电平；首次启动从已加载接线补齐，避免低有效离合短暂误闭合
+ */
+static uint16_t pcf8575_safe_states(const uint8_t device) {
+    uint16_t states = 0;
+    if (IO_CONFIG.clutch_enabled && IO_CONFIG.clutch_active_level == LOW) {
+        for (int ch = 0; ch < active_channel_count(); ++ch) {
+            const int pin = IO_CONFIG.clutch[ch];
+            if (IS_PCF8575_VIRTUAL_PIN(pin) && VIRTUAL_TO_PCF8575_DEVICE(pin) == device)
+                states |= uint16_t(1U << VIRTUAL_TO_PCF8575_BIT(pin));
+        }
+    }
+    return (states & ~pcf8575_idle_known[device]) | (pcf8575_idle_states[device] & pcf8575_idle_known[device]);
+}
+
+/**
+ * 配置扩展引脚的安全空闲电平
+ * @param pin 物理或扩展引脚编号
+ * @param value 停机、故障和恢复时所需的电平
+ * 仅登记扩展引脚，不直接写入；真实 GPIO 和未配置引脚忽略，绑定新功能时可覆盖旧用途
+ */
+void PCF8575_set_idle_level(const uint8_t pin, const uint8_t value) {
+    if (!IS_PCF8575_VIRTUAL_PIN(pin)) return;
+    const uint8_t device = VIRTUAL_TO_PCF8575_DEVICE(pin);
+    const uint16_t mask = uint16_t(1U << VIRTUAL_TO_PCF8575_BIT(pin));
+    pcf8575_idle_known[device] |= mask;
+    if (value == HIGH) pcf8575_idle_states[device] |= mask;
+    else pcf8575_idle_states[device] &= ~mask;
+}
+
+/**
  * 标记单片 PCF8575 离线并丢弃旧输出
  * @param device 已校验的芯片索引 0～3
  * 只在在线转离线时记录日志，从失败时刻开始等待重试，不影响其他芯片
- * 尝试一次全低写入，避免仅输入读取失败时仍保留电机高电平；无论结果如何都等待重新初始化
+ * 尝试一次安全空闲电平写入，关闭电机并释放高或低有效离合；无论结果如何都等待重新初始化
  */
 static void pcf8575_mark_offline(const uint8_t device) {
     if (pcf8575_initialized[device])
         LOG_MAIN("[i2c] PCF8575 0x%02X 失去应答，暂停使用并稍后重试", PCF8575_ADDR + device);
     pcf8575_initialized[device] = false;
-    pcf8575_pin_states[device] = 0;
-    pcf8575[device].write16(0);
+    pcf8575_pin_states[device] = pcf8575_safe_states(device);
+    pcf8575[device].write16(pcf8575_pin_states[device]);
     pcf8575[device].lastError();
     pcf8575_last_attempt_ms[device] = millis();
 }
@@ -35,14 +71,14 @@ static void pcf8575_mark_offline(const uint8_t device) {
 /**
  * 初始化单片 PCF8575
  * @param device 已校验的芯片索引 0～3
- * @return true 表示设备应答且全低电平写入成功
+ * @return true 表示设备应答且安全空闲电平写入成功
  * 恢复时丢弃离线期间缓存的输出，保留通道已配置的输入输出模式
  */
 static bool pcf8575_init_device(const uint8_t device) {
     if (pcf8575_initialized[device]) return true;
     pcf8575_last_attempt_ms[device] = millis();
-    pcf8575_pin_states[device] = 0;
-    pcf8575_initialized[device] = pcf8575[device].begin(0) &&
+    pcf8575_pin_states[device] = pcf8575_safe_states(device);
+    pcf8575_initialized[device] = pcf8575[device].begin(pcf8575_pin_states[device]) &&
                                  pcf8575[device].lastError() == PCF8575_OK;
     return pcf8575_initialized[device];
 }
@@ -95,7 +131,7 @@ void PCF8575_poll() {
             pcf8575_last_attempt_ms[device] = now;
             if (!i2c_bus_probe(PCF8575_ADDR + device)) pcf8575_mark_offline(device);
         } else if (pcf8575_init_device(device)) {
-            LOG_MAIN("[i2c] 已重新检测到 PCF8575 0x%02X，输出已清零", PCF8575_ADDR + device);
+            LOG_MAIN("[i2c] 已重新检测到 PCF8575 0x%02X，输出已恢复安全空闲电平", PCF8575_ADDR + device);
         }
     }
 }

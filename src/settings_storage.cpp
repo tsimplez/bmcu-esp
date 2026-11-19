@@ -3,6 +3,8 @@
 #include "log_bus.h"
 #include "i2c_bus.h"
 #include "project_presets.h"
+#include "PCF8575_PinMap.h"
+#include <cstring>
 
 // ============================
 // 运行期设置变量（初值为默认值，启动时由 settings_storage_init() 覆盖）
@@ -76,25 +78,182 @@ static void pcf_defaults() {
     PCF_SCL = hal_default_project_preset().bus.scl;
 }
 
-// 当前设置记录使用 CRC32，计算时把 checksum 字段视为 0，避免校验值自引用
+namespace {
 /**
- * 计算设置记录 CRC32
- * @param data 设置数据结构
- * @return 计算得到的 32 位 CRC
- * 计算前把 checksum 字段清零，避免校验值自引用
+ * 按记录布局计算设置 CRC32
+ * @param bytes 原始记录
+ * @param length 记录的完整字节数
+ * @param checksum_offset checksum 字段偏移
+ * @return checksum 字段视为零时的 CRC32
  */
-static uint32_t calculate_crc32(const SettingsData* data) {
-    SettingsData copy = *data;
-    copy.checksum = 0;
-    const auto *bytes = reinterpret_cast<const uint8_t *>(&copy);
+uint32_t calculate_record_crc32(const uint8_t *bytes, const size_t length, const size_t checksum_offset) {
     uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < sizeof(copy); i++) {
-        crc ^= bytes[i];
-        for (int bit = 0; bit < 8; bit++)
+    for (size_t i = 0; i < length; ++i) {
+        crc ^= i >= checksum_offset && i < checksum_offset + 4 ? 0 : bytes[i];
+        for (int bit = 0; bit < 8; ++bit)
             crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
     }
     return ~crc;
 }
+
+/**
+ * 计算设置记录 CRC32
+ * @param data 设置数据结构
+ * @return 计算得到的 32 位 CRC
+ * 使用当前布局并把 checksum 字段视为零，避免校验值自引用
+ */
+static uint32_t calculate_crc32(const SettingsData* data) {
+    return calculate_record_crc32(reinterpret_cast<const uint8_t *>(data), sizeof(SettingsData), offsetof(SettingsData, checksum));
+}
+
+static_assert(offsetof(IoConfig, clutch_enabled) == 260, "历史 IO 基础布局发生变化");
+static_assert(sizeof(HallDetectionConfig) == 8 && sizeof(LanAmsConfig) == 68, "历史传感器或局域网布局发生变化");
+struct LegacyFormat {
+    uint32_t magic;
+    size_t size;
+    size_t checksum_offset;
+    size_t serial_size;
+    size_t io_size;
+    uint8_t version_count;
+    bool pcf_enable;
+    bool continuous_pins;
+    bool single_device;
+    bool feed_stop_delay;
+    bool hall_detection;
+    bool lan_ams;
+    bool total_switch_parameters;
+};
+
+// 已发布标签及开发提交的真实布局；重复魔数按长度和原 CRC 区分，身份数量不决定 checksum 偏移
+// 字段顺序：魔数、长度、checksum 偏移、序列号长度、IO 长度、版本数量、旧 PCF 开关、连续编号、仅首片、停止延迟、霍尔、局域网、五通参数
+constexpr LegacyFormat LEGACY_FORMATS[] = {
+    {0x53415429, 524, 140, 13, 192, 0, true,  true,  true,  false, false, false, false}, // 8f0058d
+    {0x53415429, 536, 140, 12, 192, 1, true,  true,  true,  false, false, false, false}, // c61efdf
+    {0x5341542A, 536, 140, 12, 192, 1, true,  true,  true,  false, false, false, false}, // v26.10.28
+    {0x5341542A, 532, 140, 12, 192, 1, false, true,  true,  false, false, false, false}, // 74ad5ec
+    {0x53415429, 532, 140, 12, 192, 1, false, true,  false, false, false, false, false}, // v26.10.29
+    {0x5341542B, 532, 140, 12, 192, 1, false, false, false, false, false, false, false}, // v26.11.02
+    {0x5341542C, 616, 140, 48, 192, 4, false, false, false, false, false, false, false}, // 0ea02d2
+    {0x5341542D, 624, 144, 48, 196, 4, false, false, false, true,  false, false, false}, // v26.11.04
+    {0x5341542E, 688, 144, 48, 260, 4, false, false, false, true,  false, false, false}, // v26.11.06
+    {0x5341542F, 816, 144, 48, 260, 4, false, false, false, true,  true,  false, false}, // 50e43a8
+    {0x53415430, 884, 144, 48, 260, 4, false, false, false, true,  true,  true,  false}, // v26.11.14 / v26.11.14.1
+    {0x53415431, 892, 144, 48, 260, 4, false, false, false, true,  true,  true,  true}   // 电磁离合适配前
+};
+
+/**
+ * 安全读取历史记录中的 32 位字段
+ * @param bytes 已通过长度校验的记录
+ * @param offset 字段字节偏移
+ * @return 字段值
+ * 使用 memcpy 避免未对齐指针和别名访问
+ */
+uint32_t read_word(const uint8_t *bytes, const size_t offset) {
+    uint32_t value;
+    memcpy(&value, bytes + offset, sizeof(value));
+    return value;
+}
+
+/**
+ * 校验历史布局的完整长度、格式标识及原 CRC
+ * @param bytes 原始记录
+ * @param length 实际读取长度
+ * @param format 历史布局描述
+ * @param padded 是否来自没有记录长度的固定 Flash 扇区
+ * @return 布局和校验均匹配时返回 true
+ * Flash 允许全 0xFF 的尾部填充；NVS 必须精确匹配 blob 长度
+ */
+bool matches_format(const uint8_t *bytes, const size_t length, const LegacyFormat &format, const bool padded) {
+    if (length < format.size || (!padded && length != format.size)) return false;
+    for (size_t i = format.size; i < length; ++i) if (bytes[i] != 0xFF) return false;
+    const size_t checksum = format.checksum_offset;
+    return read_word(bytes, checksum + 4) == format.magic &&
+        read_word(bytes, checksum) == calculate_record_crc32(bytes, format.size, checksum);
+}
+
+/**
+ * 把旧连续扩展编号转换为当前面板编号
+ * @param pin 历史引脚编号
+ * @param single_device 历史布局是否只支持第一片扩展器
+ * @return 同一芯片和寄存器位对应的新编号；其他编号保持原值
+ */
+int32_t migrate_pin(const int32_t pin, const bool single_device) {
+    const int limit = single_device ? 66 : 114;
+    if (pin < 50 || pin >= limit) return pin;
+    const int index = pin - 50, bit = index % 16;
+    return PCF8575_VIRTUAL_PIN_BASE + (index / 16) * PCF8575_VIRTUAL_PIN_STRIDE + bit + (bit >= 8 ? 2 : 0);
+}
+
+/**
+ * 把已校验历史记录的有效字段复制到新布局
+ * @param bytes 已校验的原始记录
+ * @param format 对应历史布局
+ * @param out 已填入当前默认值的候选设置
+ * 仅覆盖旧布局已有字段，新增离合、身份、霍尔及五通参数使用候选默认值，不写入持久化存储
+ */
+void copy_legacy(const uint8_t *bytes, const LegacyFormat &format, SettingsData &out) {
+    memcpy(out.pullback_timeout, bytes, 64);
+    memcpy(out.channel_mode, bytes + 64, 64);
+    memcpy(&out.ams_count, bytes + 128, 12);
+    const size_t checksum = format.checksum_offset;
+    if (format.feed_stop_delay) memcpy(&out.feed_stop_delay_ms, bytes + 140, 4);
+    const size_t control = checksum + 8;
+    memcpy(&out.rs485_mode, bytes + control, 8);
+    memcpy(out.ota_url, bytes + control + 8, sizeof(out.ota_url));
+    memcpy(&out.ota_notify, bytes + control + 136, 8);
+    const size_t identities = control + 144;
+    const size_t serial_bytes = format.version_count == AMS_IDENTITY_COUNT ? sizeof(out.custom_serial) : CUSTOM_SERIAL_LENGTH;
+    memcpy(out.custom_serial, bytes + identities, serial_bytes);
+    // 最早格式的序列号含结尾 NUL，占 13 字节；其后的 IO 仍按 4 字节对齐
+    const size_t io = (identities + format.serial_size + 3u) & ~size_t(3u);
+    // motor 和 microswitch 在全部旧布局中相同；新增输入不得继承当前默认项目的已有接线
+    memcpy(&out.io_config, bytes + io, 192);
+    out.io_config.switch_pin = PIN_NONE;
+    for (int32_t &pin : out.io_config.hall) pin = PIN_NONE;
+    if (format.io_size >= 196) memcpy(&out.io_config.switch_pin, bytes + io + 192, 4);
+    if (format.io_size >= 260) memcpy(out.io_config.hall, bytes + io + 196, 64);
+    io_config_set_clutch_defaults(out.io_config);
+    if (format.continuous_pins) {
+        for (int ch = 0; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
+            for (int direction = 0; direction < 2; ++direction)
+                out.io_config.motor[ch][direction] = migrate_pin(out.io_config.motor[ch][direction], format.single_device);
+            out.io_config.microswitch[ch] = migrate_pin(out.io_config.microswitch[ch], format.single_device);
+        }
+    }
+    const size_t buses = io + format.io_size;
+    memcpy(&out.pcf_sda, bytes + buses, 20);
+    const size_t versions = buses + 20 + (format.pcf_enable ? 4 : 0);
+    if (format.version_count == AMS_IDENTITY_COUNT) memcpy(out.ams_version, bytes + versions, sizeof(out.ams_version));
+    else if (format.version_count == 1) for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams)
+        memcpy(out.ams_version[ams], bytes + versions, 16); // 旧协议全部 AMS 使用同一份版本
+    if (format.hall_detection)
+        memcpy(out.hall_detection, bytes + 688, sizeof(out.hall_detection));
+    if (format.lan_ams)
+        memcpy(&out.lan_ams, bytes + 816, sizeof(out.lan_ams));
+    if (format.total_switch_parameters) memcpy(&out.total_switch_active_level, bytes + 884, 8);
+    out.magic = SETTINGS_MAGIC_NUMBER;
+    out.checksum = 0;
+}
+
+/**
+ * 校验并迁移已发布及开发提交的历史设置记录
+ * @param bytes 原始记录缓冲区
+ * @param length 实际读取的字节数
+ * @param out 使用当前默认值初始化的候选设置
+ * @param padded 是否允许固定 Flash 扇区的全 0xFF 尾部填充
+ * @return 找到原格式且完整 CRC 正确时返回 true，否则保留候选和原始记录
+ * 先按原布局验证，再迁移字段；兼容同魔数不同长度、早期序列号对齐和各字段独立引入，不执行写入
+ */
+bool settings_migrate_record(const uint8_t *bytes, const size_t length, SettingsData &out, const bool padded = false) {
+    if (!bytes) return false;
+    for (const LegacyFormat &format : LEGACY_FORMATS) {
+        if (!matches_format(bytes, length, format, padded)) continue;
+        copy_legacy(bytes, format, out);
+        return true;
+    }
+    return false;
+}
+} // namespace
 
 /**
  * 校验自定义序列号格式
@@ -254,7 +413,7 @@ bool settings_lan_config_valid(const LanAmsConfig &config, const bool require_cr
  * @param data 从存储或快照得到的设置
  * 逐项检查范围后更新全局配置；各 AMS 身份、霍尔检测、五通总微动和局域网配置独立校验，保留未启用通道的配置
  * 通道模式不在有效范围时恢复为自动模式
- * I2C 仅由 SDA/SCL 决定，接线无效时恢复平台默认映射
+ * I2C 仅由 SDA/SCL 决定；升级后不可用接线只清理相关字段，保留已有有效参数及原始存储记录
  */
 static void apply_settings_values(const SettingsData& data) {
     for (int i = 0; i < 16; i++) {
@@ -310,7 +469,15 @@ static void apply_settings_values(const SettingsData& data) {
     LAN_AMS_CONFIG = settings_lan_config_valid(data.lan_ams) ? data.lan_ams : DEFAULT_LAN_AMS_CONFIG;
 
     // 先加载整组候选接线，再交叉校验，避免用旧总线引脚误判新配置
-    const IoConfig loaded = data.io_config;
+    IoConfig loaded = data.io_config;
+    if (!io_config_clutch_valid(loaded)) {
+        if (loaded.clutch_enabled != 0 && loaded.clutch_enabled != 1) loaded.clutch_enabled = 0;
+        if (loaded.clutch_active_level != LOW && loaded.clutch_active_level != HIGH) loaded.clutch_active_level = HIGH;
+        if (loaded.clutch_engage_ms < 0 || loaded.clutch_engage_ms > MAX_CLUTCH_DELAY_MS)
+            loaded.clutch_engage_ms = DEFAULT_CLUTCH_DELAY_MS;
+        if (loaded.clutch_release_ms < 0 || loaded.clutch_release_ms > MAX_CLUTCH_DELAY_MS)
+            loaded.clutch_release_ms = DEFAULT_CLUTCH_DELAY_MS;
+    }
     BUS_RX = data.bus_rx; BUS_TX = data.bus_tx; BUS_DE = data.bus_de;
     // I2C 总线由 SDA/SCL 是否同时配置决定
     PCF_SDA = data.pcf_sda; PCF_SCL = data.pcf_scl;
@@ -324,43 +491,87 @@ static void apply_settings_values(const SettingsData& data) {
         PCF_SDA = PIN_NONE;
         PCF_SCL = PIN_NONE;
     }
-    String io_error;
-    bool wiring_valid = io_config_bus_validate(BUS_RX, BUS_TX, BUS_DE, RS485_MODE,
-        PCF_SDA, PCF_SCL, loaded, active_channel_count(), &io_error);
-    if (i2c_bus_configured())
-        wiring_valid = wiring_valid && io_config_i2c_validate(PCF_SDA, PCF_SCL, loaded, active_channel_count(), &io_error);
-    wiring_valid = wiring_valid && io_config_validate(loaded, active_channel_count(), &io_error);
-    if (wiring_valid) {
-        IO_CONFIG = loaded;
-    } else {
-        AMS_COUNT = hal_default_project_preset().ams;
-        MOTOR_LIMIT = min(MOTOR_LIMIT, active_channel_count());
-        RS485_MODE = hal_default_project_preset().bus.mode;
-        bus_defaults();
-        pcf_defaults();
-        io_config_set_defaults(IO_CONFIG);
-        LOG_MAIN("[settings] 接线配置无效，已恢复平台默认映射：%s", io_error.c_str());
+    IoConfig unused{};
+    io_config_set_clutch_defaults(unused);
+    unused.switch_pin = PIN_NONE;
+    for (int ch = 0; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
+        unused.motor[ch][0] = unused.motor[ch][1] = unused.microswitch[ch] = unused.hall[ch] = PIN_NONE;
     }
+    String io_error;
+    IoBusConfig bus{BUS_RX, BUS_TX, BUS_DE, RS485_MODE, PCF_SDA, PCF_SCL};
+    if (i2c_bus_configured() && !io_config_i2c_validate(PCF_SDA, PCF_SCL, unused, active_channel_count(), &io_error, &bus)) {
+        PCF_SDA = PCF_SCL = PIN_NONE;
+        bus.sda = bus.scl = PIN_NONE;
+        LOG_MAIN("[settings] I2C 接线无法继续使用，已清空：%s", io_error.c_str());
+    }
+    if (!io_config_bus_validate(BUS_RX, BUS_TX, BUS_DE, RS485_MODE, PCF_SDA, PCF_SCL, unused, active_channel_count(), &io_error)) {
+#if defined(ARDUINO_ARCH_ESP32)
+        BUS_RX = BUS_TX = BUS_DE = PIN_NONE;
+#else
+        bus_defaults();
+        RS485_MODE = hal_default_project_preset().bus.mode;
+#endif
+        bus.rx = BUS_RX; bus.tx = BUS_TX; bus.de = BUS_DE; bus.mode = RS485_MODE;
+        LOG_MAIN("[settings] BambuBus 接线无法继续使用，已调整总线字段：%s", io_error.c_str());
+    }
+    const int cleared = io_config_sanitize_pins(loaded, active_channel_count(), &bus);
+    if (cleared) LOG_MAIN("[settings] 已清空 %d 个不可用或重复引脚，其余设置保留", cleared);
+    IO_CONFIG = loaded;
 }
 
 /**
- * 初始化设置存储
- * 只接受当前格式且 CRC32 正确的完整记录，不转换版本或字段
- * 无效或空片时恢复默认值并写入、回读校验，有效记录直接加载且不重复写入
+ * 读取并校验当前或历史设置记录
+ * @param data 已填入当前默认值的候选设置
+ * @param empty 返回存储是否真正为空
+ * @return 当前格式或已发布历史格式完整校验成功时返回 true
+ * 历史记录先按原长度和 CRC 验证，固定 Flash 只允许全 0xFF 尾部；失败不写入存储
+ */
+static bool load_settings_record(SettingsData &data, bool &empty) {
+    const uint32_t stored_size = hal_storage_size(HAL_REGION_SETTINGS);
+    empty = stored_size == 0;
+    if (empty || stored_size == UINT32_MAX) return false;
+    bool padded = false;
+#if defined(ARDUINO_ARCH_RP2040)
+    padded = true;
+#endif
+    if (!padded && stored_size > sizeof(SettingsData)) return false;
+    const size_t length = min(static_cast<size_t>(stored_size), sizeof(SettingsData));
+    uint8_t bytes[sizeof(SettingsData)];
+    hal_storage_read(HAL_REGION_SETTINGS, bytes, static_cast<uint32_t>(length));
+    if (padded) {
+        empty = true;
+        for (size_t i = 0; i < length; ++i) if (bytes[i] != 0xFF) { empty = false; break; }
+        if (empty) return false;
+    }
+    if (length == sizeof(SettingsData)) {
+        SettingsData current;
+        memcpy(&current, bytes, sizeof(current));
+        if (current.magic == SETTINGS_MAGIC_NUMBER && calculate_crc32(&current) == current.checksum) {
+            data = current;
+            return true;
+        }
+    }
+    return settings_migrate_record(bytes, length, data, padded);
+}
+
+/**
+ * 初始化设置存储并迁移已发布历史格式
+ * 有效记录只加载到运行期，旧记录保留到用户主动保存；损坏、未知格式或读取失败保留原始记录
+ * 只有真正空片时保存默认值，并保留写入后的回读检查
  */
 void settings_storage_init() {
-    SettingsData data{};
-
-    read_settings_from_flash(&data);
-
-    if (data.magic == SETTINGS_MAGIC_NUMBER &&
-        calculate_crc32(&data) == data.checksum) {
+    settings_reset_to_defaults();
+    SettingsData data = settings_snapshot();
+    bool empty = false;
+    if (load_settings_record(data, empty)) {
         apply_settings_values(data);
         return;
     }
-
-    LOG_MAIN("[settings] 没有可用的设置记录，已恢复默认值并重新写入");
-    settings_reset_to_defaults();
+    if (!empty) {
+        LOG_MAIN("[settings] 设置记录无效或无法迁移，使用运行期默认值，原始记录已保留");
+        return;
+    }
+    LOG_MAIN("[settings] 存储为空，保存首次启动的默认设置");
     if (!settings_save_to_flash())
         LOG_MAIN("[settings] 默认设置写入失败，将在下次启动重试");
 }
@@ -438,6 +649,15 @@ bool settings_save_to_flash() {
  * 校验全部霍尔检测、五通总微动和局域网参数并重算魔数和 CRC，不修改运行期设置，供项目切换在重启后统一生效
  */
 bool settings_save_snapshot(const SettingsData &candidate) {
+    if (!io_config_clutch_valid(candidate.io_config)) return false;
+    if (candidate.ams_count < 1 || candidate.ams_count > IO_CONFIG_MAX_CHANNELS / 4) return false;
+    const IoBusConfig bus{candidate.bus_rx, candidate.bus_tx, candidate.bus_de, candidate.rs485_mode,
+                          candidate.pcf_sda, candidate.pcf_scl};
+    const int channels = candidate.ams_count * 4;
+    if ((bus.sda == PIN_NONE) != (bus.scl == PIN_NONE) ||
+        !io_config_bus_validate(bus.rx, bus.tx, bus.de, bus.mode, bus.sda, bus.scl, candidate.io_config, channels) ||
+        (bus.sda != PIN_NONE && !io_config_i2c_validate(bus.sda, bus.scl, candidate.io_config, channels, nullptr, &bus)) ||
+        !io_config_validate(candidate.io_config, channels, nullptr, &bus)) return false;
     if ((candidate.total_switch_active_level != LOW && candidate.total_switch_active_level != HIGH) ||
         candidate.total_switch_feed_ms <= 0 || candidate.total_switch_feed_ms >= MAX_PULSE_MS) return false;
     if (!settings_lan_config_valid(candidate.lan_ams)) return false;
@@ -493,14 +713,13 @@ void settings_reset_to_defaults() {
 
 /**
  * 检查存储中的设置是否有效
- * @return true 表示魔数和 CRC32 均有效
- * 只接受当前魔数和完整 CRC32，不接受其他格式
+ * @return 当前或已发布历史格式的长度、魔数及 CRC32 有效时返回 true
+ * 只校验并在内存中解析，不改变运行期配置或持久化记录
  */
 bool settings_is_valid() {
-    SettingsData data{};
-    read_settings_from_flash(&data);
-    return data.magic == SETTINGS_MAGIC_NUMBER &&
-           calculate_crc32(&data) == data.checksum;
+    SettingsData data = settings_snapshot();
+    bool empty = false;
+    return load_settings_record(data, empty);
 }
 
 /**
@@ -543,13 +762,24 @@ void settings_log_all() {
                  AMS_VERSION[ams][0], AMS_VERSION[ams][1], AMS_VERSION[ams][2], AMS_VERSION[ams][3]);
     }
     LOG_MAIN("[settings] AMS 数量=%d，手动进退料点动时长=%dms", AMS_COUNT, MANUAL_PULSE_MS);
-    LOG_MAIN("[settings] 同时运行电机上限=%d", MOTOR_LIMIT);
+    LOG_MAIN("[settings] 电磁离合=%s，同时运行电机上限=%d", IO_CONFIG.clutch_enabled ? "已启用" : "已关闭",
+             IO_CONFIG.clutch_enabled ? 1 : MOTOR_LIMIT);
+    if (IO_CONFIG.clutch_enabled)
+        LOG_MAIN("[settings] 共享电机进料=%s，退料=%s，离合闭合=%s，吸合=%dms，释放=%dms",
+                 io_config_pin_label(IO_CONFIG.shared_motor[0]).c_str(), io_config_pin_label(IO_CONFIG.shared_motor[1]).c_str(),
+                 IO_CONFIG.clutch_active_level == HIGH ? "HIGH" : "LOW",
+                 static_cast<int>(IO_CONFIG.clutch_engage_ms), static_cast<int>(IO_CONFIG.clutch_release_ms));
     if (i2c_bus_configured())
         LOG_MAIN("[settings] I2C 总线已配置：SDA=IO%d，SCL=IO%d（PCF8575/温湿度模块共用）", PCF_SDA, PCF_SCL);
     else
         LOG_MAIN("[settings] I2C 总线未配置，PCF8575/温湿度模块不启用");
     for (int i = 0; i < active_channel_count(); i++) {
-        LOG_MAIN("[settings] 通道 %d IO=进料%s/退料%s/微动%s/霍尔%s", i + 1,
+        if (IO_CONFIG.clutch_enabled)
+            LOG_MAIN("[settings] 通道 %d IO=离合%s/微动%s/霍尔%s", i + 1,
+                     io_config_pin_label(IO_CONFIG.clutch[i]).c_str(),
+                     io_config_pin_label(IO_CONFIG.microswitch[i]).c_str(),
+                     io_config_pin_label(IO_CONFIG.hall[i]).c_str());
+        else LOG_MAIN("[settings] 通道 %d IO=进料%s/退料%s/微动%s/霍尔%s", i + 1,
                  io_config_pin_label(IO_CONFIG.motor[i][0]).c_str(),
                  io_config_pin_label(IO_CONFIG.motor[i][1]).c_str(),
                  io_config_pin_label(IO_CONFIG.microswitch[i]).c_str(),

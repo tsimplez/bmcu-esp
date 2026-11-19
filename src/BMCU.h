@@ -57,7 +57,7 @@ enum MotorSource {
 };
 
 struct MotorStatus {
-    int direction; // 当前方向：1=进料，-1=退料，0=停止
+    int direction; // 当前目标方向：1=进料，-1=退料，0=停止，包含等待离合稳定的动作
     MotorSource source; // 当前动作来源：打印机、手动点动、通道微动、局域网换料或五通总微动
     int32_t remaining_ms; // -1 表示结束时间由打印机决定
     int queue_position; // 0=未排队，1=下一个执行
@@ -70,6 +70,9 @@ bool motorCmd(int motorNum, int cmd, MotorSource source = MOTOR_PRINTER, uint32_
 MotorStatus BMCU_motor_status(int motorNum);
 
 int BMCU_running_count();
+
+// 当前驱动模式的有效并发上限；离合模式固定为 1
+int BMCU_motor_limit();
 
 void BMCU_stop_motor(int motorNum);
 
@@ -89,7 +92,7 @@ bool BMCU_can_maintain();
 
 bool BMCU_manual_pulse(int motorNum, int cmd, uint32_t duration_ms);
 
-// 该通道的进料/退料引脚是否都已配置（任一为「无」表示没接电机，不能启动）
+// 当前驱动模式所需引脚是否完整且所属扩展芯片在线，未配置通道不能启动
 bool BMCU_channel_motor_ready(int motorNum);
 
 bool BMCU_manual_active();

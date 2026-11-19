@@ -7,6 +7,7 @@
 
 #if defined(ARDUINO_ARCH_ESP32)
 #include <esp_system.h>
+#include <nvs.h>
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && !ARDUINO_USB_CDC_ON_BOOT
 #include <esp_log.h>
 #include <esp32-hal-uart.h>
@@ -59,15 +60,13 @@ bool console_pin(const int pin, const int first, const int second) { return pin 
  * 未启用通道和未启用总线的 DE 不占用引脚
  */
 bool console_pins_used(const int first, const int second) {
+    if (io_config_uses_pin(IO_CONFIG, active_channel_count(), first) ||
+        io_config_uses_pin(IO_CONFIG, active_channel_count(), second)) return true;
     if (console_pin(IO_CONFIG.switch_pin, first, second)) return true;
     if (PCF_SDA != PIN_NONE && PCF_SCL != PIN_NONE && PCF_SDA != PCF_SCL &&
         (console_pin(PCF_SDA, first, second) || console_pin(PCF_SCL, first, second))) return true;
     if (io_config_bus_enabled() && (console_pin(BUS_RX, first, second) || console_pin(BUS_TX, first, second) ||
         (RS485_MODE == RS485_MODE_DE && console_pin(BUS_DE, first, second)))) return true;
-    for (int ch = 0; ch < active_channel_count(); ++ch) {
-        if (console_pin(IO_CONFIG.motor[ch][0], first, second) || console_pin(IO_CONFIG.motor[ch][1], first, second) ||
-            console_pin(IO_CONFIG.microswitch[ch], first, second) || console_pin(IO_CONFIG.hall[ch], first, second)) return true;
-    }
     return false;
 }
 
@@ -367,6 +366,24 @@ static const char *region_ns(int region) {
 }
 
 /**
+ * 查询 NVS 记录的实际长度
+ * @param region 设置或耗材存储区域
+ * @return blob 字节数；区域不可读取时返回 UINT32_MAX，缺少记录时返回零
+ * 用于先识别历史布局再按原长度读取，不截断或拼接记录
+ */
+uint32_t hal_storage_size(const int region) {
+    nvs_handle_t handle;
+    const esp_err_t opened = nvs_open(region_ns(region), NVS_READONLY, &handle);
+    if (opened == ESP_ERR_NVS_NOT_FOUND) return 0;
+    if (opened != ESP_OK) return UINT32_MAX;
+    size_t length = 0;
+    const esp_err_t read = nvs_get_blob(handle, "blob", nullptr, &length);
+    nvs_close(handle);
+    if (read == ESP_ERR_NVS_NOT_FOUND) return 0;
+    return read == ESP_OK ? static_cast<uint32_t>(length) : UINT32_MAX;
+}
+
+/**
  * 从 NVS 读取二进制记录
  * @param region 存储区域
  * @param buf 输出缓冲区
@@ -408,6 +425,17 @@ bool hal_storage_write(int region, const void *buf, uint32_t len) {
 // RP2040 直接操作 Flash：程序占用前 1MB，数据放在其后
 #define FLASH_OFFSET_SETTINGS (1024 * 1024)
 #define FLASH_OFFSET_FILAMENT (1536 * 1024)
+
+/**
+ * 查询 RP2040 固定记录区的容量
+ * @param region 设置或耗材区域
+ * @return 一个 Flash 扇区的字节数
+ * Flash 不保存实际记录长度，由上层按格式和 CRC 识别，并验证全 0xFF 尾部
+ */
+uint32_t hal_storage_size(const int region) {
+    (void)region;
+    return FLASH_SECTOR_SIZE;
+}
 
 /**
  * 从 RP2040 Flash 读取数据

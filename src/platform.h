@@ -188,6 +188,7 @@ const ProjectPreset &hal_default_project_preset();
 uint64_t hal_get_device_id();
 
 void hal_storage_read(int region, void* buf, uint32_t len);
+uint32_t hal_storage_size(int region);
 bool hal_storage_write(int region, const void* buf, uint32_t len);
 
 // 在控制台和外设接线初始化之前释放 USB 焊盘，运行期仅在停用原生 USB 后调用

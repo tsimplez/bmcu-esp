@@ -58,6 +58,63 @@ void io_config_set_defaults(IoConfig &config) {
 }
 
 /**
+ * 初始化电磁离合配置的默认值
+ * @param config 要补充默认值的接线配置
+ * 保留独立电机、微动和霍尔接线，默认关闭离合模式并使用高电平闭合及 100ms 稳定等待
+ */
+void io_config_set_clutch_defaults(IoConfig &config) {
+    config.clutch_enabled = 0;
+    config.shared_motor[0] = config.shared_motor[1] = PIN_NONE;
+    for (int32_t &pin : config.clutch) pin = PIN_NONE;
+    config.clutch_active_level = HIGH;
+    config.clutch_engage_ms = config.clutch_release_ms = DEFAULT_CLUTCH_DELAY_MS;
+}
+
+/**
+ * 校验电磁离合模式及稳定时长
+ * @param config 待校验的配置
+ * @return 模式、电平和两个时长均在允许范围时返回 true
+ * 引脚可用性和重复占用由整组接线校验处理
+ */
+bool io_config_clutch_valid(const IoConfig &config) {
+    return (config.clutch_enabled == 0 || config.clutch_enabled == 1) &&
+        (config.clutch_active_level == LOW || config.clutch_active_level == HIGH) &&
+        config.clutch_engage_ms >= 0 && config.clutch_engage_ms <= MAX_CLUTCH_DELAY_MS &&
+        config.clutch_release_ms >= 0 && config.clutch_release_ms <= MAX_CLUTCH_DELAY_MS;
+}
+
+/**
+ * 查询当前模式的通道驱动引脚
+ * @param config 通道配置
+ * @param channel 通道编号
+ * @param role 0=进料或离合，1=退料，2=微动，3=霍尔
+ * @return 当前模式占用的引脚，离合模式没有通道退料引脚
+ */
+static int channel_pin(const IoConfig &config, const int channel, const int role) {
+    if (role == 2) return config.microswitch[channel];
+    if (role == 3) return config.hall[channel];
+    return config.clutch_enabled ? (role == 0 ? config.clutch[channel] : PIN_NONE) : config.motor[channel][role];
+}
+
+/**
+ * 判断当前生效的整套通道接线是否占用一根引脚
+ * @param config 要查询的接线配置
+ * @param active_channels 启用通道数
+ * @param pin 要查询的引脚
+ * @return 当前模式的驱动、微动或霍尔使用该引脚时返回 true
+ * 未启用模式的接线只保存而不占用硬件
+ */
+bool io_config_uses_pin(const IoConfig &config, const int active_channels, const int pin) {
+    if (pin == PIN_NONE) return false;
+    if (pin == config.switch_pin) return true;
+    if (config.clutch_enabled && (pin == config.shared_motor[0] || pin == config.shared_motor[1])) return true;
+    for (int ch = 0; ch < min(active_channels, IO_CONFIG_MAX_CHANNELS); ++ch)
+        for (int role = 0; role < 4; ++role)
+            if (pin == channel_pin(config, ch, role)) return true;
+    return false;
+}
+
+/**
  * 判断引脚在 I2C 总线状态切换后是否失效
  * @param pin 引脚号
  * @param i2c_configured 切换后的 I2C 总线是否启用
@@ -79,15 +136,25 @@ static bool pin_invalid_after_switch(const int pin, const bool i2c_configured, c
  * @param sda I2C SDA 引脚
  * @param scl I2C SCL 引脚
  * @return 被清空的引脚数量，供日志使用
- * 电机任一脚失效就整对清成 PIN_NONE；通道微动、霍尔和总微动单独清理，其余接线保持不变
+ * 独立或共享电机任一脚失效就整对清成 PIN_NONE；离合、微动、霍尔和总微动单独清理，包含未启用模式的缓存接线
  */
 int io_config_clear_invalid_pins(IoConfig &config, const bool i2c_configured, const int sda, const int scl) {
     int cleared = 0;
+    if (pin_invalid_after_switch(config.shared_motor[0], i2c_configured, sda, scl) ||
+        pin_invalid_after_switch(config.shared_motor[1], i2c_configured, sda, scl)) {
+        if (config.shared_motor[0] != PIN_NONE) cleared++;
+        if (config.shared_motor[1] != PIN_NONE) cleared++;
+        config.shared_motor[0] = config.shared_motor[1] = PIN_NONE;
+    }
     if (pin_invalid_after_switch(config.switch_pin, i2c_configured, sda, scl)) {
         config.switch_pin = PIN_NONE;
         cleared++;
     }
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
+        if (pin_invalid_after_switch(config.clutch[i], i2c_configured, sda, scl)) {
+            config.clutch[i] = PIN_NONE;
+            cleared++;
+        }
         if (pin_invalid_after_switch(config.motor[i][0], i2c_configured, sda, scl) ||
             pin_invalid_after_switch(config.motor[i][1], i2c_configured, sda, scl)) {
             if (config.motor[i][0] != PIN_NONE) cleared++;
@@ -162,6 +229,42 @@ bool io_config_hall_pin_available(const int pin, const bool allow_none, const Io
 }
 
 /**
+ * 清理升级后无法继续使用的生效引脚
+ * @param config 要修复的接线配置
+ * @param active_channels 启用通道数
+ * @param bus 候选总线接线
+ * @return 清空的不可用或重复引脚数量
+ * 保留每根仍有效的引脚和未启用模式接线，仅把当前模式不可用或重复的字段置为 PIN_NONE
+ */
+int io_config_sanitize_pins(IoConfig &config, const int active_channels, const IoBusConfig *bus) {
+    int32_t *pins[IO_CONFIG_MAX_CHANNELS * 4 + 3];
+    bool hall[IO_CONFIG_MAX_CHANNELS * 4 + 3] = {};
+    int count = 0, cleared = 0;
+    pins[count++] = &config.switch_pin;
+    if (config.clutch_enabled) {
+        pins[count++] = &config.shared_motor[0];
+        pins[count++] = &config.shared_motor[1];
+    }
+    for (int ch = 0; ch < min(active_channels, IO_CONFIG_MAX_CHANNELS); ++ch) {
+        if (config.clutch_enabled) pins[count++] = &config.clutch[ch];
+        else {
+            pins[count++] = &config.motor[ch][0];
+            pins[count++] = &config.motor[ch][1];
+        }
+        pins[count++] = &config.microswitch[ch];
+        hall[count] = true;
+        pins[count++] = &config.hall[ch];
+    }
+    for (int i = 0; i < count; ++i) {
+        if (*pins[i] == PIN_NONE) continue;
+        bool valid = hall[i] ? io_config_hall_pin_available(*pins[i], false, bus) : io_config_pin_available(*pins[i], false, bus);
+        for (int prev = 0; prev < i; ++prev) if (*pins[prev] == *pins[i]) valid = false;
+        if (!valid) { *pins[i] = PIN_NONE; ++cleared; }
+    }
+    return cleared;
+}
+
+/**
  * 判断引脚能否作为 I2C 引脚
  * @param pin 引脚号
  * @param sda true 表示按 SDA 校验，false 表示按 SCL 校验
@@ -207,13 +310,18 @@ bool io_config_i2c_validate(const int sda, const int scl, const IoConfig &config
         if (error) *error = "所选 GPIO 已被五通总微动占用，请先修改总微动接线";
         return false;
     }
+    if (config.clutch_enabled && (config.shared_motor[0] == sda || config.shared_motor[0] == scl ||
+        config.shared_motor[1] == sda || config.shared_motor[1] == scl)) {
+        if (error) *error = "所选 GPIO 已被共享电机占用，请先修改共享电机接线";
+        return false;
+    }
     for (int ch = 0; ch < active_channels; ch++) {
         for (int role = 0; role < 4; role++) {
-            const int pin = role < 2 ? config.motor[ch][role] : role == 2 ? config.microswitch[ch] : config.hall[ch];
+            const int pin = channel_pin(config, ch, role);
             if (pin == sda || pin == scl) {
                 if (error)
                     *error = io_config_pin_label(pin) + " 已被通道 " + String(ch + 1) +
-                             (role == 0 ? " 进料" : role == 1 ? " 退料" : role == 2 ? " 微动" : " 霍尔") + " 使用，请先修改通道配置";
+                             (role == 0 ? (config.clutch_enabled ? " 离合" : " 进料") : role == 1 ? " 退料" : role == 2 ? " 微动" : " 霍尔") + " 使用，请先修改通道配置";
                 return false;
             }
         }
@@ -280,7 +388,7 @@ String io_config_pin_label(const int pin) {
  * @param error 可选的错误文本输出
  * @param bus 可选候选总线接线，空指针使用当前配置
  * @return true 表示配置合法
- * 检查电机、通道微动、霍尔和五通总微动引脚是否可用、是否重复占用；霍尔额外要求 ADC 能力
+ * 按生效模式检查独立电机或共享电机与离合，并校验微动、霍尔和总微动的可用性及重复占用；另一模式接线保留但不占用硬件
  */
 bool io_config_validate(const IoConfig &config, const int active_channels, String *error, const IoBusConfig *bus) {
     if (active_channels < 1 || active_channels > IO_CONFIG_MAX_CHANNELS) {
@@ -288,22 +396,41 @@ bool io_config_validate(const IoConfig &config, const int active_channels, Strin
         return false;
     }
 
+    if (!io_config_clutch_valid(config)) {
+        if (error) *error = "电磁离合模式、电平或稳定时长无效";
+        return false;
+    }
     if (!io_config_pin_available(config.switch_pin, true, bus)) {
         if (error) *error = "五通总微动引脚不可用：" + io_config_pin_label(config.switch_pin);
         return false;
     }
-    int assigned[IO_CONFIG_MAX_CHANNELS * 4 + 1] = {};
+    int assigned[IO_CONFIG_MAX_CHANNELS * 4 + 3] = {};
     int assigned_count = 0;
     if (config.switch_pin != PIN_NONE) assigned[assigned_count++] = config.switch_pin;
+    if (config.clutch_enabled) {
+        for (int role = 0; role < 2; ++role) {
+            const int pin = config.shared_motor[role];
+            if (!io_config_pin_available(pin, true, bus)) {
+                if (error) *error = String("共享电机") + (role == 0 ? "进料" : "退料") + "引脚不可用";
+                return false;
+            }
+            if (pin == PIN_NONE) continue;
+            for (int i = 0; i < assigned_count; ++i) if (assigned[i] == pin) {
+                if (error) *error = "引脚重复使用：" + io_config_pin_label(pin);
+                return false;
+            }
+            assigned[assigned_count++] = pin;
+        }
+    }
     for (int ch = 0; ch < active_channels; ch++) {
         for (int role = 0; role < 4; role++) {
-            const int pin = role < 2 ? config.motor[ch][role] : role == 2 ? config.microswitch[ch] : config.hall[ch];
+            const int pin = channel_pin(config, ch, role);
             // "无"(PIN_NONE) 合法：切换 I2C 配置会先清空不再可用的引脚，
             // 该通道等用户在网页里补配置
             if (role == 3 ? !io_config_hall_pin_available(pin, true, bus) : !io_config_pin_available(pin, true, bus)) {
                 if (error)
                     *error = String("通道 ") + String(ch + 1) + " 的" +
-                             (role == 0 ? "进料" : role == 1 ? "退料" : role == 2 ? "微动" : "霍尔 ADC") +
+                             (role == 0 ? (config.clutch_enabled ? "离合" : "进料") : role == 1 ? "退料" : role == 2 ? "微动" : "霍尔 ADC") +
                              "引脚不可用：" + io_config_pin_label(pin);
                 return false;
             }
@@ -420,12 +547,9 @@ bool io_config_bus_validate(const int rx, const int tx, const int de, const int 
             if (error) *error = io_config_pin_label(pin) + " 已被 I2C SDA/SCL 占用";
             return false;
         }
-        for (int ch = 0; ch < active_channels; ch++) {
-            if (pin == config.motor[ch][0] || pin == config.motor[ch][1] ||
-                pin == config.microswitch[ch] || pin == config.hall[ch]) {
-                if (error) *error = io_config_pin_label(pin) + " 已被通道 " + String(ch + 1) + " 占用，请先修改并保存通道接线";
-                return false;
-            }
+        if (io_config_uses_pin(config, active_channels, pin)) {
+            if (error) *error = io_config_pin_label(pin) + " 已被电机、离合或通道输入占用，请先修改通道配置";
+            return false;
         }
     }
     return true;

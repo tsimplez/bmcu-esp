@@ -1,13 +1,15 @@
 #include "project_presets.h"
 #include <cstring>
+#include <cstddef>
 
 /**
  * 展开项目的完整通道接线
  * @param preset 项目预设
  * @param config 输出的通道配置
- * 按 pins 条目数展开，清空全部未列出的通道，并替换五通总微动和霍尔输入，防止切换项目后残留旧接线
+ * 按 pins 条目数展开，清空全部未列出的通道，并替换五通总微动和霍尔输入，恢复独立电机模式及空的离合接线
  */
 void project_preset_io(const ProjectPreset &preset, IoConfig &config) {
+    io_config_set_clutch_defaults(config);
     config.switch_pin = preset.switch_pin;
     for (size_t ch = 0; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
         config.motor[ch][0] = ch < preset.pins.size() ? preset.pins[ch][0] : PIN_NONE;
@@ -62,7 +64,7 @@ const ProjectPreset *project_preset_find(const char *id) {
  * 把预设接线写入候选设置
  * @param preset 已通过校验的项目
  * @param settings 由当前快照创建的候选设置
- * 替换总线、通道、霍尔和总微动接线，保留时长等其他参数，仅约束并发上限；CRC 由存储接口重新计算
+ * 替换总线及通道接线，恢复独立电机模式与离合默认参数，保留其他时长参数并约束并发上限；CRC 由存储接口重新计算
  */
 void project_preset_apply(const ProjectPreset &preset, SettingsData &settings) {
     settings.ams_count = preset.ams;
@@ -80,9 +82,10 @@ void project_preset_apply(const ProjectPreset &preset, SettingsData &settings) {
  * 根据实际接线识别当前项目
  * @param settings 当前设置快照
  * @return 匹配的项目 ID，空字符串表示自定义
- * 比较总微动及所有通道的电机、微动和霍尔，含停用通道，模式 1 下忽略不使用的 DE 引脚
+ * 比较独立电机模式的总微动及所有通道接线，含停用通道；忽略未启用的离合配置和模式 1 下的 DE 引脚
  */
 const char *project_preset_match(const SettingsData &settings) {
+    if (settings.io_config.clutch_enabled) return "";
     for (const auto &preset : PROJECT_PRESETS) {
         if (strcmp(preset.target, hal_project_target()) != 0 || settings.ams_count != preset.ams ||
             settings.rs485_mode != preset.bus.mode || settings.bus_rx != preset.bus.rx ||
@@ -91,7 +94,7 @@ const char *project_preset_match(const SettingsData &settings) {
             (preset.bus.mode == RS485_MODE_DE && settings.bus_de != preset.bus.de)) continue;
         IoConfig io;
         project_preset_io(preset, io);
-        if (memcmp(&io, &settings.io_config, sizeof(io)) == 0) return preset.id;
+        if (memcmp(&io, &settings.io_config, offsetof(IoConfig, clutch_enabled)) == 0) return preset.id;
     }
     return "";
 }

@@ -1,6 +1,6 @@
 /**
  * BMCU.cpp - BMCU主控单元实现
- * 
+ *
  * 功能说明：
  * 1. 电机控制：实现电机的正转（进料）和反转（退料）控制
  * 2. 传感器模拟：模拟AS5600角度传感器数据
@@ -31,7 +31,9 @@ struct MotorRun {
     int direction = 0;                 // 1=进料，-1=退料，0=停止
     MotorSource source = MOTOR_IDLE;   // 本次动作来源
     uint32_t end = 0;                  // 限时动作截止 millis()
+    uint32_t duration = 0;             // 本次动作时长，离合稳定后才开始计时
     bool timed = false;                // false 表示由打印机状态机持续控制
+    bool pending_start = false;        // 已占用通道，等待离合释放或吸合稳定
 };
 
 // 一次等待执行的电机任务，打印机和手动共用队列
@@ -187,18 +189,26 @@ static bool channel_switch_ready(const int motorNum) {
 /**
  * 检查通道电机引脚是否配置完整
  * @param motorNum 通道编号
- * @return true 表示进料和退料引脚均已配置且各自所属扩展芯片在线
- * 任一方向为 PIN_NONE 或所属芯片缺失时拒绝启动，不能借用其他芯片的在线状态
+ * @return true 表示当前驱动模式所需的引脚完整且所属扩展芯片在线
+ * 普通模式检查两个方向引脚；离合模式检查共享电机、本通道离合及所有启用离合的扩展芯片，避免旧离合无法释放时启动其他通道
  */
 bool BMCU_channel_motor_ready(const int motorNum) {
     if (!valid_channel(motorNum)) return false;
-    const int forward_pin = IO_CONFIG.motor[motorNum][0];
-    const int backward_pin = IO_CONFIG.motor[motorNum][1];
+    const bool clutch_enabled = IO_CONFIG.clutch_enabled != 0;
+    const int forward_pin = clutch_enabled ? IO_CONFIG.shared_motor[0] : IO_CONFIG.motor[motorNum][0];
+    const int backward_pin = clutch_enabled ? IO_CONFIG.shared_motor[1] : IO_CONFIG.motor[motorNum][1];
     if (forward_pin == PIN_NONE || backward_pin == PIN_NONE) return false;
     // 扩展引脚依赖 PCF8575；芯片未检测到时不能假装电机已就绪
     if ((IS_PCF8575_VIRTUAL_PIN(forward_pin) && !PCF8575_pin_is_online(forward_pin)) ||
         (IS_PCF8575_VIRTUAL_PIN(backward_pin) && !PCF8575_pin_is_online(backward_pin))) {
         return false;
+    }
+    if (clutch_enabled) {
+        if (IO_CONFIG.clutch[motorNum] == PIN_NONE) return false;
+        for (int ch = 0; ch < active_channel_count(); ++ch) {
+            const int pin = IO_CONFIG.clutch[ch];
+            if (IS_PCF8575_VIRTUAL_PIN(pin) && !PCF8575_pin_is_online(pin)) return false;
+        }
     }
     return true;
 }
@@ -208,7 +218,7 @@ bool BMCU_channel_motor_ready(const int motorNum) {
  * 在并发上限内依次启动队首；丢弃无效接线及已结束、换通道、缺料或被网页停止的打印机进料任务，局域网任务另按当前会话校验
  */
 static void run_motor_queue() {
-    while (motor_queued && BMCU_running_count() < MOTOR_LIMIT) {
+    while (motor_queued && BMCU_running_count() < BMCU_motor_limit()) {
         const auto job = motor_queue[0];
         if (!is_active_channel(job.channel)) {
             remove_job(0);
@@ -239,6 +249,118 @@ static void run_motor_queue() {
 // 电机对象数组；具体引脚由设置加载后在 BMCU_init()/BMCU_apply_io_config() 绑定
 // 16 个通道的 Motor 实例，负责实际的 GPIO/PWM 输出
 static Motor motors[IO_CONFIG_MAX_CHANNELS];
+// 电磁离合模式只使用这一台电机，通道对象不绑定共享方向引脚
+static Motor shared_motor;
+// 已应用接线用于关闭旧输出，避免网页候选配置改变后错误操作新引脚
+static IoConfig applied_io = {};
+static int applied_channels = 0;
+
+enum class ClutchPhase : uint8_t {
+    idle,
+    releasing,
+    engaging,
+    running
+};
+
+struct ClutchDrive {
+    ClutchPhase phase = ClutchPhase::idle;
+    int channel = -1;                  // 当前独占共享电机的通道，-1 表示没有所属通道
+    int direction = 0;
+    uint32_t deadline = 0;             // 释放或吸合稳定期的截止时间
+};
+
+static ClutchDrive clutch_drive;
+
+/**
+ * 释放已应用接线中的全部离合
+ * 只写离合的断开电平；共享电机必须由调用方先关闭
+ */
+static void release_all_clutches() {
+    const int inactive_level = applied_io.clutch_active_level == HIGH ? LOW : HIGH;
+    for (int ch = 0; ch < applied_channels; ++ch)
+        digitalWrite_PCF8575(applied_io.clutch[ch], inactive_level);
+}
+
+/**
+ * 停止指定通道的离合驱动
+ * @param channel 待停止的通道编号
+ * 只有所属通道可以关闭共享电机，其他通道只释放自己的离合；停车后的释放稳定期继续由主循环处理
+ */
+static void stop_clutch_drive(const int channel) {
+    if (clutch_drive.channel != channel) {
+        digitalWrite_PCF8575(applied_io.clutch[channel], applied_io.clutch_active_level == HIGH ? LOW : HIGH);
+        return;
+    }
+    shared_motor.stop();
+    release_all_clutches();
+    clutch_drive = {};
+    clutch_drive.phase = ClutchPhase::releasing;
+    clutch_drive.deadline = millis() + static_cast<uint32_t>(applied_io.clutch_release_ms);
+}
+
+/**
+ * 预约一个通道的共享电机方向
+ * @param channel 独占共享电机的通道编号
+ * @param direction 目标方向，1 为进料，-1 为退料
+ * 新动作和换向先停车并释放所有离合；已有停车释放期不重新计时，避免重复请求推迟启动
+ */
+static void request_clutch_drive(const int channel, const int direction) {
+    const bool already_releasing = clutch_drive.phase == ClutchPhase::releasing;
+    shared_motor.stop();
+    release_all_clutches();
+    if (!already_releasing)
+        clutch_drive.deadline = millis() + static_cast<uint32_t>(applied_io.clutch_release_ms);
+    clutch_drive.phase = ClutchPhase::releasing;
+    clutch_drive.channel = channel;
+    clutch_drive.direction = direction;
+}
+
+/**
+ * 在主循环推进离合释放、吸合和共享电机启动
+ * 每个阶段都重新检查扩展芯片；稳定期内保持电机关闭，实际启动后再开始限时动作的计时
+ */
+static void run_clutch_drive() {
+    if (!applied_io.clutch_enabled || clutch_drive.phase == ClutchPhase::idle) return;
+    const uint32_t now = millis();
+    const int channel = clutch_drive.channel;
+    if (channel >= 0 && !BMCU_channel_motor_ready(channel)) {
+        LOG_MAIN("[motor] 通道 %d 离合接线不可用，关闭共享电机", channel + 1);
+        if (lan_ams_busy()) lan_ams_cancel();
+        BMCU_stop_motor(channel);
+        return;
+    }
+    if (clutch_drive.phase == ClutchPhase::running ||
+        static_cast<int32_t>(now - clutch_drive.deadline) < 0) return;
+    if (clutch_drive.phase == ClutchPhase::releasing) {
+        if (channel < 0) {
+            clutch_drive = {};
+            return;
+        }
+        digitalWrite_PCF8575(applied_io.clutch[channel], applied_io.clutch_active_level);
+        clutch_drive.phase = ClutchPhase::engaging;
+        clutch_drive.deadline = now + static_cast<uint32_t>(applied_io.clutch_engage_ms);
+    }
+    if (!BMCU_channel_motor_ready(channel)) {
+        if (lan_ams_busy()) lan_ams_cancel();
+        BMCU_stop_motor(channel);
+        return;
+    }
+    if (clutch_drive.phase != ClutchPhase::engaging ||
+        static_cast<int32_t>(now - clutch_drive.deadline) < 0) return;
+    if (clutch_drive.direction > 0) shared_motor.forward();
+    else shared_motor.backward();
+    if (!BMCU_channel_motor_ready(channel)) {
+        if (lan_ams_busy()) lan_ams_cancel();
+        BMCU_stop_motor(channel);
+        return;
+    }
+    auto &motor = channel_state[channel].motor;
+    motor.pending_start = false;
+    motor.end = millis() + motor.duration;
+    clutch_drive.phase = ClutchPhase::running;
+    LOG_MAIN("[motor] 通道 %d 离合已吸合，共享电机开始%s", channel + 1,
+             motor_direction_name(clutch_drive.direction));
+}
 
 /**
  * 登记最新接线的应用请求
@@ -250,15 +372,24 @@ void BMCU_apply_io_config() {
 
 /**
  * 在主循环应用通道与五通总微动接线
- * 先释放所有变更输入和通道，再按接线切换控制台并绑定新引脚；未变化通道保持运行，总微动改线或切换压下电平时重新建立输入基线
+ * 先释放所有变更输入和通道，再按接线切换控制台并绑定新引脚；离合模式、共享接线或离合接线变化时停止全部通道并清理排队，其余未变化通道保持运行
+ * 总微动改线或切换压下电平时重新建立输入基线；离合新接线先保持全部断开，等待释放稳定期后才允许吸合
  */
 static void apply_io_config() {
-    // 上一次已应用到硬件的引脚配置，用与 IO_CONFIG 比较找出变更通道
-    static IoConfig applied_io = {};
-    // 上一次已应用的启用通道数，用于识别通道增减
-    static int applied_channels = 0;
     static int applied_switch_active_level = -1;
     const int channels = active_channel_count();
+    const bool clutch_mode_changed = applied_io.clutch_enabled != IO_CONFIG.clutch_enabled;
+    bool clutch_changed = !applied_channels || clutch_mode_changed;
+    if (applied_io.clutch_enabled || IO_CONFIG.clutch_enabled) {
+        clutch_changed = clutch_changed || applied_channels != channels ||
+                         applied_io.shared_motor[0] != IO_CONFIG.shared_motor[0] ||
+                         applied_io.shared_motor[1] != IO_CONFIG.shared_motor[1] ||
+                         applied_io.clutch_active_level != IO_CONFIG.clutch_active_level ||
+                         applied_io.clutch_engage_ms != IO_CONFIG.clutch_engage_ms ||
+                         applied_io.clutch_release_ms != IO_CONFIG.clutch_release_ms;
+        for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; ++i)
+            if (applied_io.clutch[i] != IO_CONFIG.clutch[i]) clutch_changed = true;
+    }
     const bool switch_changed = !applied_channels || applied_io.switch_pin != IO_CONFIG.switch_pin;
     if (switch_changed) {
         if (applied_channels && applied_io.switch_pin != PIN_NONE)
@@ -269,11 +400,16 @@ static void apply_io_config() {
         total_switch_triggered = false;
     }
     bool changed[IO_CONFIG_MAX_CHANNELS] = {};
+    if (clutch_changed) {
+        shared_motor.stop();
+        if (applied_io.clutch_enabled) release_all_clutches();
+    }
     // 先释放所有变更/停用通道，再绑定新引脚，避免引脚交换时旧通道拉低新输出
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
-        changed[i] = (i < applied_channels) != (i < channels) ||
-                     (i < channels && (applied_io.motor[i][0] != IO_CONFIG.motor[i][0] ||
-                                       applied_io.motor[i][1] != IO_CONFIG.motor[i][1] ||
+        changed[i] = clutch_changed || (i < applied_channels) != (i < channels) ||
+                     (i < channels && ((!IO_CONFIG.clutch_enabled &&
+                                        (applied_io.motor[i][0] != IO_CONFIG.motor[i][0] ||
+                                         applied_io.motor[i][1] != IO_CONFIG.motor[i][1])) ||
                                        applied_io.microswitch[i] != IO_CONFIG.microswitch[i]));
         if (!changed[i]) continue;
         BMCU_stop_motor(i);
@@ -285,10 +421,19 @@ static void apply_io_config() {
         ch.msw_previous = ch.msw_raw = -1;
         ch.msw_raw_time = 0;
     }
+    if (clutch_changed) shared_motor.setPins(PIN_NONE, PIN_NONE);
     hal_console_begin(); // 旧通道已释放，新通道接管引脚前完成控制台切换
     for (int i = 0; i < channels; i++) {
         if (!changed[i]) continue;
-        motors[i].setPins(IO_CONFIG.motor[i][0], IO_CONFIG.motor[i][1]);
+        if (IO_CONFIG.clutch_enabled) {
+            const int inactive_level = IO_CONFIG.clutch_active_level == HIGH ? LOW : HIGH;
+            PCF8575_set_idle_level(IO_CONFIG.clutch[i], inactive_level);
+            digitalWrite_PCF8575(IO_CONFIG.clutch[i], inactive_level);
+            pinMode_PCF8575(IO_CONFIG.clutch[i], OUTPUT);
+            digitalWrite_PCF8575(IO_CONFIG.clutch[i], inactive_level);
+        } else {
+            motors[i].setPins(IO_CONFIG.motor[i][0], IO_CONFIG.motor[i][1]);
+        }
         const int pin = IO_CONFIG.microswitch[i];
         if (pin != PIN_NONE)
             pinMode_PCF8575(pin, IS_PCF8575_VIRTUAL_PIN(pin) ? INPUT : INPUT_PULLUP);
@@ -298,6 +443,14 @@ static void apply_io_config() {
                        IS_PCF8575_VIRTUAL_PIN(IO_CONFIG.switch_pin) ? INPUT : INPUT_PULLUP);
     applied_io = IO_CONFIG;
     applied_channels = channels;
+    if (clutch_changed) {
+        clutch_drive = {};
+        if (IO_CONFIG.clutch_enabled) {
+            shared_motor.setPins(IO_CONFIG.shared_motor[0], IO_CONFIG.shared_motor[1]);
+            clutch_drive.phase = ClutchPhase::releasing;
+            clutch_drive.deadline = millis() + static_cast<uint32_t>(IO_CONFIG.clutch_release_ms);
+        }
+    }
     applied_switch_active_level = TOTAL_SWITCH_ACTIVE_LEVEL;
     io_apply_pending = false;
 }
@@ -358,12 +511,13 @@ void BMCU_apply_channel_modes() {
 /**
  * 判断当前是否允许维护操作
  * @return true 表示可以安全修改配置或升级
- * 要求没有电机排队或运行、所有通道处于停止且打印机状态为 waiting；局域网换料等待确认时也禁止维护
+ * 要求没有电机排队或运行、离合释放稳定期已结束、所有通道处于停止且打印机状态为 waiting；局域网换料等待确认时也禁止维护
  */
 bool BMCU_can_maintain() {
     if (lan_ams_busy()) return false;
     // 手动维护不再因为打印机总线近期有通信而被拒绝，只检查本地运动状态
     if (BMCU_running_count() || motor_queued) return false;
+    if (applied_io.clutch_enabled && clutch_drive.phase != ClutchPhase::idle) return false;
     for (int i = 0; i < active_channel_count(); i++) {
         if (!motors[i].getStopState() || get_filament_motion(i) != waiting) return false;
     }
@@ -372,13 +526,22 @@ bool BMCU_can_maintain() {
 
 /**
  * 统计正在运行的电机数量
- * @return 当前方向非零的通道数
- * 用于限制同时运行的电机数量
+ * @return 当前方向非零的通道数，包含等待离合稳定的预约动作
+ * 用于限制同时运行的电机数量，离合释放和吸合阶段同样独占运行名额
  */
 int BMCU_running_count() {
     int count = 0;
     for (const auto &ch: channel_state) count += ch.motor.direction != 0;
     return count;
+}
+
+/**
+ * 获取当前驱动模式的有效并发上限
+ * @return 离合模式固定为 1，普通模式使用已保存的电机并发上限
+ * 保留普通模式的用户设置，模式切换后可恢复原上限
+ */
+int BMCU_motor_limit() {
+    return IO_CONFIG.clutch_enabled ? 1 : MOTOR_LIMIT;
 }
 
 /**
@@ -395,7 +558,7 @@ bool BMCU_printer_bus_fault() {
  * 读取通道电机完整状态
  * @param motorNum 通道编号
  * @return 包含方向、来源、剩余时间及排队位置、方向和来源的 MotorStatus
- * 越界通道返回默认空闲状态
+ * 越界通道返回默认空闲状态；等待离合稳定时保留目标方向和完整动作时长，防止上层把尚未启动的限时动作视为完成
  */
 MotorStatus BMCU_motor_status(const int motorNum) {
     if (!is_active_channel(motorNum)) return {};
@@ -405,6 +568,8 @@ MotorStatus BMCU_motor_status(const int motorNum) {
     if (m.direction) {
         if (!m.timed) {
             remaining_ms = -1;
+        } else if (m.pending_start) {
+            remaining_ms = static_cast<int32_t>(m.duration);
         } else {
             const auto left = static_cast<int32_t>(m.end - millis());
             remaining_ms = left > 0 ? left : 0;
@@ -543,9 +708,9 @@ bool BMCU_manual_pulse(const int motorNum, const int cmd, const uint32_t duratio
  * @param source 动作来源
  * @param duration_ms 限时动作时长，0 表示不自动停止
  * @return true 表示命令已执行或已排队
- * 打印机可接管本通道；同方向不重复驱动，反方向直接切换，同来源重复命令不续期
+ * 打印机可接管本通道；同方向不重复驱动，同来源重复命令不续期；普通电机直接换向，离合模式先停车、释放并重新吸合后换向
  * 并发名额不足时通道和五通微动辅助均拒绝，其他来源按通道合并排队并在启动后计时；故障总线不能启动打印机任务，局域网任务仅允许当前会话通道
- * 网页停止后的打印机进料在恢复条件满足前拒绝启动或排队，手动进退料不受此限制
+ * 网页停止后的打印机进料在恢复条件满足前拒绝启动或排队，手动进退料不受此限制；离合稳定期独占共享电机，限时动作从实际转动后计时
  */
 bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const uint32_t duration_ms) {
     if (!valid_channel(motorNum) || cmd < -1 || cmd > 1) return false;
@@ -556,7 +721,8 @@ bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const
         const int old_direction = m.direction;
         const MotorSource old_source = m.source;
         const bool was_active = old_direction != 0 || !motors[motorNum].getStopState();
-        motors[motorNum].stop();
+        if (applied_io.clutch_enabled) stop_clutch_drive(motorNum);
+        else motors[motorNum].stop();
         m = {};
         if (was_active) {
             LOG_MAIN("[motor] 通道 %d 停止，原来源=%s，原方向=%s", motorNum + 1,
@@ -576,7 +742,7 @@ bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const
     const int pos = queue_position(motorNum);
     if (source != MOTOR_PRINTER &&
         ((m.direction && m.source != source) || (pos && motor_queue[pos - 1].source != source))) return false;
-    if (!m.direction && (BMCU_running_count() >= MOTOR_LIMIT || (motor_queued && pos != 1))) {
+    if (!m.direction && (BMCU_running_count() >= BMCU_motor_limit() || (motor_queued && pos != 1))) {
         if (source == MOTOR_AUTOLOAD || source == MOTOR_TOTAL_SWITCH) return false;
         return queue_motor_job(motorNum, cmd, source, duration_ms);
     }
@@ -587,10 +753,17 @@ bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const
     m.direction = cmd;
     m.source = source;
     m.end = millis() + duration_ms;
+    m.duration = duration_ms;
     m.timed = duration_ms > 0;
     if (!same_direction) {
-        if (cmd > 0) motors[motorNum].forward();
-        else motors[motorNum].backward();
+        if (applied_io.clutch_enabled) {
+            m.pending_start = true;
+            request_clutch_drive(motorNum, cmd);
+        } else {
+            m.pending_start = false;
+            if (cmd > 0) motors[motorNum].forward();
+            else motors[motorNum].backward();
+        }
     }
     if (duration_ms > 0) {
         LOG_MAIN("[motor] 通道 %d %s启动，来源=%s，定时 %lu ms", motorNum + 1,
@@ -607,17 +780,22 @@ bool motorCmd(const int motorNum, const int cmd, const MotorSource source, const
  * 同步正在运行的打印机退料超时
  * @param motorNum 通道编号
  * @param previous_timeout_ms 修改前本次动作使用的超时时间（毫秒）
- * 仅更新打印机来源的限时动作，并按已经运行的时间重算剩余时间；其他来源不受影响
+ * 仅更新打印机来源的限时动作，并按已经运行的时间重算剩余时间；等待离合稳定的动作尚未计时，直接更新完整时长，其他来源不受影响
  */
 void BMCU_apply_pullback_timeout(const int motorNum, const uint32_t previous_timeout_ms) {
     if (!is_active_channel(motorNum)) return;
     auto &m = channel_state[motorNum].motor;
     if (!m.direction || !m.timed || m.source != MOTOR_PRINTER) return;
 
-    const uint32_t now = millis();
-    const uint32_t left = m.end > now ? m.end - now : 0;
-    const uint32_t elapsed = previous_timeout_ms > left ? previous_timeout_ms - left : 0;
     const uint32_t new_timeout_ms = static_cast<uint32_t>(PULLBACK_TIMEOUT[motorNum]) * 1000u;
+    if (m.pending_start) {
+        m.duration = new_timeout_ms;
+        return;
+    }
+    const uint32_t now = millis();
+    const int32_t delta = static_cast<int32_t>(m.end - now);
+    const uint32_t left = delta > 0 ? static_cast<uint32_t>(delta) : 0;
+    const uint32_t elapsed = previous_timeout_ms > left ? previous_timeout_ms - left : 0;
     const uint32_t remaining = new_timeout_ms > elapsed ? new_timeout_ms - elapsed : 0;
     m.end = now + remaining;
     LOG_MAIN("[motor] 通道 %d 退料超时更新为 %d 秒，当前动作剩余 %lu ms", motorNum + 1,
@@ -664,7 +842,7 @@ static void motor_tick() {
                 motorCmd(i, 0);
             }
         }
-        if (!m.direction || !m.timed) continue;
+        if (!m.direction || !m.timed || m.pending_start) continue;
         if (static_cast<int32_t>(now - m.end) < 0) continue;
         if (m.source == MOTOR_PRINTER) {
             // 打印机动作已按 Web 设定的时长完整跑完，属于正常结束，不再等待打印机 idle
@@ -958,7 +1136,7 @@ void check_microswitch_status() {
         const int8_t prev = ch.msw_previous;
         ch.msw_previous = raw;
         if (prev == 0 && raw == 1 && AUTO_LOAD_MS > 0 && ch.motor.source != MOTOR_AUTOLOAD &&
-            !autoload_blocked(i) && motors[i].getStopState()) {
+            !autoload_blocked(i) && !ch.motor.direction) {
             if (motorCmd(i, 1, MOTOR_AUTOLOAD, AUTO_LOAD_MS))
                 LOG_MAIN("[autoload] 通道 %d 检测到有料，限时进料 %dms", i + 1, AUTO_LOAD_MS);
             else
@@ -996,7 +1174,7 @@ void BMCU_init() {
 /**
  * BMCU主运行逻辑
  * 先应用待处理接线并探测扩展芯片，持续采样五通状态，再处理停止请求、打印机目标和共用队列；有线总线故障取消打印机运行及排队，保留本地手动任务
- * 双空接线时由局域网会话提供换料目标，跳过有线状态机，仍使用共用定时和队列保护
+ * 双空接线时由局域网会话提供换料目标，跳过有线状态机，仍使用共用定时和队列保护；所有动作提交完成后推进非阻塞离合切换
  */
 void BMCU_run() {
     if (io_apply_pending) apply_io_config();
@@ -1007,6 +1185,7 @@ void BMCU_run() {
         lan_ams_run();
         switchInterrupt();
         run_motor_queue();
+        run_clutch_drive();
         return;
     }
     const int bus_stu = BambuBus_run();
@@ -1067,16 +1246,18 @@ void BMCU_run() {
         if (state == need_send_out) {
             d = -d; // 进料时长度减少
         }
-        if (ch.motor.source == MOTOR_PRINTER && ch.motor.direction) add_filament_meters(now_f, d);
+        if (ch.motor.source == MOTOR_PRINTER && ch.motor.direction && !ch.motor.pending_start)
+            add_filament_meters(now_f, d);
     }
 
     BMCU_motion(); // 处理电机运动
     run_motor_queue();
+    run_clutch_drive();
 }
 
 /**
  * 电机运动逻辑
- * 按打印机目标方向接管或切换电机；重复请求保持运行，达到并发上限时排队
+ * 按打印机目标方向接管或切换电机；重复请求保持运行，达到当前驱动模式的有效并发上限时排队；离合稳定中的预约动作同样参与停止和接管
  * 网页停止后的重复进料跳过整个进料分支，保持停止且不接管或中断手动点动
  * 明确的 07/00 停止供料跳过普通进料结束延迟；定时退料仅可被在线通道的新进料请求切换，待机时保留手动、通道和五通微动的限时动作
  */
@@ -1092,7 +1273,7 @@ void BMCU_motion() {
         for (int i = 0; i < active_channel_count(); i++) {
             const auto &m = channel_state[i].motor;
             if (m.source != MOTOR_PRINTER || m.timed) continue;
-            if (!motors[i].getStopState()) motorCmd(i, 0);
+            if (channel_state[i].motor.direction || !motors[i].getStopState()) motorCmd(i, 0);
         }
         return;
     }

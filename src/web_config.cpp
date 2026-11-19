@@ -1338,7 +1338,8 @@ static String status_json() {
     const uint32_t packet_age = BambuBus_last_valid_packet_age_ms();
     j += ",\"bus_last_valid_age_ms\":" +
          String(packet_age == UINT32_MAX ? -1 : static_cast<int32_t>(packet_age));
-    j += ",\"motor_limit\":" + String(MOTOR_LIMIT);
+    j += ",\"motor_limit\":" + String(BMCU_motor_limit());
+    j += ",\"clutch_enabled\":" + String(IO_CONFIG.clutch_enabled ? "true" : "false");
     j += ",\"motor_running\":" + String(BMCU_running_count());
     j += ",\"total_switch\":{\"pin\":" + String(IO_CONFIG.switch_pin) +
          ",\"active_level\":" + String(TOTAL_SWITCH_ACTIVE_LEVEL) +
@@ -1983,7 +1984,7 @@ static void websocket_init() {
 
 /**
  * 处理设置读取请求
- * 输出时长、五通压下电平、AMS 身份、通道模式、霍尔检测、局域网参数及接线和可选引脚；返回已保存的访问码供设置页直接显示
+ * 输出时长、五通压下电平、AMS 身份、通道模式、霍尔检测、局域网参数、两种电机接线及可选引脚；返回已保存的访问码供设置页直接显示
  */
 static void handle_settings_get() {
     String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
@@ -1993,6 +1994,7 @@ static void handle_settings_get() {
                ",\"total_switch_active_level\":" + String(TOTAL_SWITCH_ACTIVE_LEVEL) +
                ",\"total_switch_feed_ms\":" + String(TOTAL_SWITCH_FEED_MS) +
                ",\"motor_limit\":" + String(MOTOR_LIMIT) +
+               ",\"effective_motor_limit\":" + String(BMCU_motor_limit()) +
                ",\"channels\":" + String(BMCU_motor_count()) +
                ",\"maxams\":" + String(BMCU_max_ams_count()) + ",\"ams_identity\":[";
     for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
@@ -2026,6 +2028,15 @@ static void handle_settings_get() {
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
         if (i) j += ',';
         j += "[" + String(IO_CONFIG.motor[i][0]) + "," + String(IO_CONFIG.motor[i][1]) + "]";
+    }
+    j += "],\"clutch_enabled\":" + String(IO_CONFIG.clutch_enabled) +
+         ",\"shared_motor\":[" + String(IO_CONFIG.shared_motor[0]) + "," + String(IO_CONFIG.shared_motor[1]) +
+         "],\"clutch_active_level\":" + String(IO_CONFIG.clutch_active_level) +
+         ",\"clutch_engage_ms\":" + String(IO_CONFIG.clutch_engage_ms) +
+         ",\"clutch_release_ms\":" + String(IO_CONFIG.clutch_release_ms) + ",\"clutch\":[";
+    for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
+        if (i) j += ',';
+        j += String(IO_CONFIG.clutch[i]);
     }
     j += "],\"microswitch\":[";
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
@@ -2085,6 +2096,21 @@ static bool parse_io_pin(const String &key, int &value, bool allow_none) {
     if (end == raw.c_str() || *end || parsed < 0 || parsed > 255) return false;
     value = static_cast<int>(parsed);
     return io_config_pin_available(value, allow_none);
+}
+
+/**
+ * 解析候选电机接线，保留未启用模式的引脚草稿
+ * @param key 参数名称
+ * @param value 输出引脚编号
+ * @param active 是否属于当前候选模式的生效接线
+ * @return true 表示整数格式合法且生效引脚可用
+ * 未启用模式只校验存储范围，切换模式时再检查 GPIO 能力和当前总线占用
+ */
+static bool parse_motor_io_pin(const String &key, int &value, bool active) {
+    if (active) return parse_io_pin(key, value, true);
+    if (!server.hasArg(key) || !valid_number(key, 0, 255)) return false;
+    value = server.arg(key).toInt();
+    return true;
 }
 
 // I2C 总线配置：SDA/SCL 同时有效才启用，同时留空表示关闭；保存后重启生效
@@ -2267,8 +2293,8 @@ static void handle_lan_cancel() {
 
 /**
  * 处理常规设置保存
- * 身份字段必须指定 AMS 编号；校验时长、五通压下电平、数量、并发、身份及通道接线，保存失败时回滚完整快照
- * 霍尔字段出现时须完整提交，未出现时保留原值；接线和霍尔采样由主循环应用，回调不操作硬件
+ * 身份字段必须指定 AMS 编号；校验时长、五通压下电平、数量、并发、身份及生效模式接线，保存失败时回滚完整快照
+ * 拒绝未知或重复字段；接线字段出现时须完整提交生效模式的驱动、微动和霍尔字段，保留另一模式接线，配置由主循环应用
  */
 static void handle_settings_save() {
     if (server.hasArg("rs485")) {
@@ -2291,12 +2317,32 @@ static void handle_settings_save() {
     const int candidate_ams = ams_valid && server.hasArg("ams") ? server.arg("ams").toInt() : AMS_COUNT;
     const int candidate_channels = candidate_ams * 4;
     const bool count_changed = candidate_ams != AMS_COUNT;
+    for (int arg = 0; arg < server.args(); ++arg) {
+        const String key = server.argName(arg);
+        bool known = key == "ams" || key == "ams_index" || key == "serial" || key == "ams_version" ||
+                     key == "manual_ms" || key == "auto_ms" || key == "feed_stop_delay_ms" ||
+                     key == "total_switch_active_level" || key == "total_switch_feed_ms" ||
+                     key == "motor_limit" || key == "buslog" || key == "otaurl" || key == "otanotify" ||
+                     key.startsWith("io_") || key.startsWith("io-");
+        for (int ch = 0; ch < candidate_channels; ++ch)
+            if (key == "to" + String(ch) || key == "cm" + String(ch)) known = true;
+        for (int other = 0; other < arg; ++other)
+            if (server.argName(other) == key) known = false;
+        if (!known) {
+            server.send(400, "application/json", "{\"ok\":false,\"msg\":\"设置字段未知、重复或通道已停用，请刷新页面后重试\"}");
+            return;
+        }
+    }
     bool valid = ams_valid &&
                  valid_number("manual_ms", 1, MAX_PULSE_MS - 1) &&
                  valid_number("auto_ms", 0, MAX_PULSE_MS - 1) &&
                  valid_number("feed_stop_delay_ms", 0, MAX_PULSE_MS - 1) &&
                  valid_number("total_switch_active_level", LOW, HIGH) &&
                  valid_number("total_switch_feed_ms", 1, MAX_PULSE_MS - 1) &&
+                 valid_number("io_clutch_enabled", 0, 1) &&
+                 valid_number("io_clutch_active_level", LOW, HIGH) &&
+                 valid_number("io_clutch_engage_ms", 0, MAX_CLUTCH_DELAY_MS) &&
+                 valid_number("io_clutch_release_ms", 0, MAX_CLUTCH_DELAY_MS) &&
                  valid_number("motor_limit", 1, candidate_channels);
     bool serial_valid = true;
     bool version_valid = true;
@@ -2311,23 +2357,42 @@ static void handle_settings_save() {
         valid = valid && valid_number("to" + String(i), 3, 30) && valid_number("cm" + String(i), 0, 2);
 
     bool io_requested = false;
-    bool hall_requested = false;
     bool io_fields_valid = true;
+    IoConfig candidate_io = IO_CONFIG;
+    if (valid) {
+        if (server.hasArg("io_clutch_enabled")) candidate_io.clutch_enabled = server.arg("io_clutch_enabled").toInt();
+        if (server.hasArg("io_clutch_active_level")) candidate_io.clutch_active_level = server.arg("io_clutch_active_level").toInt();
+        if (server.hasArg("io_clutch_engage_ms")) candidate_io.clutch_engage_ms = server.arg("io_clutch_engage_ms").toInt();
+        if (server.hasArg("io_clutch_release_ms")) candidate_io.clutch_release_ms = server.arg("io_clutch_release_ms").toInt();
+    }
     // 先识别完整请求，不能在逐通道解析过程中才发现 IO 字段
     // 同时拒绝旧页面的 io-* 拼写和未知字段，避免忽略修改却返回保存成功
     for (int arg = 0; arg < server.args(); arg++) {
         const String key = server.argName(arg);
         if (!key.startsWith("io_") && !key.startsWith("io-")) continue;
         io_requested = true;
-        bool known = key == "io_switch";
+        bool known = key == "io_switch" || key == "io_clutch_enabled" || key == "io_clutch_active_level" ||
+                     key == "io_clutch_engage_ms" || key == "io_clutch_release_ms" ||
+                     key == "io_shared_mf" || key == "io_shared_mb";
         for (int ch = 0; ch < candidate_channels; ch++) {
-            if (key == "io_mf" + String(ch) || key == "io_mb" + String(ch) ||
-                key == "io_sw" + String(ch)) known = true;
-            if (key == "io_h" + String(ch)) { known = true; hall_requested = true; }
+            if (key == "io_sw" + String(ch) || key == "io_h" + String(ch) ||
+                key == "io_clutch" + String(ch) || key == "io_mf" + String(ch) || key == "io_mb" + String(ch)) known = true;
         }
         if (!known) io_fields_valid = false;
     }
-    IoConfig candidate_io = IO_CONFIG;
+    if (io_requested) {
+        for (const char *key : {"io_switch", "io_clutch_enabled", "io_clutch_active_level",
+                                "io_clutch_engage_ms", "io_clutch_release_ms"})
+            if (!server.hasArg(key)) io_fields_valid = false;
+        for (int direction = 0; direction < 2; ++direction) {
+            const char *key = direction ? "io_shared_mb" : "io_shared_mf";
+            int pin = PIN_NONE;
+            if (server.hasArg(key) && parse_motor_io_pin(key, pin, candidate_io.clutch_enabled))
+                candidate_io.shared_motor[direction] = pin;
+            else if (server.hasArg(key)) valid = false;
+            if (candidate_io.clutch_enabled && !server.hasArg(key)) io_fields_valid = false;
+        }
+    }
     if (server.hasArg("io_switch")) {
         int pin = PIN_NONE;
         if (parse_io_pin("io_switch", pin, true)) candidate_io.switch_pin = pin;
@@ -2338,21 +2403,24 @@ static void handle_settings_save() {
         const String k_reverse = "io_mb" + String(i);
         const String k_switch = "io_sw" + String(i);
         const String k_hall = "io_h" + String(i);
+        const String k_clutch = "io_clutch" + String(i);
         int pin = 0;
         // 电机引脚也允许选「无」：切换 PCF8575 后被清空的通道可以先留空，
         // 该通道只是暂时不能进退料，接好线再来补
-        if (server.hasArg(k_forward) && parse_io_pin(k_forward, pin, true)) candidate_io.motor[i][0] = pin;
+        if (server.hasArg(k_forward) && parse_motor_io_pin(k_forward, pin, !candidate_io.clutch_enabled)) candidate_io.motor[i][0] = pin;
         else if (server.hasArg(k_forward)) valid = false;
-        if (server.hasArg(k_reverse) && parse_io_pin(k_reverse, pin, true)) candidate_io.motor[i][1] = pin;
+        if (server.hasArg(k_reverse) && parse_motor_io_pin(k_reverse, pin, !candidate_io.clutch_enabled)) candidate_io.motor[i][1] = pin;
         else if (server.hasArg(k_reverse)) valid = false;
+        if (server.hasArg(k_clutch) && parse_motor_io_pin(k_clutch, pin, candidate_io.clutch_enabled)) candidate_io.clutch[i] = pin;
+        else if (server.hasArg(k_clutch)) valid = false;
         if (server.hasArg(k_switch) && parse_io_pin(k_switch, pin, true)) candidate_io.microswitch[i] = pin;
         else if (server.hasArg(k_switch)) valid = false;
         if (server.hasArg(k_hall) && parse_io_pin(k_hall, pin, true) &&
             io_config_hall_pin_available(pin, true)) candidate_io.hall[i] = pin;
         else if (server.hasArg(k_hall)) valid = false;
-        if (hall_requested && !server.hasArg(k_hall)) io_fields_valid = false;
-        if (io_requested && (!server.hasArg(k_forward) || !server.hasArg(k_reverse) || !server.hasArg(k_switch)))
-            io_fields_valid = false;
+        if (io_requested && (!server.hasArg(k_switch) || !server.hasArg(k_hall) ||
+            (candidate_io.clutch_enabled ? !server.hasArg(k_clutch) :
+             !server.hasArg(k_forward) || !server.hasArg(k_reverse)))) io_fields_valid = false;
     }
     if (!io_fields_valid) {
         server.send(400, "application/json",
@@ -2375,7 +2443,7 @@ static void handle_settings_save() {
         server.send(409, "application/json", "{\"ok\":false,\"msg\":\"请先停止所有电机运动和当前通道动作\"}");
         return;
     }
-    const int candidate_limit = server.hasArg("motor_limit")
+    const int candidate_limit = candidate_io.clutch_enabled ? 1 : server.hasArg("motor_limit")
         ? server.arg("motor_limit").toInt() : min(MOTOR_LIMIT, candidate_channels);
     int remaining_running = 0;
     for (int ch = 0; ch < candidate_channels; ch++)
@@ -2447,6 +2515,7 @@ static void handle_settings_save() {
  * 处理手动电机控制请求
  * 方向为 0 时登记停止请求；否则校验通道和时长后提交点动，全部由主循环驱动电机
  * 停止保留打印机协议动作和回复，重复进料不重启电机；收到有效非进料动作及新的进料请求后才恢复，手动点动仍可用
+ * 驱动未就绪时按当前模式区分共享电机、通道离合接线缺失和所属扩展芯片离线
  */
 static void handle_manual_motor() {
     if (!server.hasArg("motor") || !server.hasArg("dir") ||
@@ -2467,8 +2536,24 @@ static void handle_manual_motor() {
     }
     int duration = server.hasArg("duration") ? server.arg("duration").toInt() : MANUAL_PULSE_MS;
     if (!BMCU_channel_motor_ready(motor)) {
-        server.send(409, "application/json",
-                    "{\"ok\":false,\"msg\":\"该通道的电机引脚是「无」，请先到「电机与微动引脚」里配置\"}");
+        const bool clutch = IO_CONFIG.clutch_enabled != 0;
+        const int32_t *pins = clutch ? IO_CONFIG.shared_motor : IO_CONFIG.motor[motor];
+        String error;
+        if (pins[0] == PIN_NONE || pins[1] == PIN_NONE)
+            error = clutch ? "共享电机的进料或退料 IO 未配置，请先到电机引脚设置中补全" :
+                             "该通道的进料或退料 IO 未配置，请先到电机引脚设置中补全";
+        else if (clutch && IO_CONFIG.clutch[motor] == PIN_NONE)
+            error = "该通道的离合 IO 未配置，请先到电机引脚设置中补全";
+        for (int direction = 0; !error.length() && direction < 2; ++direction)
+            if (IS_PCF8575_VIRTUAL_PIN(pins[direction]) && !PCF8575_pin_is_online(pins[direction]))
+                error = String(clutch ? "共享电机" : "该通道电机") + "的 " + io_config_pin_label(pins[direction]) +
+                        " 所属 PCF8575 已离线，请检查扩展模块接线和供电";
+        for (int channel = 0; clutch && !error.length() && channel < active_channel_count(); ++channel)
+            if (IS_PCF8575_VIRTUAL_PIN(IO_CONFIG.clutch[channel]) && !PCF8575_pin_is_online(IO_CONFIG.clutch[channel]))
+                error = "通道 " + String(channel + 1) + " 离合的 " + io_config_pin_label(IO_CONFIG.clutch[channel]) +
+                        " 所属 PCF8575 已离线，无法确认离合释放，请检查扩展模块接线和供电";
+        if (!error.length()) error = "该通道暂不可用，请重新读取设置和设备状态后重试";
+        server.send(409, "application/json", String("{\"ok\":false,\"msg\":\"") + json_escape(error.c_str()) + "\"}");
         return;
     }
     if (!BMCU_manual_pulse(motor, dir, duration)) {

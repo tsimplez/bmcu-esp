@@ -174,6 +174,9 @@
         .channel-io-table td.io-swap-cell{width:auto;align-self:end;padding-bottom:2px}
         .channel-io-table td:last-child{grid-column:3}
         .channel-io-table td[data-label]::before{content:attr(data-label);display:block;margin-bottom:4px;color:var(--dim);font-size:12px}
+        .channel-io-table.clutch-layout tr{grid-template-columns:repeat(2,minmax(0,1fr))}
+        .channel-io-table.clutch-layout td:nth-child(2){grid-column:1/-1}
+        .channel-io-table.clutch-layout td:last-child{grid-column:2}
       }
       .acts{display:flex;align-items:center;justify-content: space-around;gap:6px;min-width:110px}
       .acts button{flex-shrink:0}
@@ -262,6 +265,7 @@
                         <option value="4">4</option>
                     </select>
                 </label>
+                <span id="motor-limit-hint" class="hint" style="margin:0"></span>
                 <label class="row"><span style="color:var(--dim)">微动辅助进料</span>
                     <select id="auto-ms" style="width:104px" onchange="saveField(this,'auto_ms')">
                         <option value="0">关闭</option>
@@ -469,6 +473,22 @@
                     数量联动新增通道或修改接线前请停止电机动作；引脚不能重复带警告的引脚可能影响芯片启动
                 </div>
                 <div class="row" style="margin-top:10px">
+                    <label class="row" for="io-clutch-enabled"><input id="io-clutch-enabled" type="checkbox" style="width:auto" disabled onchange="previewClutchMode()">电磁离合</label>
+                </div>
+                <div id="io-clutch-config" class="hide">
+                    <div class="row" style="margin-top:10px">
+                        <label for="io-shared-mf">共享电机进料 IO</label><span id="io-shared-mf-control"></span>
+                        <label for="io-shared-mb">共享电机退料 IO</label><span id="io-shared-mb-control"></span>
+                    </div>
+                    <div class="row" style="margin-top:10px">
+                        <label for="io-clutch-level">闭合电平</label>
+                        <select id="io-clutch-level" disabled onchange="IO_DIRTY = true; updateIoWarnings()"><option value="1">高电平（HIGH）</option><option value="0">低电平（LOW）</option></select>
+                        <label for="io-clutch-engage-ms">吸合延时（毫秒）</label><input id="io-clutch-engage-ms" type="number" min="0" max="2000" step="1" value="100" style="width:90px" disabled oninput="IO_DIRTY = true; updateIoWarnings()">
+                        <label for="io-clutch-release-ms">释放延时（毫秒）</label><input id="io-clutch-release-ms" type="number" min="0" max="2000" step="1" value="100" style="width:90px" disabled oninput="IO_DIRTY = true; updateIoWarnings()">
+                    </div>
+                    <div class="hint">共享电机通过两个 IO 控制进料和退料，每通道一个 IO 控制离合闭合；一次只驱动一个通道，其余动作排队，停车后释放离合。默认 HIGH 闭合，吸合和释放各等待 100 毫秒；时序请按实际模块调整，范围 0～2000 毫秒</div>
+                </div>
+                <div class="row" style="margin-top:10px">
                     <label for="io-switch">五通总微动</label>
                     <span id="total-switch-state" class="hint" role="status" style="margin:0">状态待确认</span>
                     <span id="io-switch-control">
@@ -504,7 +524,7 @@
                     PCF8575 扩展脚；同时可接的霍尔数量受空闲 ADC 引脚限制。
                 </div>
                 <div class="row" style="margin-top:10px">
-                    <button id="save-io" class="primary" onclick="saveIoConfig()">保存 AMS 数量、引脚与五通参数</button>
+                    <button id="save-io" class="primary" onclick="saveIoConfig()">保存 AMS 数量、电机模式、引脚与五通参数</button>
                     <span id="io-state" class="hint">引脚配置未加载</span>
                 </div>
             </div>
@@ -2261,6 +2281,14 @@
    */
   const renderMotorControls = () => {
     const fresh = statusAt && performance.now() - statusAt < 3000
+    if (fresh && typeof S.clutch_enabled === 'boolean') {
+      const limit = $('motor-limit')
+      if (limit.dataset.saving !== '1') {
+        limit.disabled = S.clutch_enabled
+        limit.value = String(S.motor_limit)
+      }
+      $('motor-limit-hint').textContent = S.clutch_enabled ? '电磁离合模式：一次驱动一个通道' : ''
+    }
     for (let i = 0; i < (S.channels || 0); i++) {
       const m = (S.motors || [])[i] || {}, queued = !!m.queue_position, running = !!m.dir,
               occupied = running || queued
@@ -2769,6 +2797,32 @@
     renderLanStatus()
   }
   /**
+   * 收集已生效模式的电机、离合、微动和霍尔接线用途
+   * @param {Object} d 包含通道数量和完整 IO 配置的设置响应
+   * @return {Object<number,string[]>} 引脚编号到用途名称的映射
+   * 普通模式使用通道双 IO，离合模式使用共享双 IO 和通道单 IO，忽略未配置的引脚
+   */
+  const appliedIoUsage = (d) => {
+    const uses = {}, io = d.io || {}, clutch = Number(io.clutch_enabled) === 1
+    /**
+     * 追加一个已配置引脚的用途
+     * @param {number|undefined} pin 引脚编号
+     * @param {string} label 用途名称
+     */
+    const add = (pin, label) => {
+      if (pin != null && Number(pin) !== 255) (uses[pin] ??= []).push(label)
+    }
+    if (clutch) (io.shared_motor || []).forEach((pin, role) => add(pin, '共享电机' + ['进料', '退料'][role]))
+    for (let ch = 0; ch < d.channels; ch++) {
+      if (clutch) add(io.clutch?.[ch], '通道' + (ch + 1) + '离合')
+      else (io.motor?.[ch] || []).forEach((pin, role) => add(pin, '通道' + (ch + 1) + ['进料', '退料'][role]))
+      add(io.microswitch?.[ch], '通道' + (ch + 1) + '微动')
+      add(io.hall?.[ch], '通道' + (ch + 1) + '霍尔')
+    }
+    add(io.switch_pin, '五通总微动')
+    return uses
+  }
+  /**
    * 渲染 BambuBus 接线配置
    * @param {Object} d /api/settings 返回的完整配置
    * 建立电机、微动、霍尔、总微动和 I2C 占用表，填充接线与局域网配置并明文显示访问码；双空时不占用 DE
@@ -2778,7 +2832,7 @@
     BUS_READY = !!d.bus;
     BUS_SAVING = false;
     BUS_MODE = d.rs485 === 2 ? 2 : 1;
-    BUS_USES = {};
+    BUS_USES = appliedIoUsage(d);
     BUS_APPLIED = {}
     /**
      * 记录一个引脚用途
@@ -2790,15 +2844,10 @@
     const add = (map, pin, label) => {
       if (pin != null && pin !== 255) (map[pin] ??= []).push(label)
     }
-    for (let ch = 0; ch < d.channels; ch++) {
-      const pins = [...(d.io?.motor[ch] || []), d.io?.microswitch[ch], d.io?.hall?.[ch]]
-      pins.forEach((pin, role) => add(BUS_USES, pin, '通道' + (ch + 1) + ['进料', '退料', '微动', '霍尔'][role]))
-    }
     if (d.pcf?.configured) {
       add(BUS_USES, d.pcf.sda, 'I2C SDA');
       add(BUS_USES, d.pcf.scl, 'I2C SCL')
     }
-    add(BUS_USES, d.io?.switch_pin, '五通总微动')
     for (const key of ['rx', 'tx', 'de']) {
       const sel = $('bus-' + key);
       sel.textContent = '';
@@ -2985,16 +3034,7 @@
     const p = d.pcf || {}
     PCF_DEV_ENABLED = !!p.configured
     PCF_USES = JSON.parse(JSON.stringify(BUS_APPLIED))
-    if (d.io?.switch_pin != null && d.io.switch_pin !== 255)
-      (PCF_USES[d.io.switch_pin] ??= []).push('五通总微动')
-    for (let ch = 0; ch < d.channels; ch++) {
-      const pins = [...(d.io?.motor[ch] || []), d.io?.microswitch[ch], d.io?.hall?.[ch]]
-      pins.forEach((pin, role) => {
-        if (pin == null || pin === 255) return
-        if (!PCF_USES[pin]) PCF_USES[pin] = []
-        PCF_USES[pin].push('通道' + (ch + 1) + ['进料', '退料', '微动', '霍尔'][role])
-      })
-    }
+    for (const [pin, uses] of Object.entries(appliedIoUsage(d))) (PCF_USES[pin] ??= []).push(...uses)
     for (const key of ['sda', 'scl']) {
       const sel = $('pcf-' + key);
       sel.textContent = ''
@@ -3057,6 +3097,10 @@
   let IO_DRAFT = null
   // 草稿是否有未保存修改；有修改时切换标签页不重新加载
   let IO_DIRTY = false;
+  // 当前通道表使用的草稿模式，勾选变化时先采集旧表再重绘
+  let IO_RENDERED_CLUTCH = false
+  // 保存期间锁定接线草稿，避免响应重绘覆盖新修改
+  let IO_SAVING = false
   /**
    * 创建一个引脚选择下拉框
    * @param {string} id 控件 ID
@@ -3096,24 +3140,33 @@
     return sel
   }
   /**
+   * 获取当前模式的通道引脚控件及用途名称
+   * @param {number} channel 从 0 开始的通道编号
+   * @param {boolean} clutch 是否使用离合通道表，默认按当前渲染模式
+   * @return {Array<Array<string>>} 控件 ID 与用途名称列表
+   */
+  const ioChannelFields = (channel, clutch = IO_RENDERED_CLUTCH) => {
+    const label = '通道' + (channel + 1)
+    return [...(clutch ? [['io-clutch' + channel, label + '离合']] :
+            [['io-mf' + channel, label + '进料'], ['io-mb' + channel, label + '退料']]),
+      ['io-sw' + channel, label + '微动'], ['io-h' + channel, label + '霍尔']]
+  }
+  /**
    * 统计当前页面中每个引脚的通道和总微动用途
    * @return {Object<number,string[]>} 引脚编号到用途名称的映射
-   * 扫描进料、退料、通道微动、霍尔和总微动下拉框，为重复引脚提示提供依据
+   * 按当前模式扫描共享电机、离合或独立电机，以及微动、霍尔和总微动，为重复引脚提示提供依据
    */
   const ioUsageMap = () => {
     const uses = {};
-    const sw = $('io-switch')
-    if (sw && sw.value !== '' && sw.value !== '255') uses[+sw.value] = ['五通总微动']
+    const fields = [['io-switch', '五通总微动']]
+    if (IO_RENDERED_CLUTCH) fields.push(['io-shared-mf', '共享电机进料'], ['io-shared-mb', '共享电机退料'])
     for (let i = 0; i < IO_CHANNELS; i++) {
-      const fields = [['io-mf' + i, (i + 1) + '进料'], ['io-mb' + i, (i + 1) + '退料'], ['io-sw' + i, (i + 1) + '微动'], ['io-h' + i, (i + 1) + '霍尔']];
-      for (let k = 0; k < fields.length; k++) {
-        const el = $(fields[k][0]);
-        if (!el) continue
-        const pin = +el.value;
-        if (el.value === '' || pin === 255) continue
-        if (!uses[pin]) uses[pin] = []
-        uses[pin].push(fields[k][1])
-      }
+      fields.push(...ioChannelFields(i))
+    }
+    for (const [id, label] of fields) {
+      const el = $(id)
+      if (!el || el.value === '' || el.value === '255') continue
+      (uses[Number(el.value)] ??= []).push(label)
     }
     return uses
   }
@@ -3122,7 +3175,7 @@
    * 把同一引脚的当前用途追加到选项文本，并同步下拉框警告提示
    */
   const refreshIoOptionLabels = () => {
-    const uses = ioUsageMap(), selects = document.querySelectorAll('#iobody select, #io-switch');
+    const uses = ioUsageMap(), selects = document.querySelectorAll('#iobody select, #io-switch, #io-shared-mf, #io-shared-mb');
     for (let i = 0; i < selects.length; i++) {
       const options = selects[i].options;
       for (let k = 0; k < options.length; k++) {
@@ -3156,50 +3209,45 @@
   }
   /**
    * 校验并显示通道引脚和五通参数问题
-   * 检查电机、微动、霍尔与总微动的空值和重复引脚，校验五通电平和时长，提示电机未配置的通道
+   * 按当前模式检查电机、离合、微动、霍尔与总微动的空值和重复引脚，校验五通及离合时序，提示无法驱动的通道
    */
   const updateIoWarnings = () => {
-    let seen = {}, duplicate = false, missing = false;
-    const unset = [];
-    const sw = $('io-switch')
-    if (sw) {
-      missing = sw.value === '';
-      sw.classList.toggle('bad', missing)
-      if (!missing && sw.value !== '255') seen[+sw.value] = true
-    }
+    let duplicate = false, missing = false
+    const unset = [], fields = [['io-switch', '五通总微动']], uses = ioUsageMap()
+    if (IO_RENDERED_CLUTCH) fields.push(['io-shared-mf', '共享电机进料'], ['io-shared-mb', '共享电机退料'])
+    const sharedUnset = IO_RENDERED_CLUTCH && ['io-shared-mf', 'io-shared-mb'].some(id => $(id)?.value === '255')
     for (let i = 0; i < IO_CHANNELS; i++) {
-      const f = $('io-mf' + i), b = $('io-mb' + i);
-      if (f && b && f.value === '255' && b.value === '255') unset.push(i + 1)
-      for (const key of ['io-mf' + i, 'io-mb' + i, 'io-sw' + i, 'io-h' + i]) {
-        const el = $(key);
-        if (!el) continue
-        const pin = +el.value;
-        el.classList.remove('bad')
-        if (el.value === '') {
-          el.classList.add('bad');
-          missing = true;
-          continue
-        }
-        if (pin === 255) continue
-        if (seen[pin]) {
-          el.classList.add('bad');
-          duplicate = true
-        }
-        seen[pin] = true
-      }
+      fields.push(...ioChannelFields(i))
+      if (IO_RENDERED_CLUTCH ? sharedUnset || $('io-clutch' + i)?.value === '255' :
+          ['io-mf' + i, 'io-mb' + i].some(id => $(id)?.value === '255')) unset.push(i + 1)
+    }
+    for (const [id] of fields) {
+      const el = $(id)
+      if (!el) continue
+      const empty = el.value === '', repeated = el.value !== '255' && (uses[Number(el.value)]?.length || 0) > 1
+      el.classList.toggle('bad', empty || repeated)
+      missing ||= empty
+      duplicate ||= repeated
     }
     refreshIoOptionLabels()
     const level = $('total-switch-level'), feed = $('total-switch-feed-ms')
     const invalidSwitch = !['0', '1'].includes(level.value) || !Number.isInteger(Number(feed.value)) ||
-            Number(feed.value) < 1 || Number(feed.value) > 29999
+            feed.value === '' || Number(feed.value) < 1 || Number(feed.value) > 29999
     feed.classList.toggle('bad', invalidSwitch)
+    const invalidClutch = !['0', '1'].includes($('io-clutch-level').value) ||
+            ['io-clutch-engage-ms', 'io-clutch-release-ms'].some(id => {
+              const el = $(id), invalid = el.value === '' || !Number.isInteger(Number(el.value)) || Number(el.value) < 0 || Number(el.value) > 2000
+              el.classList.toggle('bad', invalid)
+              return invalid
+            })
     renderTotalSwitchStatus()
     $('io-state').textContent = invalidSwitch ? '请选择压下电平，进料时长须为 1～29999 毫秒的整数' :
-            missing ? '请为所有启用通道选择进料和退料引脚' :
+            invalidClutch ? '请选择离合闭合电平，吸合和释放延时须为 0～2000 毫秒的整数' :
+            missing ? '请为所有启用通道选择引脚或“无”' :
             duplicate ? '存在重复引脚，请修改后再保存' :
-                    unset.length ? '通道 ' + unset.join('、') + ' 的电机引脚是「无」，这些通道无法进退料' :
+                    unset.length ? '通道 ' + unset.join('、') + (IO_RENDERED_CLUTCH ? ' 缺少共享电机或离合接线，无法进退料' : ' 的电机引脚是「无」，这些通道无法进退料') :
                             '配置可提交；保存前请确认设备处于空闲状态'
-    $('io-state').classList.toggle('error', duplicate || missing || invalidSwitch)
+    $('io-state').classList.toggle('error', duplicate || missing || invalidSwitch || invalidClutch)
   }
   /**
    * 交换指定通道的进料和退料引脚草稿，并刷新冲突提示
@@ -3214,29 +3262,50 @@
     updateIoWarnings()
   }
   /**
-   * 渲染总微动输入、电平和进料时长，以及所有通道的电机、微动及霍尔配置
+   * 渲染电机模式、离合时序、总微动和所有通道接线
    * @param {Object} d 包含通道数量和引脚配置的 API 数据
-   * 进退料引脚之间提供交换按钮，霍尔只使用 ADC 专用选项；重建下拉框后立即执行引脚冲突检查
+   * 普通模式提供进退料交换按钮，离合模式合并为通道单 IO；重建控件后立即检查生效模式的引脚冲突
    */
   const renderIoConfig = (d) => {
     IO_CHANNELS = d.channels || 0
     IO_PIN_OPTIONS = d.io && d.io.pins || []
     IO_HALL_PIN_OPTIONS = d.io?.hall_pins || []
+    IO_RENDERED_CLUTCH = Number(d.io?.clutch_enabled) === 1
+    $('io-clutch-enabled').checked = IO_RENDERED_CLUTCH
+    $('io-clutch-enabled').disabled = false
+    $('io-clutch-config').classList.toggle('hide', !IO_RENDERED_CLUTCH)
+    $('io-shared-mf-control').replaceChildren(ioMakeSelect('io-shared-mf', d.io?.shared_motor?.[0] ?? 255, true))
+    $('io-shared-mb-control').replaceChildren(ioMakeSelect('io-shared-mb', d.io?.shared_motor?.[1] ?? 255, true))
+    $('io-clutch-level').value = String(d.io?.clutch_active_level ?? 1)
+    $('io-clutch-engage-ms').value = String(d.io?.clutch_engage_ms ?? 100)
+    $('io-clutch-release-ms').value = String(d.io?.clutch_release_ms ?? 100)
+    for (const id of ['io-clutch-level', 'io-clutch-engage-ms', 'io-clutch-release-ms']) $(id).disabled = false
     $('io-switch-control').replaceChildren(ioMakeSelect('io-switch', d.io?.switch_pin ?? 255, true))
     $('total-switch-level').value = String(d.total_switch_active_level ?? 0)
     $('total-switch-feed-ms').value = String(d.total_switch_feed_ms ?? 200)
     $('total-switch-level').disabled = $('total-switch-feed-ms').disabled = false
     const body = $('iobody');
     body.textContent = ''
+    const table = body.closest('table'), headings = IO_RENDERED_CLUTCH ?
+            ['通道', '进退料（离合 IO）', '微动', '霍尔 ADC'] : ['通道', '进料', '', '退料', '微动', '霍尔 ADC']
+    table.classList.toggle('clutch-layout', IO_RENDERED_CLUTCH)
+    table.tHead.rows[0].replaceChildren(...headings.map(label => {
+      const th = document.createElement('th')
+      th.textContent = label
+      if (!label) th.setAttribute('aria-label', '交换进退料引脚')
+      return th
+    }))
     for (let i = 0; i < IO_CHANNELS; i++) {
       const tr = document.createElement('tr'), td = document.createElement('td');
       td.textContent = i + 1;
       tr.appendChild(td)
       const values = d.io || {}, motors = values.motor || [], sw = values.microswitch || [];
       // 电机引脚允许选「无」：留空表示该通道暂时不接电机
-      const cells = [ioMakeSelect('io-mf' + i, motors[i] ? motors[i][0] : 255, true), ioMakeSelect('io-mb' + i, motors[i] ? motors[i][1] : 255, true), ioMakeSelect('io-sw' + i, sw[i] != null ? sw[i] : 255, true), ioMakeSelect('io-h' + i, values.hall?.[i] ?? 255, true, IO_HALL_PIN_OPTIONS)];
+      const cells = [...(IO_RENDERED_CLUTCH ? [ioMakeSelect('io-clutch' + i, values.clutch?.[i] ?? 255, true)] :
+              [ioMakeSelect('io-mf' + i, motors[i]?.[0] ?? 255, true), ioMakeSelect('io-mb' + i, motors[i]?.[1] ?? 255, true)]),
+        ioMakeSelect('io-sw' + i, sw[i] ?? 255, true), ioMakeSelect('io-h' + i, values.hall?.[i] ?? 255, true, IO_HALL_PIN_OPTIONS)]
       for (let k = 0; k < cells.length; k++) {
-        if (k === 1) {
+        if (!IO_RENDERED_CLUTCH && k === 1) {
           const swapCell = document.createElement('td'), swap = document.createElement('button')
           swapCell.className = 'io-swap-cell';
           swap.type = 'button';
@@ -3248,7 +3317,7 @@
           tr.appendChild(swapCell)
         }
         const c = document.createElement('td');
-        c.dataset.label = ['进料', '退料', '微动', '霍尔 ADC'][k];
+        c.dataset.label = (IO_RENDERED_CLUTCH ? ['进退料（离合 IO）', '微动', '霍尔 ADC'] : ['进料', '退料', '微动', '霍尔 ADC'])[k];
         c.appendChild(cells[k]);
         tr.appendChild(c)
       }
@@ -3258,72 +3327,104 @@
     updateIoWarnings()
   }
   /**
-   * 预览修改 AMS 数量后的通道表
-   * 保留总微动参数及电机、微动和霍尔引脚草稿，按新数量扩展或收缩表格，并提示待保存通道数
+   * 采集当前通道表及离合和总微动控件到页面草稿
+   * 保留未显示模式和未启用通道的接线，供切换模式、调整数量和保存复用
    */
-  const previewAms = () => {
+  const captureIoDraft = () => {
     if (!IO_DRAFT) return
-    IO_DIRTY = true
-    IO_DRAFT.io.switch_pin = $('io-switch').value
+    const io = IO_DRAFT.io
+    io.motor ??= Array.from({length: 16}, () => [255, 255])
+    io.clutch ??= Array(16).fill(255)
+    io.microswitch ??= Array(16).fill(255)
+    io.hall ??= Array(16).fill(255)
+    io.switch_pin = $('io-switch').value
+    io.shared_motor ??= [255, 255]
+    if (IO_RENDERED_CLUTCH) ['io-shared-mf', 'io-shared-mb'].forEach((id, role) => {
+      if ($(id).value !== '') io.shared_motor[role] = $(id).value
+    })
+    io.clutch_active_level = $('io-clutch-level').value
+    io.clutch_engage_ms = $('io-clutch-engage-ms').value
+    io.clutch_release_ms = $('io-clutch-release-ms').value
     IO_DRAFT.total_switch_active_level = $('total-switch-level').value
     IO_DRAFT.total_switch_feed_ms = $('total-switch-feed-ms').value
-    IO_DRAFT.io.hall ??= Array(16).fill(255)
-    // 在数量来回切换时保留尚未保存的引脚选择
     for (let i = 0; i < IO_CHANNELS; i++) {
-      IO_DRAFT.io.motor[i] = [$('io-mf' + i).value, $('io-mb' + i).value]
-      IO_DRAFT.io.microswitch[i] = $('io-sw' + i).value
-      IO_DRAFT.io.hall[i] = $('io-h' + i).value
+      if (IO_RENDERED_CLUTCH) {
+        if ($('io-clutch' + i).value !== '') io.clutch[i] = $('io-clutch' + i).value
+      } else ['io-mf', 'io-mb'].forEach((key, role) => {
+        io.motor[i] ??= [255, 255]
+        if ($(key + i).value !== '') io.motor[i][role] = $(key + i).value
+      })
+      io.microswitch[i] = $('io-sw' + i).value
+      io.hall[i] = $('io-h' + i).value
     }
-    IO_DRAFT.channels = Number($('p-ams').value) * 4
-    renderIoConfig(IO_DRAFT)
-    $('ams-hint').textContent = '待保存：' + $('p-ams').value + ' 个 AMS，共 ' + IO_CHANNELS + ' 通道；请在下方配置引脚后保存数量与引脚减少数量会停止并移除停用通道的排队动作'
   }
   /**
-   * 保存 AMS 数量、总微动电平和时长，以及全部通道引脚
+   * 预览电磁离合模式切换
+   * 先保留旧表接线及未保存参数，再显示新模式控件；保存前不改变设备运行模式
+   */
+  const previewClutchMode = () => {
+    if (!IO_DRAFT || IO_SAVING) return
+    const enabled = $('io-clutch-enabled').checked
+    captureIoDraft()
+    IO_DRAFT.io.clutch_enabled = enabled ? 1 : 0
+    IO_DIRTY = true
+    renderIoConfig(IO_DRAFT)
+  }
+  /**
+   * 预览修改 AMS 数量后的通道表
+   * 保留两种电机接线、离合及总微动参数，按新数量扩展或收缩表格，并提示待保存通道数
+   */
+  const previewAms = () => {
+    if (!IO_DRAFT || IO_SAVING) return
+    IO_DIRTY = true
+    captureIoDraft()
+    IO_DRAFT.channels = Number($('p-ams').value) * 4
+    renderIoConfig(IO_DRAFT)
+    $('ams-hint').textContent = '待保存：' + $('p-ams').value + ' 个 AMS，共 ' + IO_CHANNELS + ' 通道；请在下方配置引脚后保存数量与引脚，减少数量会停止并移除停用通道的排队动作'
+  }
+  /**
+   * 保存 AMS 数量、电机模式、离合和总微动参数及两种接线
    * @return {Promise<void>} 保存流程完成的 Promise
-   * 检查五通参数范围、含霍尔在内的缺项和重复引脚，提交 /api/settings，成功后重新读取并渲染配置
+   * 校验生效模式引脚和时序后提交 /api/settings；保留另一模式草稿，成功后重新读取已保存配置
    */
   const saveIoConfig = async () => {
-    let seen = {}, body = new URLSearchParams({ams: $('p-ams').value}), duplicate = false;
-    const sw = $('io-switch')
-    if (sw.value === '') {
-      toast('请选择五通总微动引脚或“无”');
+    if (!IO_DRAFT || IO_SAVING || $('save-io').disabled) return
+    updateIoWarnings()
+    if ($('io-state').classList.contains('error')) {
+      toast($('io-state').textContent)
       return
     }
-    body.append('io_switch', sw.value)
-    const level = $('total-switch-level').value, feed = Number($('total-switch-feed-ms').value)
-    if (!['0', '1'].includes(level) || !Number.isInteger(feed) || feed < 1 || feed > 29999) {
-      toast('请选择压下电平，进料时长须为 1～29999 毫秒的整数');
-      updateIoWarnings();
-      return
-    }
-    body.append('total_switch_active_level', level)
-    body.append('total_switch_feed_ms', String(feed))
-    if (sw.value !== '255') seen[Number(sw.value)] = true
+    captureIoDraft()
+    const io = IO_DRAFT.io, body = new URLSearchParams({ams: $('p-ams').value,
+      io_switch: io.switch_pin, io_clutch_enabled: io.clutch_enabled,
+      io_clutch_active_level: io.clutch_active_level, io_clutch_engage_ms: io.clutch_engage_ms,
+      io_clutch_release_ms: io.clutch_release_ms,
+      total_switch_active_level: IO_DRAFT.total_switch_active_level,
+      total_switch_feed_ms: IO_DRAFT.total_switch_feed_ms})
+    /**
+     * 将未配置的草稿引脚转换为表单存储值
+     * @param {number|string|undefined} value 草稿引脚编号
+     * @return {string} 引脚编号的十进制文本，缺失时返回 255
+     */
+    const normalizedPin = value => value == null ? '255' : String(value)
+    body.set('io_shared_mf', normalizedPin(io.shared_motor[0]))
+    body.set('io_shared_mb', normalizedPin(io.shared_motor[1]))
     for (let i = 0; i < IO_CHANNELS; i++) {
-      for (const key of ['io-mf' + i, 'io-mb' + i, 'io-sw' + i, 'io-h' + i]) {
-        const el = $(key)
-        if (el.value === '') {
-          toast('请先为新增通道配置引脚');
-          updateIoWarnings();
-          return
-        }
-        const pin = Number(el.value)
-        if (pin !== 255) {
-          if (seen[pin]) duplicate = true;
-          seen[pin] = true
-        }
-        body.append(key.replace('io-', 'io_'), String(pin))
-      }
+      body.set('io_mf' + i, normalizedPin(io.motor[i]?.[0]))
+      body.set('io_mb' + i, normalizedPin(io.motor[i]?.[1]))
+      body.set('io_clutch' + i, normalizedPin(io.clutch[i]))
+      body.set('io_sw' + i, normalizedPin(io.microswitch[i]))
+      body.set('io_h' + i, normalizedPin(io.hall[i]))
     }
-    if (duplicate) {
-      toast('IO 引脚不能重复，请先修改');
-      updateIoWarnings();
-      return
+    IO_SAVING = true
+    const controls = [...document.querySelectorAll('#io-config-box input, #io-config-box select, #io-config-box button'), $('p-ams')]
+    controls.forEach(el => { el.disabled = true })
+    try {
+      if (await postSettings(body.toString(), false)) await loadPara()
+    } finally {
+      IO_SAVING = false
+      controls.forEach(el => { el.disabled = false })
     }
-    $('save-io').disabled = $('p-ams').disabled = true
-    if (await postSettings(body.toString(), false)) await loadPara()
-    $('save-io').disabled = $('p-ams').disabled = false
   }
   /**
    * 刷新单台 AMS 的编辑状态
@@ -3489,7 +3590,7 @@
    * 读取并渲染完整参数配置
    * @return {Promise<void>} 配置加载完成的 Promise
    * 请求 /api/settings，填充设置项、各 AMS 身份、通道卡片和接线界面；身份草稿保持不变，旧请求不覆盖新保存的霍尔参数
-   * 电机上限与 AMS 数量使用 HTML 中固定的 1～4 选项
+   * 离合模式显示并锁定有效上限 1，普通模式显示已保存的独立电机上限
    * 捕获异常时在控制台输出上下文与完整异常
    */
   const loadPara = () => {
@@ -3501,7 +3602,9 @@
       $('manual-ms').value = String(d.manual_ms || 300)
       $('auto-ms').value = String(d.auto_ms != null ? d.auto_ms : 1000)
       $('feed-stop-delay-ms').value = String(d.feed_stop_delay_ms ?? 1000)
-      $('motor-limit').value = d.motor_limit;
+      $('motor-limit').value = d.effective_motor_limit ?? d.motor_limit;
+      $('motor-limit').disabled = Number(d.io?.clutch_enabled) === 1
+      $('motor-limit-hint').textContent = Number(d.io?.clutch_enabled) === 1 ? '电磁离合模式：一次驱动一个通道' : '';
       ['manual-ms', 'auto-ms', 'feed-stop-delay-ms', 'motor-limit'].forEach(id => $(id).dataset.saved = $(id).value)
       $('p-ams').value = d.ams
       $('ams-hint').textContent = d.ams + ' 个 AMS，共 ' + d.channels + ' 通道；新增通道请先在下方配置引脚，再保存'
@@ -3558,12 +3661,15 @@
    */
   const saveField = async (el, key) => {
     if (!el.reportValidity()) return false
+    if (key === 'motor_limit' && S.clutch_enabled) return false
+    el.dataset.saving = '1'
     el.disabled = true
     const value = el.value
     const saved = await postSettings(key + '=' + encodeURIComponent(value), false)
     if (saved) el.dataset.saved = value
     else el.value = el.dataset.saved
-    el.disabled = false
+    el.dataset.saving = '0'
+    el.disabled = key === 'motor_limit' && !!S.clutch_enabled
     updateChannelStateText()
     return saved
   }

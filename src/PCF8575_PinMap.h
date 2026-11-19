@@ -56,7 +56,7 @@ bool PCF8575_pin_is_online(uint8_t pin);
 
 /**
  * 定期探测在线芯片并重试离线 PCF8575
- * 主循环中每秒检查在线芯片应答，各离线芯片独立每 5 秒重试；恢复时清空输出电平并保留已配置模式
+ * 主循环中每秒检查在线芯片应答，各离线芯片独立每 5 秒重试；恢复时使用安全空闲电平并保留已配置模式
  */
 void PCF8575_poll();
 
@@ -72,6 +72,8 @@ void PCF8575_update();
  * @param mode 模式（OUTPUT/INPUT）
  */
 void PCF8575_pinMode(uint8_t pin, uint8_t mode);
+
+void PCF8575_set_idle_level(uint8_t pin, uint8_t value);
 
 /**
  * 设置PCF8575虚拟引脚电平（模拟digitalWrite）
