@@ -1265,6 +1265,17 @@ static void handle_root() {
 }
 
 /**
+ * 发送构建时打包的 PWA 静态资源
+ * @param asset 包含路径、类型、字节长度和压缩标记的只读资源
+ * 每次使用前重新校验缓存，文本按 gzip 发送，PNG 图标保持原始字节
+ */
+static void handle_web_asset(const WebAsset &asset) {
+    server.sendHeader("Cache-Control", "no-cache");
+    if (asset.gzip) server.sendHeader("Content-Encoding", "gzip");
+    server.send_P(200, asset.mime, (PGM_P)asset.data, asset.length);
+}
+
+/**
  * 把传感器读数格式化为 JSON 数字
  * @param valid 读数是否有效
  * @param value 读数值
@@ -3834,13 +3845,18 @@ static bool handle_local_preview_cors(WebServer &request, Middleware::Callback n
 
 /**
  * 注册 Web 路由与 localhost 预览跨域处理
- * 把首页、状态、设置、接线、局域网换料、HA、电机、WiFi、日志、重启、恢复默认配置、恢复出厂和 OTA 绑定到处理函数
+ * 把首页、PWA 静态资源、状态、设置、接线、局域网换料、HA、电机、WiFi、日志、重启、恢复默认配置、恢复出厂和 OTA 绑定到处理函数
  */
 static void setup_routes() {
     const char *headers[] = {"Origin"};
     server.collectHeaders(headers, 1);
     server.addMiddleware(handle_local_preview_cors);
     server.on("/", HTTP_GET, handle_root);
+    server.on("/index.html", HTTP_GET, handle_root);
+    for (size_t i = 0; i < sizeof(WEB_ASSETS) / sizeof(WEB_ASSETS[0]); ++i) {
+        const WebAsset *asset = &WEB_ASSETS[i];
+        server.on(asset->path, HTTP_GET, [asset]() { handle_web_asset(*asset); });
+    }
     server.on("/api/status", HTTP_GET, handle_status);
     server.on("/api/home-assistant", HTTP_GET, handle_ha_get);
     server.on("/api/home-assistant", HTTP_POST, handle_ha_save);

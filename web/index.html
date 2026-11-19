@@ -3,6 +3,14 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="theme-color" content="#12141a">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="团子 BMCU">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png">
     <title>团子 BMCU</title>
     <style>
       :root{--bg:#12141a;--card:#1b1e27;--line:#272b36;--fg:#e8eaf0;--dim:#8b93a7;--acc:#4da3ff;--ok:#3ecf8e;--err:#ff6b6b;--warn:#f5c451}
@@ -202,6 +210,7 @@
             </select>
             <span id="data-state" role="status">连接中</span>
         </div>
+        <button id="pwa-install" class="hide" onclick="installApp()">添加到主屏幕</button>
     </div>
     <div class="printer-summary hint">
         <span id="printer" role="status">正在读取打印机状态…</span>
@@ -225,6 +234,15 @@
         <button onclick="hideUpbar()">忽略</button>
     </div>
 </header>
+<dialog id="pwa-help" class="hall-dialog" aria-labelledby="pwa-help-title">
+    <h3 id="pwa-help-title">添加到主屏幕</h3>
+    <p id="pwa-help-steps"></p>
+    <p id="pwa-help-note" class="hint"></p>
+    <p class="hint">请使用日常访问的设备地址添加，打开时仍需连接设备所在的局域网</p>
+    <div class="dialog-actions">
+        <button onclick="$('pwa-help').close()">知道了</button>
+    </div>
+</dialog>
 <dialog id="project-preview" class="project-preview" aria-labelledby="project-name">
     <h2 id="project-name">项目接线预览</h2>
     <div class="project-preview-body">
@@ -768,6 +786,87 @@
    * 移除提示条的显示样式；点击提示条或计时结束时调用
    */
   const toastOff = () => $('toast').classList.remove('on')
+  // 浏览器提供的安装事件只能响应一次，已添加的应用窗口不再显示安装入口
+  let pwaInstallPrompt = null, pwaInstalled = false, pwaInstalling = false, pwaWorkerFailed = false
+  /**
+   * 按当前运行模式和浏览器安装能力刷新主屏幕入口
+   */
+  const updatePwaInstall = () => {
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
+    const button = $('pwa-install')
+    button.classList.toggle('hide', standalone || pwaInstalled)
+    button.disabled = pwaInstalling
+    button.textContent = pwaInstallPrompt ? '安装应用' : '添加到主屏幕'
+  }
+  /**
+   * 显示当前浏览器的主屏幕添加步骤和局域网访问条件
+   */
+  const showPwaHelp = () => {
+    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    $('pwa-help-steps').textContent = ios ?
+            '请在 Safari 中打开当前地址，点击“分享”，选择“添加到主屏幕”' :
+            /Android/.test(navigator.userAgent) ? '打开浏览器菜单，选择“添加到主屏幕”；具体名称和可用选项取决于浏览器' :
+                    '打开浏览器菜单，查找“安装网页为应用”或“创建快捷方式”；如提供“作为窗口打开”，可勾选该选项'
+    $('pwa-help-note').textContent = !window.isSecureContext ?
+            '当前是局域网 HTTP 地址，浏览器限制了标准 PWA 安装和离线功能；添加后可能是网页快捷方式，独立窗口取决于浏览器支持' :
+            pwaWorkerFailed ? '应用资源暂时未能加载，请刷新重试；也可以使用浏览器菜单添加' :
+                    '如果浏览器未提供安装选项，可先添加网页快捷方式；添加主屏幕后是否以独立窗口打开取决于浏览器支持'
+    $('pwa-help').showModal()
+  }
+  /**
+   * 响应浏览器安装提示，未提供提示时显示手动添加步骤
+   * @return {Promise<void>} 安装选择处理完成的 Promise
+   * 取消或失败后恢复主屏幕入口，不自动重复弹出安装提示
+   */
+  const installApp = async () => {
+    if (pwaInstalling) return
+    if (!pwaInstallPrompt) {
+      showPwaHelp()
+      return
+    }
+    const prompt = pwaInstallPrompt
+    pwaInstallPrompt = null
+    pwaInstalling = true
+    updatePwaInstall()
+    try {
+      await prompt.prompt()
+      const choice = await prompt.userChoice
+      if (choice.outcome === 'accepted') toast('已提交安装，请按浏览器提示完成')
+    } catch (error) {
+      console.error('应用安装提示失败', error)
+      toast('请使用浏览器菜单添加到主屏幕')
+    } finally {
+      pwaInstalling = false
+      updatePwaInstall()
+    }
+  }
+  /**
+   * 注册安装事件并在安全上下文启用离线连接说明
+   * 普通局域网 HTTP 保留主屏幕添加入口，不提交无法注册的 Service Worker
+   */
+  const initPwa = () => {
+    window.addEventListener('beforeinstallprompt', event => {
+      event.preventDefault()
+      pwaInstallPrompt = event
+      updatePwaInstall()
+    })
+    window.addEventListener('appinstalled', () => {
+      pwaInstalled = true
+      pwaInstallPrompt = null
+      updatePwaInstall()
+      if ($('pwa-help').open) $('pwa-help').close()
+      toast('应用已安装')
+    })
+    const displayMode = window.matchMedia('(display-mode: standalone)')
+    if (displayMode.addEventListener) displayMode.addEventListener('change', updatePwaInstall)
+    updatePwaInstall()
+    if (window.isSecureContext && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js', {scope: './', updateViaCache: 'none'}).catch(error => {
+        pwaWorkerFailed = true
+        console.error('应用离线页面注册失败', error)
+      })
+    }
+  }
   /**
    * 发送请求并读取文本响应
    * @param {string} path 请求路径
@@ -5055,6 +5154,7 @@
 
 
   // ---------- 启动 ----------
+  initPwa()
   document.getElementById('toast').onclick = toastOff
   const navBtns = document.querySelectorAll('nav button');
   for (let i = 0; i < navBtns.length; i++) {

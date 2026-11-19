@@ -145,7 +145,10 @@ src/
 └── version.h           # 固件版本与 OTA 板型键名（FW_VERSION / FW_TARGET）
 
 web/index.html          # 管理页面，构建时 gzip 压缩后编入 ESP32 固件
-scripts/prepare_web.py  # 生成压缩网页头文件，检查完整固件镜像的分区容量
+web/manifest.webmanifest # 应用名称、图标和主屏幕启动方式
+web/icons/              # 用户提供的团子图片压缩为 192/512/180 像素主屏幕 PNG 图标
+web/sw.js、offline.html # 安全上下文的离线连接说明，不缓存设备控制台
+scripts/prepare_web.py  # 打包网页与 PWA 资源，检查完整固件镜像的分区容量
 ```
 
 ### 主循环
@@ -163,6 +166,7 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 
 | 接口 | 方法 | 用途 |
 |---|---|---|
+| `/manifest.webmanifest`、`/sw.js`、`/offline.html`、`/icons/*` | GET | 构建时编入固件的应用清单、Service Worker、离线说明和图标 |
 | `/api/status` | GET | 运行状态、通道与电机状态、耗材颜色与透明度、并发上限等；`mdns` 为配置名称，`mdns_active` 为实际名称（离线或待更新时为空） |
 | `/api/ws-token` | GET | 获取本次启动的 WebSocket 连接凭据，沿用 HTTP 同源与 localhost 跨域限制，禁止缓存 |
 | `/api/ws` | WebSocket，端口 81 | 订阅状态与霍尔增量历史，数据字段与对应 HTTP 接口一致 |
