@@ -14,10 +14,6 @@ jobs:
   release:
     runs-on: ubuntu-latest
 
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -106,5 +102,15 @@ jobs:
         with:
           path: dist
 
+  # 上传任务结束后再部署，避免立即查询刚上传的产物；Pages 失败可单独重跑
+  deploy-pages:
+    needs: release
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4
