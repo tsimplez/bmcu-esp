@@ -77,6 +77,7 @@ static char     mdns_name[MDNS_NAME_MAX + 1] = DEFAULT_MDNS_NAME;
 static char     mdns_active_name[MDNS_NAME_BUF_LEN] = {};
 // mDNS 服务是否已成功启动
 static bool     mdns_started = false;
+static bool     ha_service_advertised = false;
 // 根据芯片 ID 生成的配网热点名，例如 BMCU_1A2B3C
 static char     ap_ssid[16] = {};
 
@@ -246,6 +247,24 @@ static bool ha_url_valid(const char *url) {
  */
 static bool ha_configured(const HaConfig &config) {
     return config.url[0] && config.token[0];
+}
+
+/**
+ * 判断是否允许局域网 HA 集成操作通道，无需先选择打印机状态实体
+ * @return 已联网且已保存并启用 HA 连接时返回 true
+ */
+static bool ha_controls_enabled() {
+    return !ap_mode && WiFi.status() == WL_CONNECTED && ha_config.enabled && ha_configured(ha_config);
+}
+
+/**
+ * 生成 HA 设备标识，避免地址重分配后把请求发给另一台 BMCU
+ * @return 芯片唯一标识的十六进制文本
+ */
+static String ha_device_id() {
+    char id[17];
+    snprintf(id, sizeof(id), "%016llx", static_cast<unsigned long long>(hal_get_device_id()));
+    return String(id);
 }
 
 /**
@@ -1117,7 +1136,7 @@ static void start_config_ap() {
 
 /**
  * 同步 mDNS 协议栈实际使用的主机名
- * 每秒读取一次本地状态，跟随协议栈的重名自动编号并记录访问地址；离线时清空地址，不改写 NVS
+ * 每秒按 HA 配置发布或撤回通道发现服务，并跟随协议栈的重名自动编号；离线时清空地址，不改写 NVS
  */
 static void sync_mdns_name() {
     if (!mdns_started || ap_mode || WiFi.status() != WL_CONNECTED) {
@@ -1129,6 +1148,13 @@ static void sync_mdns_name() {
     const uint32_t now = millis();
     if (static_cast<uint32_t>(now - last_check) < 1000) return;
     last_check = now;
+
+    const bool advertise = ha_controls_enabled();
+    if (advertise != ha_service_advertised) {
+        const esp_err_t result = advertise ? mdns_service_add(nullptr, "_bmcu-esp", "_tcp", 80, nullptr, 0)
+                                           : mdns_service_remove("_bmcu-esp", "_tcp");
+        if (result == ESP_OK) ha_service_advertised = advertise;
+    }
 
     char actual[MDNS_NAME_BUF_LEN] = {};
     if (mdns_hostname_get(actual) != ESP_OK || !actual[0]) return;
@@ -1146,6 +1172,7 @@ static void sync_mdns_name() {
  */
 static bool start_mdns() {
     mdns_started = false;
+    ha_service_advertised = false;
     mdns_active_name[0] = 0;
     MDNS.end();
     if (!MDNS.begin(mdns_name)) {
@@ -2576,6 +2603,58 @@ static void handle_manual_motor() {
 }
 
 /**
+ * 检查 HA 通道接口开关，关闭时已添加的集成也不能操作设备
+ * @return 可继续处理请求时返回 true，否则已回复错误
+ */
+static bool require_ha_controls() {
+    if (ha_controls_enabled()) return true;
+    server.send(403, "application/json", "{\"ok\":false,\"msg\":\"未启用 HA 通道控制\"}");
+    return false;
+}
+
+/**
+ * 向 HA 返回有效通道的退料时间与电机就绪状态，不暴露访问码或令牌
+ */
+static void handle_ha_channels() {
+    if (!require_ha_controls()) return;
+    String body = "{\"id\":\"" + ha_device_id() + "\",\"channels\":[";
+    for (int ch = 0; ch < active_channel_count(); ++ch) {
+        if (ch) body += ',';
+        body += "{\"timeout\":" + String(PULLBACK_TIMEOUT[ch]) + ",\"ready\":" +
+                (BMCU_channel_motor_ready(ch) ? "true}" : "false}");
+    }
+    server.send(200, "application/json", body + "]}");
+}
+
+/**
+ * 接收单通道进料或退料按钮，沿用网页点动时长、接线保护及主循环队列
+ */
+static void handle_ha_motor() {
+    if (!require_ha_controls()) return;
+    if (server.args() != 2 || !server.hasArg("motor") || (server.arg("dir") != "1" && server.arg("dir") != "-1")) {
+        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请指定通道和点动方向\"}");
+        return;
+    }
+    handle_manual_motor();
+}
+
+/**
+ * 仅允许更新单个启用通道的退料时间，复用网页设置校验、保存回滚与运行时更新
+ */
+static void handle_ha_timeout() {
+    if (!require_ha_controls()) return;
+    if (server.args() == 1) {
+        for (int ch = 0; ch < active_channel_count(); ++ch) {
+            if (server.argName(0) == "to" + String(ch)) {
+                handle_settings_save();
+                return;
+            }
+        }
+    }
+    server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请指定一个启用通道的退料时间\"}");
+}
+
+/**
  * 登记暂停打印实验或解除请求
  * 只接受 enable=0/1；回调不发送总线帧、不驱动电机，实际反馈和解除交由主循环
  */
@@ -3862,6 +3941,10 @@ static void setup_routes() {
     server.on("/api/home-assistant", HTTP_POST, handle_ha_save);
     server.on("/api/home-assistant/selection", HTTP_POST, handle_ha_selection);
     server.on("/api/home-assistant/entities", HTTP_GET, handle_ha_entities);
+    server.on("/api/home-assistant/channels", HTTP_GET, handle_ha_channels);
+    const String ha_base = "/api/home-assistant/channels/" + ha_device_id();
+    server.on((ha_base + "/motor").c_str(), HTTP_POST, handle_ha_motor);
+    server.on((ha_base + "/timeout").c_str(), HTTP_POST, handle_ha_timeout);
     server.on("/api/ws-token", HTTP_GET, handle_ws_token);
     server.on("/api/hall", HTTP_GET, handle_hall);
     server.on("/api/hall/detection", HTTP_POST, handle_hall_detection_save);

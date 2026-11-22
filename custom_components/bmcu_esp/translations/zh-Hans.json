@@ -1,0 +1,11 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {"title": "添加 BMCU-ESP", "data": {"host": "设备 IP 或主机名"}},
+      "confirm": {"title": "添加 BMCU-ESP", "description": "添加 {name}（{host}）的通道控制？"}
+    },
+    "abort": {"already_configured": "已添加这台设备", "cannot_connect": "设备无法访问或未启用 HA"},
+    "error": {"cannot_connect": "无法读取通道，请检查设备地址、固件和 HA 开关", "invalid_host": "请输入 IP 或主机名，不含协议、端口和路径"}
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {"title": "Add BMCU-ESP", "data": {"host": "Device IP or hostname"}},
+      "confirm": {"title": "Add BMCU-ESP", "description": "Add channel controls for {name} ({host})?"}
+    },
+    "abort": {"already_configured": "Device is already configured", "cannot_connect": "Device is unreachable or HA controls are disabled"},
+    "error": {"cannot_connect": "Cannot read channels. Check the device address, firmware and HA settings", "invalid_host": "Enter an IP or hostname without a scheme, port or path"}
+  }
+}
