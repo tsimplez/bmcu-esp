@@ -290,8 +290,10 @@ loop():   喂狗 → BMCU_run（协议/总线） → 微动状态检查 → web_
 ### Home Assistant 通道控制
 
 1. 在设备网页的「实验测试 → Home Assistant」中保存 HA 地址和令牌，勾选启用；仅需通道控制时不必选择打印机实体，也不依赖 Bambu Lab 集成或 MQTT
-2. 将仓库中的 `custom_components/bmcu_esp` 安装到 HA 配置目录下同名的 `custom_components/bmcu_esp`，重启 Home Assistant
+2. 在 HACS 的「自定义存储库」中添加 `https://github.com/tsimplez/bmcu-esp`，类型选择「集成」，下载时选择 `main` 分支，完成后重启 Home Assistant；也可将 `main` 分支中的 `custom_components/bmcu_esp` 复制到 HA 配置目录下同名的 `custom_components/bmcu_esp`，然后重启
 3. 打开 HA「设置 → 设备与服务」，确认发现的 **BMCU-ESP**；未发现时可在「添加集成」中搜索 **BMCU-ESP**，输入设备的局域网 IP 或主机名
+
+如果安装时报 `custom_components/None/manifest.json` 不存在，请重新下载并选择 `main`；若列表没有 `main`，可移除 HACS 中的自定义存储库记录后重新添加，或按上述路径手动安装
 
 每个启用通道提供「进料」「退料」两个点动按钮，时长沿用网页的「手动进退料时间」；「退料时间」是打印机自动退料的限时，按通道设置（3–30 秒），保存后与网页一致、断电保留。新增通道会自动出现，停用通道或关闭 HA 后已有实体不可用；电机未就绪时仅禁用点动，不影响预设时长
 

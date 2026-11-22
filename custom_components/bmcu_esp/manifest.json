@@ -3,7 +3,7 @@
   "name": "BMCU-ESP",
   "codeowners": [],
   "config_flow": true,
-  "documentation": "https://github.com/tuanzisimple/bmcu-esp",
+  "documentation": "https://github.com/tsimplez/bmcu-esp",
   "iot_class": "local_polling",
   "version": "1.0.0",
   "zeroconf": ["_bmcu-esp._tcp.local."]
