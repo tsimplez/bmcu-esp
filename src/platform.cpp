@@ -101,7 +101,7 @@ void console_usb_stop() {
 #endif
 #endif
 #endif
-} // namespace
+}
 
 /**
  * 在读取接线配置前准备控制台

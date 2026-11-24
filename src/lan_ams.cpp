@@ -524,6 +524,16 @@ int lan_ams_active_channel() {
 }
 
 /**
+ * 提交局域网打印暂停命令
+ * @return 当前打印通道有效且命令成功入队时返回 true
+ * 仅向已配对、状态新鲜且正在打印的会话发送暂停请求
+ */
+bool lan_ams_request_pause() {
+    if (lan_ams_active_channel() < 0 || report.print_error || report.denied) return false;
+    return publish("{\"print\":{\"command\":\"pause\",\"sequence_id\":\"0\"}}");
+}
+
+/**
  * 查询配对和换料状态
  * @return 供网页与有线兼容接口读取的状态快照
  */
@@ -675,6 +685,8 @@ LanAmsStatus lan_ams_status() { return {false, false, false, false, -1, -1, UINT
  * @return 始终返回 false
  */
 bool lan_ams_request_channel(int channel) { (void)channel; return false; }
+/** 拒绝非 ESP32 平台的局域网暂停请求 */
+bool lan_ams_request_pause() { return false; }
 /** 忽略非 ESP32 平台局域网停止请求 */
 void lan_ams_request_cancel() {}
 /** 提供非 ESP32 平台局域网取消入口 */

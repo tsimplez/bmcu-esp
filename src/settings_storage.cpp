@@ -22,9 +22,11 @@ int MANUAL_PULSE_MS = DEFAULT_MANUAL_PULSE_MS;
 int AUTO_LOAD_MS = DEFAULT_AUTO_LOAD_MS;
 // 打印机进料结束后继续运行的时长，单位毫秒；0 表示立即停车
 int FEED_STOP_DELAY_MS = DEFAULT_FEED_STOP_DELAY_MS;
-// 五通总微动独立配置压下电平和每次触发的进料时长
+// 五通总微动压下沿触发当前通道进料的独立时长设置
 int TOTAL_SWITCH_ACTIVE_LEVEL = DEFAULT_TOTAL_SWITCH_ACTIVE_LEVEL;
 int TOTAL_SWITCH_FEED_MS = DEFAULT_TOTAL_SWITCH_FEED_MS;
+int TOTAL_SWITCH_PAUSE_TIMEOUT_S = DEFAULT_TOTAL_SWITCH_PAUSE_TIMEOUT_S;
+char PROJECT_NAME[PROJECT_NAME_BUFFER_SIZE] = "团子 BMCU";
 // 允许同时运行的电机数量上限，运行时由设置加载值限制到 active_channel_count()
 int MOTOR_LIMIT = 1;
 // BambuBus 的 RS485 收发模式：RS485_MODE_RXTX 或 RS485_MODE_DE
@@ -108,6 +110,8 @@ static uint32_t calculate_crc32(const SettingsData* data) {
 
 static_assert(offsetof(IoConfig, clutch_enabled) == 260, "历史 IO 基础布局发生变化");
 static_assert(sizeof(HallDetectionConfig) == 8 && sizeof(LanAmsConfig) == 68, "历史传感器或局域网布局发生变化");
+static_assert(sizeof(IoConfig) == 348, "当前历史 IO 布局发生变化");
+static_assert(sizeof(SettingsData) == 1116, "当前设置布局大小发生变化");
 struct LegacyFormat {
     uint32_t magic;
     size_t size;
@@ -121,24 +125,26 @@ struct LegacyFormat {
     bool feed_stop_delay;
     bool hall_detection;
     bool lan_ams;
-    bool total_switch_parameters;
+    uint8_t total_switch_parameter_size;
 };
 
 // 已发布标签及开发提交的真实布局；重复魔数按长度和原 CRC 区分，身份数量不决定 checksum 偏移
-// 字段顺序：魔数、长度、checksum 偏移、序列号长度、IO 长度、版本数量、旧 PCF 开关、连续编号、仅首片、停止延迟、霍尔、局域网、五通参数
+// 字段顺序：魔数、长度、checksum 偏移、序列号长度、IO 长度、版本数量、旧 PCF 开关、连续编号、仅首片、停止延迟、霍尔、局域网、五通参数字节数
 constexpr LegacyFormat LEGACY_FORMATS[] = {
-    {0x53415429, 524, 140, 13, 192, 0, true,  true,  true,  false, false, false, false}, // 8f0058d
-    {0x53415429, 536, 140, 12, 192, 1, true,  true,  true,  false, false, false, false}, // c61efdf
-    {0x5341542A, 536, 140, 12, 192, 1, true,  true,  true,  false, false, false, false}, // v26.10.28
-    {0x5341542A, 532, 140, 12, 192, 1, false, true,  true,  false, false, false, false}, // 74ad5ec
-    {0x53415429, 532, 140, 12, 192, 1, false, true,  false, false, false, false, false}, // v26.10.29
-    {0x5341542B, 532, 140, 12, 192, 1, false, false, false, false, false, false, false}, // v26.11.02
-    {0x5341542C, 616, 140, 48, 192, 4, false, false, false, false, false, false, false}, // 0ea02d2
-    {0x5341542D, 624, 144, 48, 196, 4, false, false, false, true,  false, false, false}, // v26.11.04
-    {0x5341542E, 688, 144, 48, 260, 4, false, false, false, true,  false, false, false}, // v26.11.06
-    {0x5341542F, 816, 144, 48, 260, 4, false, false, false, true,  true,  false, false}, // 50e43a8
-    {0x53415430, 884, 144, 48, 260, 4, false, false, false, true,  true,  true,  false}, // v26.11.14 / v26.11.14.1
-    {0x53415431, 892, 144, 48, 260, 4, false, false, false, true,  true,  true,  true}   // 电磁离合适配前
+    {0x53415429, 524, 140, 13, 192, 0, true,  true,  true,  false, false, false, 0}, // 8f0058d
+    {0x53415429, 536, 140, 12, 192, 1, true,  true,  true,  false, false, false, 0}, // c61efdf
+    {0x5341542A, 536, 140, 12, 192, 1, true,  true,  true,  false, false, false, 0}, // v26.10.28
+    {0x5341542A, 532, 140, 12, 192, 1, false, true,  true,  false, false, false, 0}, // 74ad5ec
+    {0x53415429, 532, 140, 12, 192, 1, false, true,  false, false, false, 0}, // v26.10.29
+    {0x5341542B, 532, 140, 12, 192, 1, false, false, false, false, false, 0}, // v26.11.02
+    {0x5341542C, 616, 140, 48, 192, 4, false, false, false, false, false, 0}, // 0ea02d2
+    {0x5341542D, 624, 144, 48, 196, 4, false, false, false, true,  false, false, 0}, // v26.11.04
+    {0x5341542E, 688, 144, 48, 260, 4, false, false, false, true,  false, false, 0}, // v26.11.06
+    {0x5341542F, 816, 144, 48, 260, 4, false, false, false, true,  true,  false, 0}, // 50e43a8
+    {0x53415430, 884, 144, 48, 260, 4, false, false, false, true,  true,  true,  0}, // v26.11.14 / v26.11.14.1
+    {0x53415431, 892, 144, 48, 260, 4, false, false, false, true,  true,  true,  8}, // 五通电平及进料时长
+    {0x53415432, 980, 144, 48, 348, 4, false, false, false, true,  true,  true,  8}, // 五通电平及进料时长
+    {0x53415433, 984, 144, 48, 348, 4, false, false, false, true,  true,  true, 12}  // 含五通持续压下超时，增加项目名前
 };
 
 /**
@@ -189,7 +195,7 @@ int32_t migrate_pin(const int32_t pin, const bool single_device) {
  * @param bytes 已校验的原始记录
  * @param format 对应历史布局
  * @param out 已填入当前默认值的候选设置
- * 仅覆盖旧布局已有字段，新增离合、身份、霍尔及五通参数使用候选默认值，不写入持久化存储
+ * 仅覆盖旧布局已有字段；新字段使用候选默认值，不写入持久化存储
  */
 void copy_legacy(const uint8_t *bytes, const LegacyFormat &format, SettingsData &out) {
     memcpy(out.pullback_timeout, bytes, 64);
@@ -212,7 +218,8 @@ void copy_legacy(const uint8_t *bytes, const LegacyFormat &format, SettingsData 
     for (int32_t &pin : out.io_config.hall) pin = PIN_NONE;
     if (format.io_size >= 196) memcpy(&out.io_config.switch_pin, bytes + io + 192, 4);
     if (format.io_size >= 260) memcpy(out.io_config.hall, bytes + io + 196, 64);
-    io_config_set_clutch_defaults(out.io_config);
+    if (format.io_size >= sizeof(IoConfig)) memcpy(&out.io_config, bytes + io, sizeof(IoConfig));
+    else io_config_set_clutch_defaults(out.io_config);
     if (format.continuous_pins) {
         for (int ch = 0; ch < IO_CONFIG_MAX_CHANNELS; ++ch) {
             for (int direction = 0; direction < 2; ++direction)
@@ -226,11 +233,19 @@ void copy_legacy(const uint8_t *bytes, const LegacyFormat &format, SettingsData 
     if (format.version_count == AMS_IDENTITY_COUNT) memcpy(out.ams_version, bytes + versions, sizeof(out.ams_version));
     else if (format.version_count == 1) for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams)
         memcpy(out.ams_version[ams], bytes + versions, 16); // 旧协议全部 AMS 使用同一份版本
-    if (format.hall_detection)
-        memcpy(out.hall_detection, bytes + 688, sizeof(out.hall_detection));
-    if (format.lan_ams)
-        memcpy(&out.lan_ams, bytes + 816, sizeof(out.lan_ams));
-    if (format.total_switch_parameters) memcpy(&out.total_switch_active_level, bytes + 884, 8);
+    size_t extension = versions + (format.version_count == AMS_IDENTITY_COUNT ? sizeof(out.ams_version) :
+                                   format.version_count == 1 ? 16u : 0u);
+    if (format.hall_detection) {
+        memcpy(out.hall_detection, bytes + extension, sizeof(out.hall_detection));
+        extension += sizeof(out.hall_detection);
+    }
+    if (format.lan_ams) {
+        memcpy(&out.lan_ams, bytes + extension, sizeof(out.lan_ams));
+        extension += sizeof(out.lan_ams);
+    }
+    if (format.total_switch_parameter_size)
+        memcpy(&out.total_switch_active_level, bytes + extension, format.total_switch_parameter_size);
+    memcpy(out.project_name, DEFAULT_PROJECT_NAME, sizeof(DEFAULT_PROJECT_NAME));
     out.magic = SETTINGS_MAGIC_NUMBER;
     out.checksum = 0;
 }
@@ -254,6 +269,52 @@ bool settings_migrate_record(const uint8_t *bytes, const size_t length, Settings
     return false;
 }
 } // namespace
+
+/**
+ * 校验固件保存的项目名
+ * @param name UTF-8 项目名，允许空串以恢复默认名称
+ * @return 长度和 UTF-8 编码均有效时返回 true
+ */
+bool settings_project_name_valid(const char *name) {
+    if (!name) return false;
+    size_t length = 0;
+    while (length < PROJECT_NAME_BUFFER_SIZE && name[length]) length++;
+    if (length >= PROJECT_NAME_BUFFER_SIZE) return false;
+    for (size_t i = 0; i < length;) {
+        const auto first = static_cast<uint8_t>(name[i]);
+        if (first < 0x80) {
+            if (first < 0x20 || first == 0x7F) return false;
+            ++i;
+            continue;
+        }
+        size_t continuation_count;
+        uint32_t codepoint;
+        if (first >= 0xC2 && first <= 0xDF) {
+            continuation_count = 1;
+            codepoint = first & 0x1Fu;
+        } else if (first >= 0xE0 && first <= 0xEF) {
+            continuation_count = 2;
+            codepoint = first & 0x0Fu;
+        } else if (first >= 0xF0 && first <= 0xF4) {
+            continuation_count = 3;
+            codepoint = first & 0x07u;
+        } else {
+            return false;
+        }
+        if (i + continuation_count >= length) return false;
+        for (size_t j = 1; j <= continuation_count; ++j) {
+            const auto next = static_cast<uint8_t>(name[i + j]);
+            if ((next & 0xC0u) != 0x80u) return false;
+            codepoint = (codepoint << 6) | (next & 0x3Fu);
+        }
+        if ((continuation_count == 1 && codepoint < 0x80u) ||
+            (continuation_count == 2 && codepoint < 0x800u) ||
+            (continuation_count == 3 && codepoint < 0x10000u) ||
+            (codepoint >= 0xD800u && codepoint <= 0xDFFFu) || codepoint > 0x10FFFFu) return false;
+        i += continuation_count + 1;
+    }
+    return true;
+}
 
 /**
  * 校验自定义序列号格式
@@ -411,7 +472,7 @@ bool settings_lan_config_valid(const LanAmsConfig &config, const bool require_cr
 /**
  * 校验并应用设置到运行期变量
  * @param data 从存储或快照得到的设置
- * 逐项检查范围后更新全局配置；各 AMS 身份、霍尔检测、五通总微动和局域网配置独立校验，保留未启用通道的配置
+ * 逐项检查范围后更新全局配置；项目名、各 AMS 身份、霍尔检测、五通总微动及停止打印保护超时、局域网配置独立校验，保留未启用通道的配置
  * 通道模式不在有效范围时恢复为自动模式
  * I2C 仅由 SDA/SCL 决定；升级后不可用接线只清理相关字段，保留已有有效参数及原始存储记录
  */
@@ -437,6 +498,9 @@ static void apply_settings_values(const SettingsData& data) {
                                     ? data.total_switch_active_level : DEFAULT_TOTAL_SWITCH_ACTIVE_LEVEL;
     TOTAL_SWITCH_FEED_MS = data.total_switch_feed_ms > 0 && data.total_switch_feed_ms < MAX_PULSE_MS
                                ? data.total_switch_feed_ms : DEFAULT_TOTAL_SWITCH_FEED_MS;
+    TOTAL_SWITCH_PAUSE_TIMEOUT_S = data.total_switch_pause_timeout_s >= MIN_TOTAL_SWITCH_PAUSE_TIMEOUT_S &&
+                                   data.total_switch_pause_timeout_s <= MAX_TOTAL_SWITCH_PAUSE_TIMEOUT_S
+                                       ? data.total_switch_pause_timeout_s : DEFAULT_TOTAL_SWITCH_PAUSE_TIMEOUT_S;
     RS485_MODE = data.rs485_mode == RS485_MODE_RXTX || data.rs485_mode == RS485_MODE_DE
                      ? data.rs485_mode : hal_default_project_preset().bus.mode;
     BUS_LOG_ENABLE = data.bus_log_enable == 0 || data.bus_log_enable == 1
@@ -464,6 +528,11 @@ static void apply_settings_values(const SettingsData& data) {
     OTA_NOTIFY = data.ota_notify == 0 || data.ota_notify == 1 ? data.ota_notify : DEFAULT_OTA_NOTIFY;
     memcpy(OTA_URL, data.ota_url, OTA_URL_MAX);
     OTA_URL[OTA_URL_MAX - 1] = 0;  // 强行截断，防止 NVS 里出现没有结束符的脏数据
+    memset(PROJECT_NAME, 0, sizeof(PROJECT_NAME));
+    if (data.project_name[0] && settings_project_name_valid(data.project_name))
+        memcpy(PROJECT_NAME, data.project_name, strlen(data.project_name));
+    else
+        memcpy(PROJECT_NAME, DEFAULT_PROJECT_NAME, sizeof(DEFAULT_PROJECT_NAME));
     MOTOR_LIMIT = data.motor_limit >= 1 && data.motor_limit <= IO_CONFIG_MAX_CHANNELS
                       ? min(static_cast<int>(data.motor_limit), active_channel_count()) : 1;
     LAN_AMS_CONFIG = settings_lan_config_valid(data.lan_ams) ? data.lan_ams : DEFAULT_LAN_AMS_CONFIG;
@@ -588,7 +657,7 @@ void settings_load_from_flash() {
 /**
  * 生成当前设置快照
  * @return 包含所有运行期设置及 CRC32 的 SettingsData
- * 收集当前生效参数、全部 AMS 身份、霍尔检测、五通总微动、局域网和接线配置；I2C 只存两根引脚，计算 checksum 后返回副本
+ * 收集当前生效参数、网页项目名、全部 AMS 身份、霍尔检测、五通总微动和停止打印保护超时、局域网及接线配置；I2C 只存两根引脚，计算 checksum 后返回副本
  */
 SettingsData settings_snapshot() {
     SettingsData data = {};
@@ -603,6 +672,7 @@ SettingsData settings_snapshot() {
     data.feed_stop_delay_ms = FEED_STOP_DELAY_MS;
     data.total_switch_active_level = TOTAL_SWITCH_ACTIVE_LEVEL;
     data.total_switch_feed_ms = TOTAL_SWITCH_FEED_MS;
+    data.total_switch_pause_timeout_s = TOTAL_SWITCH_PAUSE_TIMEOUT_S;
     data.rs485_mode = RS485_MODE;
     data.bus_log_enable = BUS_LOG_ENABLE;
     data.ota_notify = OTA_NOTIFY;
@@ -620,6 +690,10 @@ SettingsData settings_snapshot() {
     memcpy(data.ams_version, AMS_VERSION, sizeof(AMS_VERSION));
     memcpy(data.hall_detection, HALL_DETECTION, sizeof(HALL_DETECTION));
     data.lan_ams = LAN_AMS_CONFIG;
+    if (PROJECT_NAME[0] && settings_project_name_valid(PROJECT_NAME))
+        memcpy(data.project_name, PROJECT_NAME, strlen(PROJECT_NAME));
+    else
+        memcpy(data.project_name, DEFAULT_PROJECT_NAME, sizeof(DEFAULT_PROJECT_NAME));
     data.checksum = calculate_crc32(&data);
     return data;
 }
@@ -646,7 +720,7 @@ bool settings_save_to_flash() {
  * 保存候选设置并完整回读校验
  * @param candidate 已完成范围和接线校验的候选设置
  * @return true 表示写入成功且回读完全一致
- * 校验全部霍尔检测、五通总微动和局域网参数并重算魔数和 CRC，不修改运行期设置，供项目切换在重启后统一生效
+ * 校验全部霍尔检测、五通总微动、项目名和局域网参数并重算魔数和 CRC，不修改运行期设置，供项目切换在重启后统一生效
  */
 bool settings_save_snapshot(const SettingsData &candidate) {
     if (!io_config_clutch_valid(candidate.io_config)) return false;
@@ -660,10 +734,20 @@ bool settings_save_snapshot(const SettingsData &candidate) {
         !io_config_validate(candidate.io_config, channels, nullptr, &bus)) return false;
     if ((candidate.total_switch_active_level != LOW && candidate.total_switch_active_level != HIGH) ||
         candidate.total_switch_feed_ms <= 0 || candidate.total_switch_feed_ms >= MAX_PULSE_MS) return false;
+    if (candidate.total_switch_pause_timeout_s < MIN_TOTAL_SWITCH_PAUSE_TIMEOUT_S ||
+        candidate.total_switch_pause_timeout_s > MAX_TOTAL_SWITCH_PAUSE_TIMEOUT_S) return false;
+    if (!settings_project_name_valid(candidate.project_name)) return false;
     if (!settings_lan_config_valid(candidate.lan_ams)) return false;
     for (const auto &config : candidate.hall_detection)
         if (!settings_hall_detection_valid(config)) return false;
     SettingsData data = candidate;
+    if (!data.project_name[0]) {
+        memset(data.project_name, 0, sizeof(data.project_name));
+        memcpy(data.project_name, DEFAULT_PROJECT_NAME, sizeof(DEFAULT_PROJECT_NAME));
+    } else {
+        const size_t name_length = strlen(data.project_name);
+        memset(data.project_name + name_length, 0, sizeof(data.project_name) - name_length);
+    }
     data.magic = SETTINGS_MAGIC_NUMBER;
     data.checksum = calculate_crc32(&data);
     if (!write_settings_to_flash(&data)) return false;
@@ -677,7 +761,7 @@ bool settings_save_snapshot(const SettingsData &candidate) {
 /**
  * 恢复所有设置默认值
  * 接线和 AMS 数量复用平台默认项目；霍尔检测使用默认值，全部 AMS 使用自动序列号和默认版本，OTA 恢复默认发布目录
- * 清空局域网配对凭据并恢复默认换料参数；五通总微动恢复 LOW 压下和 200ms 进料
+ * 清空局域网配对凭据并恢复默认换料参数；项目名恢复团子 BMCU，五通总微动恢复 LOW 压下、200ms 进料和 20 秒停止打印保护超时
  * 本函数不直接写存储
  */
 void settings_reset_to_defaults() {
@@ -692,6 +776,9 @@ void settings_reset_to_defaults() {
     FEED_STOP_DELAY_MS = DEFAULT_FEED_STOP_DELAY_MS;
     TOTAL_SWITCH_ACTIVE_LEVEL = DEFAULT_TOTAL_SWITCH_ACTIVE_LEVEL;
     TOTAL_SWITCH_FEED_MS = DEFAULT_TOTAL_SWITCH_FEED_MS;
+    TOTAL_SWITCH_PAUSE_TIMEOUT_S = DEFAULT_TOTAL_SWITCH_PAUSE_TIMEOUT_S;
+    memset(PROJECT_NAME, 0, sizeof(PROJECT_NAME));
+    memcpy(PROJECT_NAME, DEFAULT_PROJECT_NAME, sizeof(DEFAULT_PROJECT_NAME));
     MOTOR_LIMIT = 1;
     RS485_MODE = hal_default_project_preset().bus.mode;
     BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
@@ -742,9 +829,9 @@ static const char *channel_mode_name(const int mode) {
  * 启动和保存设置时，把总线、各 AMS 身份、通道接线、霍尔检测、五通总微动、局域网和 OTA 等参数写入主板日志，不输出访问码
  */
 void settings_log_all() {
-    LOG_MAIN("[settings] 进料停止延迟=%dms，五通总微动=%s，压下电平=%s，进料时长=%dms", FEED_STOP_DELAY_MS,
+    LOG_MAIN("[settings] 进料停止延迟=%dms，五通总微动=%s，压下电平=%s，压下进料=%dms，持续压下停止打印超时=%ds", FEED_STOP_DELAY_MS,
              io_config_pin_label(IO_CONFIG.switch_pin).c_str(),
-             TOTAL_SWITCH_ACTIVE_LEVEL == LOW ? "LOW" : "HIGH", TOTAL_SWITCH_FEED_MS);
+             TOTAL_SWITCH_ACTIVE_LEVEL == LOW ? "LOW" : "HIGH", TOTAL_SWITCH_FEED_MS, TOTAL_SWITCH_PAUSE_TIMEOUT_S);
     LOG_MAIN("[settings] RS485 收发模式=%d，BambuBus 原始报文日志=%s",
              RS485_MODE, BUS_LOG_ENABLE ? "已启用" : "已关闭");
     LOG_MAIN("[settings] BambuBus RX=%s，TX=%s，DE=%s（%s）", io_config_pin_label(BUS_RX).c_str(),

@@ -26,7 +26,12 @@ extern int MANUAL_PULSE_MS;        // 手动进退料点动时长（毫秒）
 extern int AUTO_LOAD_MS;           // 微动辅助进料时长（毫秒，0=关闭）
 extern int FEED_STOP_DELAY_MS;     // 打印机进料结束后的延迟停车时间（毫秒，0=立即停车）
 extern int TOTAL_SWITCH_ACTIVE_LEVEL; // 五通总微动压下电平（LOW/HIGH）
-extern int TOTAL_SWITCH_FEED_MS;   // 五通总微动每次压下的进料时长（毫秒）
+extern int TOTAL_SWITCH_FEED_MS;   // 五通总微动压下沿触发当前通道进料的时长（毫秒）
+extern int TOTAL_SWITCH_PAUSE_TIMEOUT_S; // 打印中五通总微动持续压下后触发停止打印保护的超时（秒）
+constexpr size_t PROJECT_NAME_MAX_BYTES = 128;
+constexpr size_t PROJECT_NAME_BUFFER_SIZE = PROJECT_NAME_MAX_BYTES + 1;
+constexpr char DEFAULT_PROJECT_NAME[] = "团子 BMCU";
+extern char PROJECT_NAME[PROJECT_NAME_BUFFER_SIZE]; // 固件保存的网页项目名
 extern int MOTOR_LIMIT;            // 普通模式的并发上限（1..active_channel_count()）；离合模式实际固定为 1
 extern int RS485_MODE;             // RS485 收发模式（见下方 RS485_MODE_*）
 extern int BUS_LOG_ENABLE;         // BambuBus 原始报文日志开关（0=关 1=开）
@@ -89,11 +94,13 @@ struct SettingsData {
     HallDetectionConfig hall_detection[IO_CONFIG_MAX_CHANNELS]; // 各通道的双阈值与无转动超时
     LanAmsConfig lan_ams;            // 局域网打印机凭据和换料参数
     int32_t total_switch_active_level; // 五通总微动压下电平（LOW/HIGH）
-    int32_t total_switch_feed_ms;    // 五通总微动每次压下的进料时长（毫秒）
+    int32_t total_switch_feed_ms;    // 五通总微动压下沿进料时长（毫秒）
+    int32_t total_switch_pause_timeout_s; // 打印中五通总微动持续压下后触发停止打印保护的超时（秒）
+    char project_name[PROJECT_NAME_BUFFER_SIZE]; // 网页项目名，UTF-8，空值恢复默认
 };
 
-// 当前布局增加共享电机与电磁离合；已发布布局按原长度与 CRC 校验后迁移，保留原始记录直到用户保存
-#define SETTINGS_MAGIC_NUMBER    0x53415432
+// 当前布局含五通持续压下超时和项目名；历史布局按原长度与 CRC 校验后迁移
+#define SETTINGS_MAGIC_NUMBER    0x53415434
 
 // 当前启用数量；数组容量使用 IO_CONFIG_MAX_CHANNELS
 /**
@@ -111,6 +118,16 @@ constexpr int DEFAULT_AMS_COUNT = 1; // 首次启动、恢复默认和无效设�
 #define DEFAULT_FEED_STOP_DELAY_MS  1000 // 进料停止延迟默认时长（毫秒）
 constexpr int DEFAULT_TOTAL_SWITCH_ACTIVE_LEVEL = LOW;
 constexpr int DEFAULT_TOTAL_SWITCH_FEED_MS = 200;
+constexpr int DEFAULT_TOTAL_SWITCH_PAUSE_TIMEOUT_S = 5;
+constexpr int MIN_TOTAL_SWITCH_PAUSE_TIMEOUT_S = 1;
+constexpr int MAX_TOTAL_SWITCH_PAUSE_TIMEOUT_S = 3600;
+
+/**
+ * 校验固件保存的项目名
+ * @param name UTF-8 项目名，允许空串以恢复默认名称
+ * @return 长度和 UTF-8 编码均有效时返回 true
+ */
+bool settings_project_name_valid(const char *name);
 
 // 旧版使用 90.00.00.00 新版使用 1.0.6.87
 #define DEFAULT_AMS_VERSION_MAJOR   90   // 默认 AMS 版本 A 段
@@ -118,7 +135,7 @@ constexpr int DEFAULT_TOTAL_SWITCH_FEED_MS = 200;
 #define DEFAULT_AMS_VERSION_PATCH   0    // 默认 AMS 版本 C 段
 #define DEFAULT_AMS_VERSION_BUILD   0    // 默认 AMS 版本 D 段
 
-// 点动、通道/五通辅助进料和进料停止延迟的时长上限（毫秒）：必须小于 30 秒
+// 点动、通道/五通微动辅助进料和进料停止延迟的时长上限（毫秒）：必须小于 30 秒
 #define MAX_PULSE_MS                30000
 
 #define RS485_MODE_RXTX             1   // 只用 RXD/TXD，不驱动 DE（模块自动收发方向）

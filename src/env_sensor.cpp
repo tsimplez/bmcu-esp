@@ -140,12 +140,12 @@ static bool aht20_start_measure() {
  */
 static bool aht20_read_measurement() {
     if (!i2c_bus_ready()) return false;
-    if (Wire.requestFrom(static_cast<int>(AHT20_ADDR), 7) != 7) return false;
+    if (Wire.requestFrom(AHT20_ADDR, 7) != 7) return false;
 
     uint8_t data[7] = {};
-    for (uint8_t i = 0; i < sizeof(data); i++) {
+    for (unsigned char & i : data) {
         if (!Wire.available()) return false;
-        data[i] = static_cast<uint8_t>(Wire.read());
+        i = static_cast<uint8_t>(Wire.read());
     }
     if (data[0] & 0x80) return false;  // 仍在转换中
 
@@ -240,7 +240,7 @@ static bool bmp280_read_measurement() {
                                     (static_cast<int32_t>(data[4]) << 4) | (data[5] >> 4);
 
     const int32_t temp_var1 =
-        ((((adc_temperature >> 3) - (static_cast<int32_t>(bmp_dig_t1) << 1))) * bmp_dig_t2) >> 11;
+        (((adc_temperature >> 3) - (static_cast<int32_t>(bmp_dig_t1) << 1)) * bmp_dig_t2) >> 11;
     const int32_t temp_var2 =
         (((((adc_temperature >> 4) - static_cast<int32_t>(bmp_dig_t1)) *
             ((adc_temperature >> 4) - static_cast<int32_t>(bmp_dig_t1))) >> 12) * bmp_dig_t3) >> 14;

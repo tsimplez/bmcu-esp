@@ -13,7 +13,7 @@
 void web_config_init();  // setup() 中调用
 void web_config_run();   // loop() 中调用
 
-// HA 两项状态均有效且确认打印中时，允许当前使用通道执行霍尔停转检测
+// HA 两项状态均有效且确认打印中时返回 true
 bool web_config_ha_printing();
 
 #else

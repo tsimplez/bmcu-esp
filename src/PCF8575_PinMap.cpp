@@ -31,7 +31,7 @@ static uint16_t pcf8575_safe_states(const uint8_t device) {
         for (int ch = 0; ch < active_channel_count(); ++ch) {
             const int pin = IO_CONFIG.clutch[ch];
             if (IS_PCF8575_VIRTUAL_PIN(pin) && VIRTUAL_TO_PCF8575_DEVICE(pin) == device)
-                states |= uint16_t(1U << VIRTUAL_TO_PCF8575_BIT(pin));
+                states |= static_cast<uint16_t>(1U << VIRTUAL_TO_PCF8575_BIT(pin));
         }
     }
     return (states & ~pcf8575_idle_known[device]) | (pcf8575_idle_states[device] & pcf8575_idle_known[device]);
@@ -46,7 +46,7 @@ static uint16_t pcf8575_safe_states(const uint8_t device) {
 void PCF8575_set_idle_level(const uint8_t pin, const uint8_t value) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) return;
     const uint8_t device = VIRTUAL_TO_PCF8575_DEVICE(pin);
-    const uint16_t mask = uint16_t(1U << VIRTUAL_TO_PCF8575_BIT(pin));
+    const auto mask = static_cast<uint16_t>(1U << VIRTUAL_TO_PCF8575_BIT(pin));
     pcf8575_idle_known[device] |= mask;
     if (value == HIGH) pcf8575_idle_states[device] |= mask;
     else pcf8575_idle_states[device] &= ~mask;
@@ -170,7 +170,7 @@ void PCF8575_update() {
 void PCF8575_pinMode(const uint8_t pin, const uint8_t mode) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) return;
     const uint8_t device = VIRTUAL_TO_PCF8575_DEVICE(pin);
-    const uint16_t mask = uint16_t(1U << VIRTUAL_TO_PCF8575_BIT(pin));
+    const auto mask = static_cast<uint16_t>(1U << VIRTUAL_TO_PCF8575_BIT(pin));
     if (mode == OUTPUT) pcf8575_pin_modes[device] |= mask;
     else pcf8575_pin_modes[device] &= ~mask;
 }
@@ -184,7 +184,7 @@ void PCF8575_pinMode(const uint8_t pin, const uint8_t mode) {
 void PCF8575_digitalWrite(const uint8_t pin, const uint8_t value) {
     if (!IS_PCF8575_VIRTUAL_PIN(pin)) return;
     const uint8_t device = VIRTUAL_TO_PCF8575_DEVICE(pin);
-    const uint16_t mask = uint16_t(1U << VIRTUAL_TO_PCF8575_BIT(pin));
+    const auto mask = static_cast<uint16_t>(1U << VIRTUAL_TO_PCF8575_BIT(pin));
     if (value == HIGH) pcf8575_pin_states[device] |= mask;
     else pcf8575_pin_states[device] &= ~mask;
     pcf8575_write_device(device, pcf8575_pin_states[device]);
@@ -200,7 +200,7 @@ void PCF8575_digitalWrite(const uint8_t pin, const uint8_t value) {
 int PCF8575_digitalRead(const uint8_t pin) {
     if (!PCF8575_pin_is_online(pin)) return LOW;
     const uint8_t device = VIRTUAL_TO_PCF8575_DEVICE(pin);
-    const uint16_t mask = uint16_t(1U << VIRTUAL_TO_PCF8575_BIT(pin));
+    const auto mask = static_cast<uint16_t>(1U << VIRTUAL_TO_PCF8575_BIT(pin));
     if (pcf8575_pin_modes[device] & mask)
         return pcf8575_pin_states[device] & mask ? HIGH : LOW;
     if (!pcf8575_write_device(device, pcf8575_pin_states[device] | mask)) return LOW;
@@ -229,8 +229,7 @@ void PCF8575_analogWrite(const uint8_t pin, const uint8_t value) {
         PCF8575_digitalWrite(pin, value == 255 ? HIGH : LOW);
         return;
     }
-    const uint32_t now = millis();
-    if (now - last_pwm_time[index] > 1) {
+    if (const uint32_t now = millis(); now - last_pwm_time[index] > 1) {
         last_pwm_time[index] = now;
         ++pwm_counter[index];
         PCF8575_digitalWrite(pin, value > pwm_counter[index] ? HIGH : LOW);

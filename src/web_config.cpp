@@ -118,37 +118,39 @@ static constexpr uint32_t HA_RECORD_MAGIC = 0x48413032;
 static constexpr uint32_t HA_FRESH_MS = 6000;
 static constexpr uint32_t HA_REQUEST_MS = 4000;
 static constexpr size_t HA_BODY_LIMIT = 8192;
-struct HaConfig {
-    char url[192] = {};
-    char token[512] = {};
-    char stage_entity[128] = {};
-    char status_entity[128] = {};
-    uint8_t enabled = 0;
-    uint8_t reserved[3] = {};
-};
-struct HaRecord {
-    uint32_t magic = HA_RECORD_MAGIC;
-    HaConfig config;
-    uint32_t checksum = 0;
-};
-struct HaStatus {
-    bool connected = false, sampled = false;
-    uint32_t received = 0;
-    char stage[96] = {}, print_status[40] = {};
-    char error[160] = {};
-};
+namespace {
+    struct HaConfig {
+        char url[192] = {};
+        char token[512] = {};
+        char stage_entity[128] = {};
+        char status_entity[128] = {};
+        uint8_t enabled = 0;
+        uint8_t reserved[3] = {};
+    };
+    struct HaRecord {
+        uint32_t magic = HA_RECORD_MAGIC;
+        HaConfig config;
+        uint32_t checksum = 0;
+    };
+    struct HaStatus {
+        bool connected = false, sampled = false;
+        uint32_t received = 0;
+        char stage[96] = {}, print_status[40] = {};
+        char error[160] = {};
+    };
+    struct HaEntityPage {
+        uint32_t generation = 0, offset = 0, request = 0, completed = 0;
+        bool requested = false, loading = false, ready = false, delivered = false;
+        String body;
+        char error[160] = {};
+    };
+}
 static HaConfig ha_config;
 static HaStatus ha_status;
 static uint32_t ha_generation = 1;
 static uint32_t ha_connection_generation = 1;
 static portMUX_TYPE ha_lock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t ha_task = nullptr;
-struct HaEntityPage {
-    uint32_t generation = 0, offset = 0, request = 0, completed = 0;
-    bool requested = false, loading = false, ready = false, delivered = false;
-    String body;
-    char error[160] = {};
-};
 static HaEntityPage ha_entity_page;
 static SemaphoreHandle_t ha_entity_mutex = nullptr;
 
@@ -523,7 +525,7 @@ static bool ha_read_entity(const HaConfig &config, const char *entity, char *sta
  * @return 配置仍一致且快照已发布时返回 true
  * 旧配置的网络读取不能覆盖当前配置的快照
  */
-static bool ha_publish_status(uint32_t generation, const HaStatus &status) {
+static bool ha_publish_status(const uint32_t generation, const HaStatus &status) {
     portENTER_CRITICAL(&ha_lock);
     const bool current = generation == ha_generation;
     if (current) ha_status = status;
@@ -742,7 +744,7 @@ static void ha_start_worker() {
  * 令牌只返回是否已设置，禁止回显到网页、状态或日志
  */
 static void handle_ha_get() {
-    String json = String("{\"enabled\":") + (ha_config.enabled ? "true" : "false") +
+    const String json = String("{\"enabled\":") + (ha_config.enabled ? "true" : "false") +
         ",\"configured\":" + (ha_configured(ha_config) ? "true" : "false") +
         ",\"selected\":" + (ha_entities_selected(ha_config) ? "true" : "false") +
         ",\"generation\":" + String(ha_connection_generation) +
@@ -821,7 +823,8 @@ static void handle_ha_save() {
     bool valid = ha_fields_valid(keys, 3) && server.hasArg("url") &&
                  (!server.hasArg("enabled") || server.arg("enabled") == "0" || server.arg("enabled") == "1");
     HaConfig candidate = ha_config;
-    String url = server.arg("url"), token = server.arg("token");
+    String url = server.arg("url");
+    const String token = server.arg("token");
     url.trim();
     while (url.endsWith("/")) url.remove(url.length() - 1);
     valid &= url.length() < sizeof(candidate.url) && token.length() < sizeof(candidate.token) &&
@@ -1316,7 +1319,7 @@ static String sensor_json_value(const bool valid,const float value,const int dig
 /**
  * 生成运行状态快照，供 HTTP 与 WebSocket 共用
  * @return 完整状态 JSON；预留内存失败时为空
- * 汇总 WiFi、项目、总线、局域网换料、HA 阶段与暂停测试、有效当前通道、电机、耗材和传感器；五通压下状态只读取主循环缓存
+ * 汇总 WiFi、项目、总线、局域网换料、HA 阶段、有效当前通道、电机、耗材和传感器；五通压下状态只读取主循环缓存
  * mdns 保留配置名称，mdns_active 返回重名避让后的实际名称，离线或尚未读取时为空
  * filament_colors 按启用的全局通道顺序返回记录中的 #RRGGBB，供网页以不透明圆点显示
  * filament_alpha 按相同顺序返回 0-255 的 A 分量，0 为完全透明，255 为不透明
@@ -1338,6 +1341,7 @@ static String status_json() {
     j += ",\"heap_total\":" + String(ESP.getHeapSize());
     j += ",\"chip\":\"" + String(ESP.getChipModel()) + "\"";
     j += ",\"project\":\"" + String(project_preset_match(settings_snapshot())) + "\"";
+    j += ",\"project_name\":\"" + json_escape(PROJECT_NAME) + "\"";
     j += ",\"rs485\":" + String(RS485_MODE);
     j += ",\"buslog\":" + String(BUS_LOG_ENABLE);
     j += ",\"ams\":" + String(AMS_COUNT);
@@ -1361,14 +1365,6 @@ static String status_json() {
     const auto current = BambuBus_current_channel_status();
     j += ",\"current_channel\":" + String(current.channel) +
          ",\"current_channel_state\":\"" + String(current.state) + "\"";
-    const auto pause = BambuBus_pause_test_status();
-    j += ",\"pause_test\":{\"available\":" + String(pause.available ? "true" : "false") +
-         ",\"active\":" + String(pause.active ? "true" : "false") +
-         ",\"pending\":" + String(pause.pending) + ",\"channel\":" + String(pause.channel) +
-         ",\"candidate_channel\":" + String(pause.candidate_channel) +
-         ",\"frames\":" + String(pause.frames) +
-         ",\"stop_seen\":" + String(pause.stop_seen ? "true" : "false") +
-         ",\"result\":\"" + String(pause.result) + "\"}";
     j += ",\"bus_fault\":" + String(BMCU_printer_bus_fault() ? "true" : "false");
     j += ",\"bus_rx_errors\":" + String(BambuBus_rx_error_count());
     j += ",\"bus_rx_dropped\":" + String(BambuBus_rx_dropped_count());
@@ -1380,7 +1376,9 @@ static String status_json() {
     j += ",\"motor_running\":" + String(BMCU_running_count());
     j += ",\"total_switch\":{\"pin\":" + String(IO_CONFIG.switch_pin) +
          ",\"active_level\":" + String(TOTAL_SWITCH_ACTIVE_LEVEL) +
-         ",\"pressed\":" + String(BMCU_total_switch_state()) + "}";
+         ",\"pressed\":" + String(BMCU_total_switch_state()) +
+         ",\"pause_elapsed_s\":" + String(BMCU_total_switch_pause_elapsed_s()) +
+         ",\"pause_timeout_s\":" + String(TOTAL_SWITCH_PAUSE_TIMEOUT_S) + "}";
     j += ",\"motors\":[";
     for (int i = 0; i < BMCU_motor_count(); i++) {
         if (i) j += ',';
@@ -2023,15 +2021,16 @@ static void websocket_init() {
 
 /**
  * 处理设置读取请求
- * 输出时长、五通压下电平、AMS 身份、通道模式、霍尔检测、局域网参数、两种电机接线及可选引脚；返回已保存的访问码供设置页直接显示
+ * 输出项目名、时长、五通压下电平和打印暂停超时、AMS 身份、通道模式、霍尔检测、局域网参数、两种电机接线及可选引脚；返回已保存的访问码供设置页直接显示
  */
 static void handle_settings_get() {
-    String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
+    String j = "{\"project_name\":\"" + json_escape(PROJECT_NAME) + "\",\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
                ",\"ams\":" + String(AMS_COUNT) + ",\"manual_ms\":" + String(MANUAL_PULSE_MS) +
                ",\"auto_ms\":" + String(AUTO_LOAD_MS) +
                ",\"feed_stop_delay_ms\":" + String(FEED_STOP_DELAY_MS) +
                ",\"total_switch_active_level\":" + String(TOTAL_SWITCH_ACTIVE_LEVEL) +
                ",\"total_switch_feed_ms\":" + String(TOTAL_SWITCH_FEED_MS) +
+               ",\"total_switch_pause_timeout_s\":" + String(TOTAL_SWITCH_PAUSE_TIMEOUT_S) +
                ",\"motor_limit\":" + String(MOTOR_LIMIT) +
                ",\"effective_motor_limit\":" + String(BMCU_motor_limit()) +
                ",\"channels\":" + String(BMCU_motor_count()) +
@@ -2332,7 +2331,7 @@ static void handle_lan_cancel() {
 
 /**
  * 处理常规设置保存
- * 身份字段必须指定 AMS 编号；校验时长、五通压下电平、数量、并发、身份及生效模式接线，保存失败时回滚完整快照
+ * 身份字段必须指定 AMS 编号；校验项目名、时长、五通压下电平、数量、并发、身份及生效模式接线，保存失败时回滚完整快照
  * 拒绝未知或重复字段；接线字段出现时须完整提交生效模式的驱动、微动和霍尔字段，保留另一模式接线，配置由主循环应用
  */
 static void handle_settings_save() {
@@ -2350,6 +2349,14 @@ static void handle_settings_save() {
     const int identity_index = identity_requested ? server.arg("ams_index").toInt() : 0;
     int buslog_before = BUS_LOG_ENABLE;
     const SettingsData previous = settings_snapshot();
+    String project_name;
+    bool project_name_valid = true;
+    if (server.hasArg("project_name")) {
+        project_name = server.arg("project_name");
+        project_name.trim();
+        project_name_valid = project_name.length() == strlen(project_name.c_str()) &&
+                             settings_project_name_valid(project_name.c_str());
+    }
     bool timeout_changed[IO_CONFIG_MAX_CHANNELS] = {};
     uint32_t timeout_previous_ms[IO_CONFIG_MAX_CHANNELS] = {};
     const bool ams_valid = valid_number("ams", 1, BMCU_max_ams_count());
@@ -2361,6 +2368,7 @@ static void handle_settings_save() {
         bool known = key == "ams" || key == "ams_index" || key == "serial" || key == "ams_version" ||
                      key == "manual_ms" || key == "auto_ms" || key == "feed_stop_delay_ms" ||
                      key == "total_switch_active_level" || key == "total_switch_feed_ms" ||
+                      key == "total_switch_pause_timeout_s" || key == "project_name" ||
                      key == "motor_limit" || key == "buslog" || key == "otaurl" || key == "otanotify" ||
                      key.startsWith("io_") || key.startsWith("io-");
         for (int ch = 0; ch < candidate_channels; ++ch)
@@ -2378,6 +2386,9 @@ static void handle_settings_save() {
                  valid_number("feed_stop_delay_ms", 0, MAX_PULSE_MS - 1) &&
                  valid_number("total_switch_active_level", LOW, HIGH) &&
                  valid_number("total_switch_feed_ms", 1, MAX_PULSE_MS - 1) &&
+                 valid_number("total_switch_pause_timeout_s", MIN_TOTAL_SWITCH_PAUSE_TIMEOUT_S,
+                              MAX_TOTAL_SWITCH_PAUSE_TIMEOUT_S) &&
+                  project_name_valid &&
                  valid_number("io_clutch_enabled", 0, 1) &&
                  valid_number("io_clutch_active_level", LOW, HIGH) &&
                  valid_number("io_clutch_engage_ms", 0, MAX_CLUTCH_DELAY_MS) &&
@@ -2506,6 +2517,13 @@ static void handle_settings_save() {
     if (server.hasArg("feed_stop_delay_ms")) FEED_STOP_DELAY_MS = server.arg("feed_stop_delay_ms").toInt();
     if (server.hasArg("total_switch_active_level")) TOTAL_SWITCH_ACTIVE_LEVEL = server.arg("total_switch_active_level").toInt();
     if (server.hasArg("total_switch_feed_ms")) TOTAL_SWITCH_FEED_MS = server.arg("total_switch_feed_ms").toInt();
+    if (server.hasArg("total_switch_pause_timeout_s"))
+        TOTAL_SWITCH_PAUSE_TIMEOUT_S = server.arg("total_switch_pause_timeout_s").toInt();
+    if (server.hasArg("project_name")) {
+        memset(PROJECT_NAME, 0, sizeof(PROJECT_NAME));
+        if (project_name.length()) memcpy(PROJECT_NAME, project_name.c_str(), project_name.length());
+        else memcpy(PROJECT_NAME, DEFAULT_PROJECT_NAME, sizeof(DEFAULT_PROJECT_NAME));
+    }
     if (io_requested) IO_CONFIG = candidate_io;
     for (int i = 0; i < candidate_channels; i++) {
         String kt = "to" + String(i), kc = "cm" + String(i);
@@ -2653,29 +2671,6 @@ static void handle_ha_timeout() {
         }
     }
     server.send(400, "application/json", "{\"ok\":false,\"msg\":\"请指定一个启用通道的退料时间\"}");
-}
-
-/**
- * 登记暂停打印实验或解除请求
- * 只接受 enable=0/1；回调不发送总线帧、不驱动电机，实际反馈和解除交由主循环
- */
-static void handle_pause_test() {
-    if (!server.hasArg("enable")) {
-        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"缺少测试操作\"}");
-        return;
-    }
-    const String enable = server.arg("enable");
-    if (enable != "0" && enable != "1") {
-        server.send(400, "application/json", "{\"ok\":false,\"msg\":\"测试操作必须为 0 或 1\"}");
-        return;
-    }
-    if (!BambuBus_request_pause_test(enable == "1")) {
-        server.send(409, "application/json", "{\"ok\":false,\"msg\":\"需要有效的正在使用通道，且不能重复触发测试\"}");
-        return;
-    }
-    server.send(202, "application/json", enable == "1"
-        ? "{\"ok\":true,\"msg\":\"测试请求已提交，请观察打印机\"}"
-        : "{\"ok\":true,\"msg\":\"解除请求已提交\"}");
 }
 
 /**
@@ -3997,7 +3992,6 @@ static void setup_routes() {
     server.on("/api/lan/cancel", HTTP_POST, handle_lan_cancel);
     server.on("/api/pcf", HTTP_POST, handle_pcf_save);
     server.on("/api/motor", HTTP_POST, handle_manual_motor);
-    server.on("/api/printer/pause-test", HTTP_POST, handle_pause_test);
     server.on("/api/scan", HTTP_GET, handle_scan);
     server.on("/api/wifi", HTTP_POST, handle_wifi_save);
     server.on("/api/mdns", HTTP_POST, handle_mdns_save);
@@ -4065,4 +4059,4 @@ void web_config_run() {
     if (ap_mode) dns.processNextRequest();
 }
 
-#endif  // ARDUINO_ARCH_ESP32
+#endif

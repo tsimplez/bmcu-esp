@@ -1,4 +1,5 @@
 #include "hall_sensor.h"
+#include "BMCU.h"
 #include "settings_storage.h"
 #include "platform.h"
 #include "PCF8575_PinMap.h"
@@ -97,7 +98,7 @@ namespace {
      * 仅当 HA 当前阶段和打印状态均确认打印中时检测；条件不满足时退出检测并清空计时
      * 连续三次采样位于同一阈值外才确认区域；首次确认只建立基准，之后高低区交替才刷新移动时间
      * 切换通道、配置或接线重新计时；初始化或读取失败、超过五百毫秒无采样单独报错，恢复后重新建立基准
-     * 进入停转超时时提交一次 BambuBus 暂停请求；持续超时不重复提交，检测恢复不自动恢复打印
+     * 进入停转超时时按连接模式提交一次暂停请求；持续超时不重复提交，检测恢复不自动恢复打印
      */
     void update_detector(const uint32_t now, const int sampled_channel, const bool valid, const uint16_t raw) {
         const int channel = web_config_ha_printing() ? BambuBus_active_using_channel() : -1;
@@ -167,10 +168,10 @@ namespace {
             now - detector.reference_ms >= config.timeout_s * 1000u) {
             detector.state = DetectionState::timeout;
             publish_detection_event("timeout");
-            const bool requested = BambuBus_request_pause_test(true);
+            const bool requested = BMCU_request_pause();
             LOG_MAIN("[hall] 通道 %d 已连续 %lu 秒未检测到移动，%s", channel + 1,
                      static_cast<unsigned long>(config.timeout_s),
-                     requested ? "已提交总线暂停请求" : "总线暂停请求未接受，请检查暂停实验状态和有线总线连接");
+                     requested ? "已提交打印暂停请求" : "打印暂停请求未接受，请检查打印状态和连接");
         }
     }
 

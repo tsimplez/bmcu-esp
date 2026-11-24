@@ -6,7 +6,6 @@ class Motor {
     int pin2;                    // 退料方向控制引脚
     uint8_t pwmDutyCycle = 0;    // 当前 PWM 占空比（0-255），0 表示输出关闭
     bool isStop = true;          // 当前是否处于停止状态
-    String state = "停止";       // 供状态接口显示的中文运行状态
 
 public:
     Motor();
@@ -17,7 +16,7 @@ public:
 
     void setDutyCycle(uint8_t dutyCycle);
 
-    uint8_t getDutyCycle() const;
+    [[nodiscard]] uint8_t getDutyCycle() const;
 
     void forward();
 
@@ -25,7 +24,5 @@ public:
 
     void stop();
 
-    bool getStopState() const;
-
-    String getState();
+    [[nodiscard]] bool getStopState() const;
 };

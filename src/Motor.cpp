@@ -21,8 +21,7 @@ static bool motor_pins_ready(const int forwardPin, const int backwardPin) {
  * 默认电机构造函数
  * 创建一个尚未绑定引脚的电机对象，后续可通过 setPins() 绑定
  */
-Motor::Motor()
-    : pin1(PIN_NONE), pin2(PIN_NONE), pwmDutyCycle(DEFAULT_PWM_DUTY_CYCLE) {
+Motor::Motor() : pin1(PIN_NONE), pin2(PIN_NONE), pwmDutyCycle(DEFAULT_PWM_DUTY_CYCLE) {
 }
 
 /**
@@ -63,7 +62,6 @@ void Motor::setPins(const int newPin1, const int newPin2) {
     digitalWrite_PCF8575(pin1, LOW);
     digitalWrite_PCF8575(pin2, LOW);
     isStop = true;
-    state = "停止";
 }
 
 /**
@@ -100,7 +98,6 @@ void Motor::forward() {
         return;
     }
     isStop = false;
-    state = "前进";
 }
 
 /**
@@ -119,7 +116,6 @@ void Motor::backward() {
         return;
     }
     isStop = false;
-    state = "后退";
 }
 
 /**
@@ -130,21 +126,9 @@ void Motor::stop() {
     digitalWrite_PCF8575(pin1, LOW);
     digitalWrite_PCF8575(pin2, LOW);
     isStop = true;
-    state = "停止";
 }
 
-/**
- * 查询电机是否停止
- * @return true 表示已停止，false 表示正在转动
- */
+// 查询电机是否停止
 bool Motor::getStopState() const {
     return isStop;
-}
-
-/**
- * 获取电机状态文本
- * @return 当前状态字符串（前进/后退/停止）
- */
-String Motor::getState() {
-    return state;
 }

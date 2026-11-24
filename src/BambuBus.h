@@ -76,22 +76,8 @@ BambuBusCurrentChannelStatus BambuBus_current_channel_status();
 
 int BambuBus_active_using_channel();
 
-// 堵转按目标 AMS 锁存，退料中保存目标通道离线后自动解除；手动解除不恢复通道模式。
-struct BambuBusPauseTestStatus {
-    bool available;
-    bool active;
-    int pending; // 1=等待触发，-1=等待解除，0=无请求
-    int channel; // 本次/上次测试的全局通道，-1=尚未测试
-    int candidate_channel; // 当前允许触发的全局通道，-1=不可用
-    uint32_t frames;
-    bool stop_seen;
-    const char *result;
-};
-
-// 登记网页暂停实验、霍尔停转暂停或解除请求
-bool BambuBus_request_pause_test(bool enable);
-
-BambuBusPauseTestStatus BambuBus_pause_test_status();
+// 正式暂停请求：主循环校验当前使用通道后锁存堵转反馈，目标退料并保存离线后自动解除。
+bool BambuBus_request_pause();
 
 extern bool BambuBus_read();
 

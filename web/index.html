@@ -19,6 +19,8 @@
       header{padding:14px 16px 0;background:#171a22;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
       h1{margin:0;font-size:17px;font-weight:600}
       h1 small{color:var(--dim);font-weight:400;font-size:12px;margin-left:8px}
+      #project-title{cursor:text}
+      .project-name-input{width:min(22em,60vw);padding:2px 6px;font-size:inherit;line-height:inherit}
       .header-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
       .printer-summary{display:flex;align-items:center;gap:8px 16px;flex-wrap:wrap}
       .ha-summary{display:inline-flex;gap:4px 14px;flex-wrap:wrap;overflow-wrap:anywhere}
@@ -105,10 +107,6 @@
       .tbl{width:100%;border-collapse:collapse}
       .tbl details summary{cursor:pointer;color:var(--acc);padding:8px 0}
       .io-config{margin-top:12px;border-top:1px solid var(--line);padding-top:4px}
-      .io-config .tbl{margin-top:8px}
-      .io-config h3{font-size:14px;font-weight:500;margin:12px 0 8px}
-      .io-config select{min-width:92px}
-      .io-config select.bad{border-color:#e15b64}
       .ams-identities{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}
       .ams-identity{min-width:0;border:1px solid var(--line);border-radius:8px;padding:12px}
       .ams-identity h3{margin:0;font-size:14px;font-weight:500}
@@ -147,6 +145,7 @@
       .hall-stats b{color:var(--fg);font-weight:500}
       .hall-state{min-height:19px;margin:5px 0 10px;font-size:11px;color:var(--dim)}
       .hall-detection{margin:5px 0 8px;font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
+      .hall-detection b{font-weight:600;font-variant-numeric:tabular-nums}
       .hall-detection.is-alarm{color:var(--err);font-weight:600}
       .hall-dialog{width:min(420px,calc(100% - 32px));max-height:calc(100% - 32px);overflow:auto;margin:auto;padding:22px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg)}
       .hall-dialog::backdrop{background:#0009}
@@ -195,7 +194,7 @@
 <body>
 <header>
     <div class="header-top">
-        <h1>团子 BMCU 控制台<small id="hdr">-</small></h1>
+        <h1><span id="project-title" title="双击修改项目名">团子 BMCU</span><small id="hdr">-</small></h1>
         <div class="project-picker">
             <label for="project-select">项目配置</label>
             <select id="project-select" onchange="selectProject()" disabled>
@@ -220,11 +219,11 @@
     </div>
     <nav>
         <button data-tab="status" class="on">状态</button>
-        <button data-tab="settings">设置</button>
-        <button data-tab="update">更新</button>
-        <button data-tab="wifi">配网</button>
+        <button data-tab="settings">配置</button>
         <button data-tab="logs">日志</button>
-        <button data-tab="experiments">实验测试</button>
+        <button data-tab="update">更新</button>
+        <button data-tab="experiments">Home Assistant</button>
+        <button data-tab="wifi">配网</button>
     </nav>
     <div id="upbar" class="upbar hide">
         <span id="upbar-txt">发现新固件</span>
@@ -300,6 +299,10 @@
                            style="width:104px"
                            onchange="saveField(this,'feed_stop_delay_ms')"></label>
             </div>
+            <div id="total-switch-progress-card" class="hall-detection hide" role="status">
+                五通微动持续下压保护 · <b id="total-switch-progress">—/—</b> 秒 ·
+                <span id="total-switch-progress-state">等待读取状态</span>
+            </div>
             <div id="chbody"></div>
             <div id="manual-state" class="hint">正在读取设备状态…</div>
         </div>
@@ -316,7 +319,6 @@
             <div class="kv"><span>AHT20 湿度</span><b id="s-aht-hum">-</b></div>
             <div class="kv"><span>BMP280 温度</span><b id="s-bmp-temp">-</b></div>
             <div class="kv"><span>大气压</span><b id="s-bmp-press">-</b></div>
-            <div class="hint">未检测到的传感器会自动停用并定期重试；网页显示“未检测到”时不会使用旧读数</div>
         </div>
         <div class="card">
             <h2>运行状态</h2>
@@ -508,12 +510,14 @@
                     <select id="total-switch-level" disabled onchange="IO_DIRTY = true; updateIoWarnings()">
                         <option value="0">低电平（LOW）</option><option value="1">高电平（HIGH）</option>
                     </select>
-                    <label for="total-switch-feed-ms">进料时长（毫秒）</label>
+                    <label for="total-switch-feed-ms">下压进料时长（毫秒）</label>
                     <input id="total-switch-feed-ms" type="number" min="1" max="29999" step="1" value="200"
                            style="width:110px" disabled oninput="IO_DIRTY = true; updateIoWarnings()">
+                    <label for="total-switch-pause-timeout-s">超时持续压下停止打印（秒）</label>
+                    <input id="total-switch-pause-timeout-s" type="number" min="1" max="3600" step="1" value="20"
+                           style="width:100px" disabled oninput="IO_DIRTY = true; updateIoWarnings()">
                 </div>
-                <div class="hint">选“无”关闭；支持主控 GPIO 和已配置 I2C 的 PCF8575 扩展脚。从未压下变为已压下时，当前选中、有料且空闲的通道按设定时长进料，持续压住不重复触发
-                    默认 LOW 压下、进料 200 毫秒，可设 1～29999 毫秒；状态按已保存的电平判断，与下方通道接线一起保存
+                <div class="hint">选“无”关闭；支持主控 GPIO 和已配置 I2C 的 PCF8575 扩展脚。压下沿会让当前有料且空闲的通道进料一次，按设定时长自动停止，默认 200 毫秒，可设 1～29999 毫秒，持续压住不重复进料。HA 确认打印中且有通道正在使用时，持续压下达到停止打印超时后请求暂停，默认 20 秒，可设 1～3600 秒
                 </div>
                 <table class="tbl channel-io-table">
                     <thead>
@@ -532,20 +536,18 @@
                     PCF8575 扩展脚；同时可接的霍尔数量受空闲 ADC 引脚限制。
                 </div>
                 <div class="row" style="margin-top:10px">
-                    <button id="save-io" class="primary" onclick="saveIoConfig()">保存 AMS 数量、电机模式、引脚与五通参数</button>
+                    <button id="save-io" class="primary" onclick="saveIoConfig()">保存配置参数</button>
                     <span id="io-state" class="hint">引脚配置未加载</span>
                 </div>
             </div>
-            <div class="io-config">
-                <h3>各 AMS 序列号与版本</h3>
-                <div class="hint">AMS 1～4 对应协议编号 0～3。完整序列号为 0EA + 编号 + 12 位后缀；留空时使用芯片 ID
-                    后缀，并把末位改为该编号。自定义后缀完整保留。
-                </div>
-                <div class="hint">版本格式为 A.B.C.D，每段 0..255，修改后打印机需重新查询才能更新显示；未启用 AMS
-                    的设置仍会保存。
-                </div>
-                <div id="ams-identities" class="ams-identities"></div>
+        </div>
+        <div class="card">
+            <h2>AMS 序列号与版本</h2>
+            <div class="hint">AMS 1～4 对应协议编号 0～3。完整序列号为 0EA + 编号 + 12 位后缀；留空时使用芯片 ID
+                后缀，并把末位改为该编号。自定义后缀完整保留
             </div>
+            <div class="hint">版本格式为 A.B.C.D，每段 0..255，修改后打印机需重新查询才能更新显示；未启用 AMS 的设置仍会保存</div>
+            <div id="ams-identities" class="ams-identities"></div>
         </div>
         <div class="card">
             <h2>设备操作</h2>
@@ -658,7 +660,7 @@
         </div>
     </div>
 
-    <!-- ================= 实验测试 ================= -->
+    <!-- ================= Home Assistant ================= -->
     <div id="t-experiments" class="hide">
         <div class="card" id="ha-card">
             <h2>Home Assistant</h2>
@@ -699,18 +701,6 @@
                 <div id="ha-selection-state" class="hint" role="status">当前阶段和打印状态均为必选</div>
             </form>
             <div class="hint">HA 当前阶段和打印状态均为“打印中”且状态有效时，才检测当前使用通道的霍尔停转；超时通过 BambuBus 请求暂停打印</div>
-        </div>
-
-        <div class="card" id="pause-test-card">
-            <h2>暂停打印测试（实验）</h2>
-            <div class="row">
-                <button id="pause-test-start" class="danger" onclick="sendPauseTest(true)" disabled>测试暂停</button>
-                <button id="pause-test-clear" onclick="sendPauseTest(false)">解除测试</button>
-            </div>
-            <div id="pause-test-state" class="hint" role="status">正在读取测试状态…</div>
-            <div class="hint">
-                点击后保持堵转，目标通道进入“退料中”时设为离线，保存成功后自动解除堵转。恢复使用请在“通道参数”中改回在线或自动；重启仍保持离线。“解除测试”只解除堵转，不恢复通道模式。
-            </div>
         </div>
     </div>
 
@@ -906,12 +896,13 @@
    * 应用状态快照并刷新页面
    * @param {Object} d 设备的完整状态
    * @param {number} requestedAt 本帧采样对应的浏览器时间下界，用于隔离操作前状态和估算退料截止
-   * 同步电机、局域网配对、HA、传感器、暂停实验、项目和 mDNS，首次成功时自动检查更新
+   * 同步电机、局域网配对、HA、传感器、项目和 mDNS，首次成功时自动检查更新
    */
   const applyStatusPacket = (d, requestedAt) => {
     if (!d || !Array.isArray(d.motors) || !Number.isInteger(d.channels)) throw Error('状态数据格式不完整')
     S = d
     statusAt = performance.now()
+    if (!$('project-title').querySelector('input')) applyProjectName(d.project_name)
     syncPullbackTests(requestedAt)
     syncProjectCurrent(d.project)
     $('printer').textContent = ['等待打印机连接', '打印机在线', '打印机离线'][d.printer] || '打印机状态未知'
@@ -958,7 +949,6 @@
     $('b0').classList.toggle('on', d.buslog == 0)
     renderMotorControls()
     renderChannelStatus()
-    renderPauseTest()
     renderHomeAssistant()
     updateBusLabels()
     updateChannelStateText(true)
@@ -979,7 +969,6 @@
     $('printer').style.color = 'var(--warn)'
     renderMotorControls()
     renderChannelStatus()
-    renderPauseTest()
     renderHomeAssistant()
     updateBusLabels()
   }
@@ -1461,97 +1450,41 @@
   $('ha-form').addEventListener('submit', saveHomeAssistant)
   $('ha-form').addEventListener('input', markHomeAssistantDirty)
   $('ha-selection-form').addEventListener('submit', saveHomeAssistantSelection)
-
-  // 暂停实验请求只在浏览器内防重，实际状态由固件主循环返回。
-  let pauseTestPending = false
-  /**
-   * 刷新暂停实验按钮和观察结果
-   * 状态过期时禁止触发并保留解除入口；显示等待退料、离线保存和恢复方式，停止供料只作为观察结果
-   */
-  const renderPauseTest = () => {
-    const fresh = statusAt && performance.now() - statusAt < 3000, t = S.pause_test
-    $('pause-test-start').disabled = pauseTestPending || !fresh || !t?.available
-    $('pause-test-clear').disabled = pauseTestPending
-    const el = $('pause-test-state')
-    if (!fresh) {
-      el.textContent = '设备状态未更新，可尝试解除测试';
-      return
-    }
-    if (!t) {
-      el.textContent = '当前固件未提供暂停测试状态';
-      return
-    }
-    if (pauseTestPending || t.pending) {
-      el.textContent = t.pending < 0 ? '等待主循环解除测试…' : '请求处理中…';
-      return
-    }
-    const channel = t.channel >= 0 ? 'AMS ' + (Math.floor(t.channel / 4) + 1) + ' · 通道 ' + (t.channel + 1) + ' · ' : ''
-    if (t.result === 'saving_offline' || t.result === 'save_failed') {
-      el.textContent = channel + (t.result === 'save_failed' ? '离线设置保存失败，将自动重试' : '已进入退料中，通道已离线，等待保存') +
-              (t.active ? ' · 堵转持续保持' : ' · 堵转已手动解除')
-      return
-    }
-    if (t.active) {
-      el.textContent = channel + (t.frames ? '已发送测试反馈' : '等待发送测试反馈') + ' ' + t.frames + ' 帧 · ' +
-              (t.stop_seen ? '已收到停止供料 · ' : '') + '堵转持续保持，等待退料中后离线'
-      return
-    }
-    const mode = S.cm?.[t.channel]
-    const results = {
-      cleared: '已解除测试，通道模式不变', target_disabled: '目标 AMS 已禁用，测试已解除',
-      rejected: '通道状态改变，本次未触发', restored: '通道模式已恢复，堵转已解除',
-      offline: mode === 1 || mode === 2 ? '通道已恢复' + CH_STATUS_NAMES[mode] + '，堵转已解除' :
-              '已保存离线并解除堵转；请在通道参数中恢复在线或自动'
-    }
-    el.textContent = results[t.result] ? channel + results[t.result] + ' · 共反馈 ' + t.frames + ' 帧' :
-            t.available ? '可测试：AMS ' + (Math.floor(t.candidate_channel / 4) + 1) + ' · 通道 ' + (t.candidate_channel + 1) :
-                    '等待有效的正在使用通道；进料准备和空闲时不能触发'
-  }
-  /**
-   * 提交暂停实验或解除请求
-   * @param {boolean} enable true 触发测试，false 解除测试
-   * @return {Promise<void>} 请求及状态刷新完成的 Promise
-   * 设置 3 秒请求超时、防止重复点击，失败后重新读取设备状态以判断请求是否实际生效
-   * 捕获异常时在控制台输出上下文与完整异常
-   */
-  const sendPauseTest = async (enable) => {
-    if (pauseTestPending) return
-    if (enable && (!statusAt || performance.now() - statusAt >= 3000 || !S.pause_test?.available)) return
-    pauseTestPending = true
-    renderPauseTest()
-    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 3000)
-    try {
-      const r = await apiFetch('/api/printer/pause-test', {
-        method: 'POST', signal: ac.signal,
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: 'enable=' + (enable ? 1 : 0)
-      })
-      const d = await r.json()
-      if (!r.ok || !d.ok) throw Error(d.msg || '测试请求失败')
-      toast(d.msg)
-    } catch (e) {
-      console.error('暂停实验请求失败', e);
-      toast(e.name === 'AbortError' ? '请求超时，请查看测试状态或尝试解除' : e.message || '测试请求失败')
-    } finally {
-      clearTimeout(timer)
-      pauseTestPending = false
-      await refreshStatus()
-      renderPauseTest()
-    }
-  }
-
-  // 只记录正在发送的请求；运行状态和并发限制以固件为准
-  // 按通道记录正在发送的手动电机命令方向，避免重复点击；0 表示停止请求
   const motorPending = {}, CH_STATUS_NAMES = ['离线', '在线', '自动'];
   // 检测复用手动点动上限；测时状态只保存在本页，实际启停仍由原电机接口处理。
   const PULLBACK_TEST_MS = 29999, pullbackTests = {}
   /**
+   * 更新单个五通微动进度卡片
+   * 未配置时隐藏；已配置时用紧凑单行显示独立计时进度和状态
+   */
+  const renderTotalSwitchProgress = () => {
+    const card = $('total-switch-progress-card'), sw = S?.total_switch
+    const configured = !!sw && sw.pin !== 255
+    card.classList.toggle('hide', !configured)
+    if (!configured) return
+    const fresh = !!statusAt && performance.now() - statusAt < 3000
+    const progress = $('total-switch-progress'), state = $('total-switch-progress-state')
+    if (!fresh) {
+      progress.textContent = '—/—'
+      state.textContent = '设备状态待确认'
+      return
+    }
+    const timeout = Number.isInteger(sw.pause_timeout_s) && sw.pause_timeout_s > 0 ? sw.pause_timeout_s : 20
+    const timing = Number.isInteger(sw.pause_elapsed_s) && sw.pause_elapsed_s >= 0
+    const elapsed = timing ? Math.min(sw.pause_elapsed_s, timeout) : 0
+    progress.textContent = elapsed + '/' + timeout
+    state.textContent = timing ? (elapsed >= timeout ? '已达到停止打印超时' : '五通微动持续压下计时') :
+            sw.pressed === 1 ? '已压下 · 等待 HA 打印中且有通道在使用' : sw.pressed === 0 ? '未压下' : '输入状态待确认'
+  }
+  /**
    * 刷新通道卡片高亮、耗材颜色圆点与透明度、打印机状态标签和微动状态
-   * 根据后端模式及微动状态区分在线、有料和无料，同时刷新五通压下状态；当前使用仅高亮标签，重启恢复的通道显示等待确认，未选中时隐藏标签，状态过期时清除高亮
+   * 根据后端模式及微动状态区分在线、有料和无料，同时更新紧凑的五通微动进度行；当前使用仅高亮标签，重启恢复的通道显示等待确认，未选中时隐藏标签，状态过期时清除高亮
    * 颜色缺失或无效时显示空心圆，A 分量缺失或无效时透明度显示“—”；断连或状态过期时保留最近读数并提示“上次读取”
    * A 分量按 (255-A)/255 换算为四舍五入的透明度百分比，0% 不透明，100% 完全透明
    */
   const renderChannelStatus = () => {
     renderTotalSwitchStatus()
+    renderTotalSwitchProgress()
     const fresh = !!statusAt && performance.now() - statusAt < 3000
     const labels = {
       using: '当前使用',
@@ -2312,8 +2245,8 @@
       const el = $('run' + i)
       if (!el) continue
       const left = Math.max(0, (m.remaining_ms || 0) - (performance.now() - statusAt))
-      el.textContent = queued ? (['', '打印机', '手动', '微动辅助', '局域网', '五通总微动'][m.queued_source] || '') + ' · 等待' + (m.queued_dir > 0 ? '进料' : '退料') + ' · 排队第 ' + m.queue_position + ' 位' + (fresh ? '' : ' · 状态待确认') :
-              running ? (['', '打印机', '手动', '微动辅助', '局域网', '五通总微动'][m.source] || '') + ' · ' + (m.dir > 0 ? '进料' : '退料') +
+      el.textContent = queued ? (['', '打印机', '手动', '微动辅助', '局域网'][m.queued_source] || '') + ' · 等待' + (m.queued_dir > 0 ? '进料' : '退料') + ' · 排队第 ' + m.queue_position + ' 位' + (fresh ? '' : ' · 状态待确认') :
+              running ? (['', '打印机', '手动', '微动辅助', '局域网'][m.source] || '') + ' · ' + (m.dir > 0 ? '进料' : '退料') +
                       (!fresh ? ' · 状态待确认' : m.remaining_ms < 0 ? ' · 剩余时间未知' : left > 0 ? ' · 剩余 ' + (left / 1000).toFixed(1) + ' 秒' : ' · 等待停止确认') :
                       ''
     }
@@ -3219,7 +3152,7 @@
   }
   /**
    * 校验并显示通道引脚和五通参数问题
-   * 按当前模式检查电机、离合、微动、霍尔与总微动的空值和重复引脚，校验五通及离合时序，提示无法驱动的通道
+   * 按当前模式检查电机、离合、微动、霍尔与总微动的空值和重复引脚，校验五通停止打印超时、通道进料和离合时序，提示无法驱动的通道
    */
   const updateIoWarnings = () => {
     let duplicate = false, missing = false
@@ -3240,10 +3173,14 @@
       duplicate ||= repeated
     }
     refreshIoOptionLabels()
-    const level = $('total-switch-level'), feed = $('total-switch-feed-ms')
+    const level = $('total-switch-level'), pauseTimeout = $('total-switch-pause-timeout-s')
+    const feed = $('total-switch-feed-ms')
     const invalidSwitch = !['0', '1'].includes(level.value) || !Number.isInteger(Number(feed.value)) ||
             feed.value === '' || Number(feed.value) < 1 || Number(feed.value) > 29999
+    const invalidPauseTimeout = pauseTimeout.value === '' || !Number.isInteger(Number(pauseTimeout.value)) ||
+            Number(pauseTimeout.value) < 1 || Number(pauseTimeout.value) > 3600
     feed.classList.toggle('bad', invalidSwitch)
+    pauseTimeout.classList.toggle('bad', invalidPauseTimeout)
     const invalidClutch = !['0', '1'].includes($('io-clutch-level').value) ||
             ['io-clutch-engage-ms', 'io-clutch-release-ms'].some(id => {
               const el = $(id), invalid = el.value === '' || !Number.isInteger(Number(el.value)) || Number(el.value) < 0 || Number(el.value) > 2000
@@ -3251,13 +3188,14 @@
               return invalid
             })
     renderTotalSwitchStatus()
-    $('io-state').textContent = invalidSwitch ? '请选择压下电平，进料时长须为 1～29999 毫秒的整数' :
+    $('io-state').textContent = invalidSwitch ? '请选择压下电平，五通下压进料时长须为 1～29999 毫秒的整数' :
+            invalidPauseTimeout ? '持续压下停止打印超时须为 1～3600 秒的整数' :
             invalidClutch ? '请选择离合闭合电平，吸合和释放延时须为 0～2000 毫秒的整数' :
             missing ? '请为所有启用通道选择引脚或“无”' :
             duplicate ? '存在重复引脚，请修改后再保存' :
                     unset.length ? '通道 ' + unset.join('、') + (IO_RENDERED_CLUTCH ? ' 缺少共享电机或离合接线，无法进退料' : ' 的电机引脚是「无」，这些通道无法进退料') :
                             '配置可提交；保存前请确认设备处于空闲状态'
-    $('io-state').classList.toggle('error', duplicate || missing || invalidSwitch || invalidClutch)
+    $('io-state').classList.toggle('error', duplicate || missing || invalidSwitch || invalidPauseTimeout || invalidClutch)
   }
   /**
    * 交换指定通道的进料和退料引脚草稿，并刷新冲突提示
@@ -3272,7 +3210,7 @@
     updateIoWarnings()
   }
   /**
-   * 渲染电机模式、离合时序、总微动和所有通道接线
+   * 渲染电机模式、离合时序、总微动参数和所有通道接线
    * @param {Object} d 包含通道数量和引脚配置的 API 数据
    * 普通模式提供进退料交换按钮，离合模式合并为通道单 IO；重建控件后立即检查生效模式的引脚冲突
    */
@@ -3293,7 +3231,8 @@
     $('io-switch-control').replaceChildren(ioMakeSelect('io-switch', d.io?.switch_pin ?? 255, true))
     $('total-switch-level').value = String(d.total_switch_active_level ?? 0)
     $('total-switch-feed-ms').value = String(d.total_switch_feed_ms ?? 200)
-    $('total-switch-level').disabled = $('total-switch-feed-ms').disabled = false
+    $('total-switch-pause-timeout-s').value = String(d.total_switch_pause_timeout_s ?? 20)
+    $('total-switch-level').disabled = $('total-switch-feed-ms').disabled = $('total-switch-pause-timeout-s').disabled = false
     const body = $('iobody');
     body.textContent = ''
     const table = body.closest('table'), headings = IO_RENDERED_CLUTCH ?
@@ -3357,6 +3296,7 @@
     io.clutch_release_ms = $('io-clutch-release-ms').value
     IO_DRAFT.total_switch_active_level = $('total-switch-level').value
     IO_DRAFT.total_switch_feed_ms = $('total-switch-feed-ms').value
+    IO_DRAFT.total_switch_pause_timeout_s = $('total-switch-pause-timeout-s').value
     for (let i = 0; i < IO_CHANNELS; i++) {
       if (IO_RENDERED_CLUTCH) {
         if ($('io-clutch' + i).value !== '') io.clutch[i] = $('io-clutch' + i).value
@@ -3410,7 +3350,8 @@
       io_clutch_active_level: io.clutch_active_level, io_clutch_engage_ms: io.clutch_engage_ms,
       io_clutch_release_ms: io.clutch_release_ms,
       total_switch_active_level: IO_DRAFT.total_switch_active_level,
-      total_switch_feed_ms: IO_DRAFT.total_switch_feed_ms})
+      total_switch_feed_ms: IO_DRAFT.total_switch_feed_ms,
+      total_switch_pause_timeout_s: IO_DRAFT.total_switch_pause_timeout_s})
     /**
      * 将未配置的草稿引脚转换为表单存储值
      * @param {number|string|undefined} value 草稿引脚编号
@@ -3599,13 +3540,14 @@
   /**
    * 读取并渲染完整参数配置
    * @return {Promise<void>} 配置加载完成的 Promise
-   * 请求 /api/settings，填充设置项、各 AMS 身份、通道卡片和接线界面；身份草稿保持不变，旧请求不覆盖新保存的霍尔参数
+    * 请求 /api/settings，填充项目名、设置项、各 AMS 身份、通道卡片和接线界面；身份草稿保持不变，旧请求不覆盖新保存的霍尔参数
    * 离合模式显示并锁定有效上限 1，普通模式显示已保存的独立电机上限
    * 捕获异常时在控制台输出上下文与完整异常
    */
   const loadPara = () => {
     const revision = hallConfigRevision
     return apiFetch('/api/settings').then(r => r.json()).then((d) => {
+      if (!$('project-title').querySelector('input')) applyProjectName(d.project_name)
       if (revision === hallConfigRevision && Array.isArray(d.hall_detection)) d.hall_detection.forEach((config, channel) => {
         if (validHallConfig(config)) hallConfigs.set(channel, {...config, pin: d.io?.hall?.[channel] ?? 255})
       })
@@ -4287,7 +4229,6 @@
     {type: 'autoload', label: '自动进料', color: '#2dd4bf'},
     {type: 'bus', label: 'BambuBus', color: '#facc15'},
     {type: 'lan', label: '局域网 / MQTT', color: '#22d3ee'},
-    {type: 'pause-test', label: '暂停实验', color: '#fb7185'},
     {type: 'settings', label: '设置/存储', color: '#fb923c'},
     {type: 'i2c', label: 'I2C/环境', color: '#a3e635'},
     {type: 'web', label: '网页/配网', color: '#c084fc'},
@@ -5073,6 +5014,65 @@
 
 
   // ---------- 启动 ----------
+  let savedProjectName = '团子 BMCU'
+  /**
+   * 更新设备项目名及页面标题
+   * @param {string} name 从固件读取或已保存的项目名
+   * 空值显示默认项目名，并更新浏览器和主屏幕标题
+   */
+  const applyProjectName = name => {
+    const normalized = String(name || '').trim().slice(0, 32) || '团子 BMCU'
+    savedProjectName = normalized
+    $('project-title').textContent = normalized
+    document.title = normalized
+    const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]')
+    if (appleTitle) appleTitle.content = normalized
+  }
+  /**
+   * 初始化项目名的双击编辑，并在输入框失焦时保存到设备固件
+   * 空值由固件恢复为默认名称，保存失败时恢复最近一次已确认的名称
+   */
+  const initProjectNameEditor = () => {
+    const title = $('project-title'), defaultName = '团子 BMCU'
+    applyProjectName(defaultName)
+    title.ondblclick = () => {
+      if (title.querySelector('input')) return
+      const input = document.createElement('input')
+      input.className = 'project-name-input'
+      input.maxLength = 32
+      input.value = savedProjectName
+      title.textContent = ''
+      title.appendChild(input)
+      input.focus()
+      input.select()
+      input.onkeydown = event => {
+        if (event.key === 'Enter') input.blur()
+        if (event.key === 'Escape') {
+          input.dataset.cancel = 'true'
+          input.blur()
+        }
+      }
+      input.onblur = async () => {
+        if (input.dataset.cancel === 'true') {
+          applyProjectName(savedProjectName)
+          return
+        }
+        const submitted = input.value.trim(), normalized = submitted || defaultName
+        if (normalized === savedProjectName && submitted) {
+          applyProjectName(savedProjectName)
+          return
+        }
+        input.disabled = true
+        const body = new URLSearchParams({project_name: submitted}).toString()
+        if (await postSettings(body, true)) {
+          applyProjectName(normalized)
+          toast('项目名已保存')
+        } else {
+          applyProjectName(savedProjectName)
+        }
+      }
+    }
+  }
   // 安全上下文启用离线连接说明，应用安装由浏览器自身处理
   if (window.isSecureContext && 'serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js', {scope: './', updateViaCache: 'none'}).catch(error => {
@@ -5080,6 +5080,7 @@
     })
   }
   document.getElementById('toast').onclick = toastOff
+  initProjectNameEditor()
   const navBtns = document.querySelectorAll('nav button');
   for (let i = 0; i < navBtns.length; i++) {
     navBtns[i].onclick = e => showTab(e.currentTarget.dataset.tab)
@@ -5113,7 +5114,6 @@
     }
   })
   setInterval(renderMotorControls, 200)
-  setInterval(renderPauseTest, 200)
   setInterval(renderHomeAssistant, 1000)
 
 </script>

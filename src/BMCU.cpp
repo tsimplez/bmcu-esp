@@ -20,6 +20,7 @@
 #include "i2c_bus.h"
 #include "BambuBus.h"
 #include "lan_ams.h"
+#include "web_config.h"
 
 namespace {
 constexpr uint32_t CHANNEL_SWITCH_DELAY_MS = 100; // 通道切换后的运动稳定期
@@ -77,6 +78,11 @@ static bool io_apply_pending = false;
 // 五通总微动上次读数；-1 表示尚未建立有效输入基线
 static int lastSwitchState = -1;
 static bool total_switch_triggered = false; // 仅当前主循环有效的压下边沿，不排队补触发
+static bool total_switch_pause_timing = false;
+static uint32_t total_switch_pause_started_ms = 0;
+static bool total_switch_pause_requested = false;
+static uint32_t total_switch_pause_last_attempt_ms = 0;
+static int applied_total_switch_pause_timeout_s = DEFAULT_TOTAL_SWITCH_PAUSE_TIMEOUT_S;
 
 // 等待启动的电机任务，按提交顺序执行，同一通道只保留一个目标动作
 static MotorJob motor_queue[IO_CONFIG_MAX_CHANNELS];
@@ -398,6 +404,8 @@ static void apply_io_config() {
     if (switch_changed || applied_switch_active_level != TOTAL_SWITCH_ACTIVE_LEVEL) {
         lastSwitchState = -1;
         total_switch_triggered = false;
+        total_switch_pause_timing = false;
+        total_switch_pause_requested = false;
     }
     bool changed[IO_CONFIG_MAX_CHANNELS] = {};
     if (clutch_changed) {
@@ -1072,6 +1080,56 @@ static void switchInterrupt() {
 }
 
 /**
+ * 读取五通总微动持续压下的计时时长
+ * @return 已持续的秒数；未计时返回 -1，超时后保持在设定上限
+ */
+int BMCU_total_switch_pause_elapsed_s() {
+    if (!total_switch_pause_timing) return -1;
+    const uint32_t elapsed_s = (millis() - total_switch_pause_started_ms) / 1000u;
+    return static_cast<int>(min(elapsed_s, static_cast<uint32_t>(TOTAL_SWITCH_PAUSE_TIMEOUT_S)));
+}
+
+/**
+ * 请求暂停当前打印任务
+ * @return 请求已提交时返回 true
+ * 局域网模式发送打印机暂停命令，有线模式通过 BambuBus 故障反馈请求暂停
+ */
+bool BMCU_request_pause() {
+    return lan_ams_enabled() ? lan_ams_request_pause() : BambuBus_request_pause();
+}
+
+/**
+ * 监测打印中持续压下的五通总微动并提交暂停请求
+ * @param now 当前毫秒时刻
+ * HA 打印状态和任一正在使用通道有效期间累计压下时间；释放或状态失效时清零，不把通道号绑定到计时器
+ */
+static void update_total_switch_pause(const uint32_t now) {
+    const bool has_active_channel = web_config_ha_printing() && BambuBus_active_using_channel() >= 0;
+    if (const int pressed = BMCU_total_switch_state(); pressed != 1 || !has_active_channel) {
+        total_switch_pause_timing = false;
+        total_switch_pause_requested = false;
+        return;
+    }
+    if (!total_switch_pause_timing || applied_total_switch_pause_timeout_s != TOTAL_SWITCH_PAUSE_TIMEOUT_S) {
+        total_switch_pause_timing = true;
+        total_switch_pause_started_ms = now;
+        total_switch_pause_requested = false;
+        total_switch_pause_last_attempt_ms = 0;
+        applied_total_switch_pause_timeout_s = TOTAL_SWITCH_PAUSE_TIMEOUT_S;
+        LOG_MAIN("[switch] HA 打印中且有通道使用，检测到五通总微动压下，%d 秒后请求暂停",
+                 TOTAL_SWITCH_PAUSE_TIMEOUT_S);
+    }
+    if (total_switch_pause_requested || now - total_switch_pause_started_ms <
+        static_cast<uint32_t>(TOTAL_SWITCH_PAUSE_TIMEOUT_S) * 1000u) return;
+    if (total_switch_pause_last_attempt_ms && now - total_switch_pause_last_attempt_ms < 5000u) return;
+    total_switch_pause_last_attempt_ms = now;
+    const bool accepted = BMCU_request_pause();
+    total_switch_pause_requested = accepted;
+    LOG_MAIN("[switch] 五通总微动持续压下超时，打印暂停请求%s",
+             accepted ? "已提交" : "未接受，等待重试并检查打印机连接状态");
+}
+
+/**
  * 判断通道是否禁止微动辅助进料
  * @param motorNum 通道编号
  * @return true 表示当前不能触发辅助进料
@@ -1090,7 +1148,7 @@ static bool autoload_blocked(const int motorNum) {
 /**
  * 检测微动开关并触发自动进料
  * 轮询各通道微动状态，读取后检查所属扩展芯片状态并做 30ms 防抖；自动模式下由无料变有料触发辅助进料
- * 离线或读取失败时清除有料及防抖状态，恢复后的首次读数只建立基线；五通进料不受通道自吸设置影响，通道无料时仍停止
+ * 离线或读取失败时清除有料及防抖状态，恢复后的首次读数只建立基线；通道微动辅助进料由各自通道状态决定
  */
 void check_microswitch_status() {
     const uint32_t now = millis();
@@ -1100,7 +1158,6 @@ void check_microswitch_status() {
         if (ch.motor.source == MOTOR_AUTOLOAD && (autoload_blocked(i) || AUTO_LOAD_MS <= 0))
             motorCmd(i, 0);
         if (ch.motor.source == MOTOR_TOTAL_SWITCH && !is_filament_online(i)) motorCmd(i, 0);
-
         // 非自动模式、超出启用通道或无微动输入的通道不参与触发
         if (CHANNEL_MODE[i] != CHANNEL_MODE_AUTO) {
             ch.msw_previous = ch.msw_raw = -1;
@@ -1180,6 +1237,7 @@ void BMCU_run() {
     if (io_apply_pending) apply_io_config();
     PCF8575_poll();
     sample_total_switch();
+    update_total_switch_pause(millis());
     motor_tick();
     if (lan_ams_enabled()) {
         lan_ams_run();

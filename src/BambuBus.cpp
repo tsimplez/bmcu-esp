@@ -87,19 +87,16 @@ struct _filament_ext {
 
 // 每个 AMS 的 4 个通道对应的内部运动扩展状态
 static _filament_ext filament_ext[4][4];
-// 堵转反馈保持到目标进入退料中并保存离线模式；后台保存失败时继续锁存。
-static struct PauseTest {
+// 暂停反馈保持到目标进入退料中并保存离线模式；后台保存失败时继续锁存。
+static struct PauseRequest {
     int channel = -1;
     int requested_channel = -1;
-    int request = 0;
+    bool request_pending = false;
     bool active = false;
     bool offline_pending = false;
-    uint32_t frames = 0;
-    bool stop_seen = false;
-    const char *result = "idle";
-} pause_test;
+} pause_request;
 
-static void pause_test_run(uint32_t now);
+static void pause_request_run(uint32_t now);
 
 // 当前协商使用的 AMS 总线地址
 static uint16_t bambubus_ams_address = 0x0000;
@@ -921,7 +918,7 @@ static void BambuBUS_UART_Init(const uint32_t baud) {
  * 使用通道仅恢复为待确认记录，不恢复电机动作；仅在启动时调用
  */
 void BambuBus_init() {
-    pause_test = PauseTest();
+    pause_request = PauseRequest();
     const bool _init_ready = BambuBus_read();
     if (io_config_bus_enabled() && RS485_MODE == RS485_MODE_DE) {
         digitalWrite_PCF8575(BUS_DE, LOW);
@@ -1405,13 +1402,11 @@ static void set_prepare_response(unsigned char *out, const uint8_t ams_num, cons
  * 离线模式保存成功前覆盖目标 AMS 的压力及相邻字段；本函数不改变耗材和电机状态
  * 回复按所属 AMS 隔离，后续统一计算 CRC；无通道轮询和同 AMS 换槽也不能清除故障
  */
-static void apply_pause_test_response(unsigned char *payload, const uint8_t ams_num) {
-    if (!pause_test.active || pause_test.channel / 4 != ams_num) return;
+static void apply_pause_response(unsigned char *payload, const uint8_t ams_num) {
+    if (!pause_request.active || pause_request.channel / 4 != ams_num) return;
     // 与 BMCU-U 的 Cxx/Dxx 堵转路径一致：小端 F06F / 1CE7。
     payload[8] = 0x6F; payload[9] = 0xF0;
     payload[10] = 0xE7; payload[11] = 0x1C;
-    if (++pause_test.frames == 1)
-        LOG_MAIN("[pause-test] 通道 %d 开始反馈 F06F/1CE7，请在打印机上确认是否暂停", pause_test.channel + 1);
 }
 
 /**
@@ -1426,14 +1421,14 @@ static void send_for_Cxx(const unsigned char *buf, const int length) {
 
     // Cxx 的通道位于 [7]、运动标志位于 [8]；与 Dxx 的布局不同
     if (!process_motion_state_machine(buf[5], buf[7], buf[6], buf[8])) return;
-    pause_test_run(millis());
+    pause_request_run(millis());
     now_op_num = buf[7];
     memcpy(Cxx_res, Cxx_template, sizeof(Cxx_res));
     Cxx_res[1] = 0xC0 | (package_num << 3);
     Cxx_res[38] = set_motion_response(Cxx_res + 5, buf[5]);
     set_prepare_response(Cxx_res, buf[5], Cxx_res[38]);
     Cxx_res[29] = get_filament_left_char(buf[5]);
-    apply_pause_test_response(Cxx_res + 5, buf[5]);
+    apply_pause_response(Cxx_res + 5, buf[5]);
 
     package_send_with_crc(Cxx_res, sizeof(Cxx_res));
     if (package_num < 7)
@@ -1481,7 +1476,7 @@ static void send_for_Dxx(const unsigned char *buf, const int length) {
     const unsigned char AMS_num = buf[5];
     // Dxx 的运动标志位于 [7]、通道位于 [9]
     if (!process_motion_state_machine(AMS_num, buf[9], buf[6], buf[7])) return;
-    pause_test_run(millis());
+    pause_request_run(millis());
     now_op_num = buf[9];
     memcpy(Dxx_res, Dxx_template, sizeof(Dxx_res));
 
@@ -1502,7 +1497,7 @@ static void send_for_Dxx(const unsigned char *buf, const int length) {
     Dxx_res[12] = buf[9];
     Dxx_res[13] = filament_flag_NFC;
     set_motion_response(Dxx_res + 17, AMS_num);
-    apply_pause_test_response(Dxx_res + 17, AMS_num);
+    apply_pause_response(Dxx_res + 17, AMS_num);
 
     // AHT20 有效时把温湿度写入 AMS 长包回复；无效或未检测到时恢复固定默认值，
     // 避免把上一次的旧读数继续发给打印机
@@ -2118,9 +2113,9 @@ BambuBusCurrentChannelStatus BambuBus_current_channel_status() {
 }
 
 /**
- * 读取当前允许霍尔检测的唯一使用通道
+ * 读取由新鲜状态确认正在使用的通道
  * @return 已由新鲜打印机报文确认使用的通道；待确认、离线或其他动作返回 -1
- * 复用网页状态的通信与通道时效检查，持久化记录不能单独启动检测；局域网换料期间不检测，空闲时只使用会话确认通道
+ * 复用网页状态的通信与通道时效检查，供霍尔检测和五通总微动打印保护使用；持久化记录不能单独确认通道
  */
 int BambuBus_active_using_channel() {
     if (lan_ams_enabled()) {
@@ -2132,12 +2127,12 @@ int BambuBus_active_using_channel() {
 }
 
 /**
- * 查找当前允许触发暂停实验的耗材通道
+ * 查找当前允许执行暂停的耗材通道
  * @param now 当前毫秒时间
  * @return 正在使用的全局通道；通信或运动状态不满足时返回 -1
  * 同时要求有线接线、有效心跳、最近一秒的合法报文、非离线模式和正在使用反馈，避免使用旧通道或离线重试
  */
-static int pause_test_candidate(const uint32_t now) {
+static int pause_request_candidate(const uint32_t now) {
     if (!io_config_bus_enabled()) return -1;
     if (!heartbeat_seen || heartbeat_timed_out || now - last_heartbeat_ms >= 10000u ||
         !bus_packet_seen || bus_packet_timed_out || now - last_bus_packet_ms > 1000u) return -1;
@@ -2150,48 +2145,27 @@ static int pause_test_candidate(const uint32_t now) {
 }
 
 /**
- * 登记网页暂停实验、霍尔停转暂停或解除请求
- * @param enable true 请求触发，false 请求解除
- * @return true 表示请求已登记；无可用通道或已有暂停请求时拒绝触发
- * 这里只登记目标，由主循环再次校验并执行；解除可重复提交且允许断线登记，但不恢复离线模式或取消待保存；未配置有线总线时不可用
+ * 登记正式暂停请求
+ * @return true 表示请求已登记；无可用通道或已有暂停请求时返回 false
+ * 这里只登记目标，由主循环再次校验并执行；未配置有线总线、当前状态失效或已有暂停流程时不可用
  */
-bool BambuBus_request_pause_test(const bool enable) {
+bool BambuBus_request_pause() {
     if (!io_config_bus_enabled()) return false;
-    if (!enable) {
-        pause_test.request = -1;
-        return true;
-    }
-    const int channel = pause_test_candidate(millis());
-    if (pause_test.active || pause_test.offline_pending || pause_test.request || channel < 0) return false;
-    pause_test.requested_channel = channel;
-    pause_test.request = 1;
+    const int channel = pause_request_candidate(millis());
+    if (pause_request.active || pause_request.offline_pending || pause_request.request_pending || channel < 0) return false;
+    pause_request.requested_channel = channel;
+    pause_request.request_pending = true;
     return true;
 }
 
 /**
- * 读取暂停实验的状态快照
- * @return 可用通道、排队请求、故障锁存状态、已反馈帧数和结束原因
- * 不改变测试状态；停止供料指令仅作为观察结果，不能据此声称打印任务已暂停
+ * 结束暂停反馈锁存并记录原因
+ * @param reason 结束原因，供主板日志排查
+ * 不恢复通道模式或发送恢复打印命令
  */
-BambuBusPauseTestStatus BambuBus_pause_test_status() {
-    const uint32_t now = millis();
-    const int candidate = pause_test_candidate(now);
-    return {candidate >= 0 && !pause_test.active && !pause_test.offline_pending && !pause_test.request,
-            pause_test.active, pause_test.request, pause_test.channel, candidate,
-            pause_test.frames, pause_test.stop_seen, pause_test.result};
-}
-
-/**
- * 结束暂停实验并记录观察结果
- * @param reason 结束原因，供网页和主板日志显示
- * 保留通道和反馈帧数供用户回报，不恢复通道模式或发送恢复打印命令
- */
-static void finish_pause_test(const char *reason) {
-    pause_test.active = false;
-    pause_test.result = reason;
-    LOG_MAIN("[pause-test] 通道 %d 结束，原因=%s，反馈=%lu 帧，停止供料=%s",
-             pause_test.channel + 1, reason, static_cast<unsigned long>(pause_test.frames),
-             pause_test.stop_seen ? "已收到" : "未收到");
+static void finish_pause_request(const char *reason) {
+    pause_request.active = false;
+    LOG_MAIN("[pause] 通道 %d 结束反馈锁存，原因=%s", pause_request.channel + 1, reason);
 }
 
 /**
@@ -2200,42 +2174,30 @@ static void finish_pause_test(const char *reason) {
  * 停止供料和请求退料不会提前解除；仅目标仍为当前通道且进入 pull_back 时设置离线
  * 只改目标通道的模式和有料状态，不清理运动目标或操作电机；保存成功后才自动解除堵转
  */
-static void pause_test_run(const uint32_t now) {
-    const int request = pause_test.request;
-    pause_test.request = 0;
-    if (request < 0) {
-        finish_pause_test("cleared");
-        return;
-    }
-    if (request > 0) {
-        const int channel = pause_test.requested_channel;
-        pause_test = PauseTest();
-        pause_test.channel = channel;
-        if (pause_test_candidate(now) != channel) {
-            finish_pause_test("rejected");
+static void pause_request_run(const uint32_t now) {
+    if (pause_request.request_pending) {
+        const int channel = pause_request.requested_channel;
+        pause_request.request_pending = false;
+        pause_request = PauseRequest();
+        pause_request.channel = channel;
+        if (pause_request_candidate(now) != channel) {
+            finish_pause_request("rejected");
             return;
         }
-        pause_test.active = true;
-        pause_test.result = "active";
-        LOG_MAIN("[pause-test] 已锁存 AMS %d 的堵转反馈，触发通道 %d，等待退料中后离线", channel / 4 + 1, channel + 1);
+        pause_request.active = true;
+        LOG_MAIN("[pause] 已锁存 AMS %d 的堵转反馈，目标通道 %d，等待退料中后离线", channel / 4 + 1, channel + 1);
     }
-    if (!pause_test.active) return;
-    if (pause_test.channel < 0 || pause_test.channel >= active_channel_count() || pause_test.channel >= 16) {
-        finish_pause_test("target_disabled");
+    if (!pause_request.active) return;
+    if (pause_request.channel < 0 || pause_request.channel >= active_channel_count() || pause_request.channel >= 16) {
+        finish_pause_request("target_disabled");
         return;
     }
-    if (!pause_test.stop_seen &&
-        filament_ext[pause_test.channel / 4][pause_test.channel % 4].motion == filament_motion_internal::stop_on_use) {
-        pause_test.stop_seen = true;
-        LOG_MAIN("[pause-test] 通道 %d 已收到停止供料，继续保持堵转反馈，等待退料中", pause_test.channel + 1);
-    }
-    if (!pause_test.offline_pending && data_save.BambuBus_now_filament_num == pause_test.channel &&
-        filament_ext[pause_test.channel / 4][pause_test.channel % 4].motion == filament_motion_internal::pull_back) {
-        CHANNEL_MODE[pause_test.channel] = CHANNEL_MODE_OFFLINE;
-        set_filament_online(pause_test.channel / 4, pause_test.channel % 4, false);
-        pause_test.offline_pending = true;
-        pause_test.result = "saving_offline";
-        LOG_MAIN("[pause-test] 通道 %d 已进入退料中，切为离线，等待保存后解除堵转", pause_test.channel + 1);
+    if (!pause_request.offline_pending && data_save.BambuBus_now_filament_num == pause_request.channel &&
+        filament_ext[pause_request.channel / 4][pause_request.channel % 4].motion == filament_motion_internal::pull_back) {
+        CHANNEL_MODE[pause_request.channel] = CHANNEL_MODE_OFFLINE;
+        set_filament_online(pause_request.channel / 4, pause_request.channel % 4, false);
+        pause_request.offline_pending = true;
+        LOG_MAIN("[pause] 通道 %d 已进入退料中，切为离线，等待保存后解除堵转", pause_request.channel + 1);
     }
 }
 
@@ -2323,14 +2285,14 @@ static void log_auth_request(uint8_t *frame, const uint16_t length, const int ty
  * @return 0=无帧、发送忙或忽略其它设备帧，1=处理了本机合法帧，2=错误帧，-1=合法通信超时
  * 发送槽空闲时才预占并解析队首，每轮最多处理一帧；全部回复及日志完成后释放请求和缓冲
  * 发送忙时不消费请求、不改变业务状态，仍更新通信超时；保存由独立后台入口执行
- * 每轮维护暂停实验的请求和故障锁存；有效 0x040D/0x040E 请求独立写入主板日志，不执行认证应答；没有有线接线时不处理协议
+ * 每轮维护暂停请求和反馈锁存；有效 0x040D/0x040E 请求独立写入主板日志，不执行认证应答；没有有线接线时不处理协议
  */
 int BambuBus_run() {
     if (!io_config_bus_enabled()) return 0;
     sync_current_channels();
     int stu = 0;
     const uint32_t now = millis();
-    if (!bus_request_active) pause_test_run(now);
+    if (!bus_request_active) pause_request_run(now);
     if (!TX_IDLE || bus_request_active) {
         update_bus_timeouts(now);
         return bus_packet_timed_out ? -1 : 0;
@@ -2424,20 +2386,19 @@ void BambuBus_save_run() {
     const uint32_t now = millis();
     if (cooling_down && now - save_finished_ms >= 1000u)
         cooling_down = false;
-    if (pause_test.offline_pending && CHANNEL_MODE[pause_test.channel] != CHANNEL_MODE_OFFLINE) {
-        pause_test.offline_pending = false;
-        finish_pause_test("restored");
+    if (pause_request.offline_pending && CHANNEL_MODE[pause_request.channel] != CHANNEL_MODE_OFFLINE) {
+        pause_request.offline_pending = false;
+        finish_pause_request("restored");
     }
-    if ((!BambuBus_need_to_save && !pause_test.offline_pending) || cooling_down || BambuBus_recent_activity(5u))
+    if ((!BambuBus_need_to_save && !pause_request.offline_pending) || cooling_down || BambuBus_recent_activity(5u))
         return;
 
-    if (pause_test.offline_pending) {
+    if (pause_request.offline_pending) {
         if (settings_save_to_flash()) {
-            pause_test.offline_pending = false;
-            finish_pause_test("offline");
+            pause_request.offline_pending = false;
+            finish_pause_request("offline");
         } else {
-            pause_test.result = "save_failed";
-            LOG_MAIN("[pause-test] 通道 %d 离线设置写入或回读失败，保持当前反馈并限频重试", pause_test.channel + 1);
+            LOG_MAIN("[pause] 通道 %d 离线设置写入或回读失败，保持当前反馈并限频重试", pause_request.channel + 1);
         }
     } else if (BambuBus_save()) {
         BambuBus_need_to_save = false;

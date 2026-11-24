@@ -106,6 +106,19 @@ int BMCU_channel_filament_state(int motorNum);
 // 主循环采样的五通总微动状态：1=已压下，0=未压下，-1=输入不可用或等待采样
 int BMCU_total_switch_state();
 
+/**
+ * 读取五通总微动持续压下的计时时长
+ * @return 已持续的秒数；未计时返回 -1，超时后保持在设定上限
+ */
+int BMCU_total_switch_pause_elapsed_s();
+
+/**
+ * 请求暂停当前打印任务
+ * @return 请求已提交时返回 true
+ * 根据当前连接模式通过有线 BambuBus 故障反馈或局域网打印机命令请求暂停
+ */
+bool BMCU_request_pause();
+
 void BMCU_apply_channel_modes();
 
 // 登记接线变更，下一轮 BMCU_run() 应用到硬件
