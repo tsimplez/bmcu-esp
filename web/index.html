@@ -857,6 +857,8 @@
   }
   // 是否已有 HTTP 状态请求在途，防止轮询叠加请求
   let statusPending = false
+  // 手动检查更新期间暂停 HTTP 状态请求，检查结束后恢复
+  let statusPollingPaused = false
   // 最近一次收到有效状态时的 performance.now() 时间；0 表示设备离线
   let statusAt = 0
   // mDNS 输入框是否已从设备状态初始化，避免轮询覆盖用户正在输入的内容
@@ -986,7 +988,7 @@
    * @return {Promise<void>|undefined} 首个新状态到达或请求结束的 Promise；离线、升级或 HTTP 请求在途时返回 undefined
    */
   const refreshStatus = () => {
-    if (otaBusy) return
+    if (otaBusy || statusPollingPaused) return
     if (dataMode === 'ws') return requestSocketData('status')
     if (statusPending) return
     statusPending = true
@@ -1001,7 +1003,7 @@
       applyStatusPacket(d, requestedAt)
       if (generation === dataGeneration && !otaBusy) $('data-state').textContent = '轮询中'
     }).catch(e => {
-      if (generation !== dataGeneration) return
+      if (generation !== dataGeneration || statusPollingPaused) return
       console.error('刷新设备状态失败', e)
       markStatusOffline()
       $('data-state').textContent = '连接中断'
@@ -4012,11 +4014,16 @@
    * 检查服务器是否存在新固件
    * @param {boolean} force 是否强制检查并弹出结果提示
    * @return {Promise<void>} 检查完成后的 Promise
-   * 保持实时数据刷新，逐步显示检查渠道与解析阶段；失败清空旧更新结果，手动模式额外弹出提示
+   * 手动检查期间暂停 HTTP 状态请求，逐步显示检查渠道与解析阶段；失败清空旧更新结果，手动模式额外弹出提示
    * 捕获异常时在控制台输出上下文与完整异常
    */
   const checkUpdate = async (force) => {
     if (otaChecking || otaBusy) return
+    const pauseStatus = Boolean(force) && dataMode === 'http'
+    if (pauseStatus) {
+      statusPollingPaused = true
+      statusAbort?.abort()
+    }
     otaChecking = true
     beginOtaProgress('正在请求设备检查更新', false)
     try {
@@ -4040,6 +4047,10 @@
       if (force) toast('检查失败：' + e.message, 8000)
     } finally {
       otaChecking = false
+      if (pauseStatus) {
+        statusPollingPaused = false
+        pollData()
+      }
       updateOtaControls()
     }
   }

@@ -41,7 +41,7 @@ public:
      * 获取显式列出的通道数量
      * @return 接线条目数，包含全部为 PIN_NONE 的占位通道
      */
-    constexpr size_t size() const { return count_; }
+    [[nodiscard]] constexpr size_t size() const { return count_; }
 
     /**
      * 获取指定通道的接线
@@ -56,11 +56,11 @@ private:
 };
 
 struct ProjectPreset {
-    const char *id;
-    const char *name;
-    const char *target;
-    int ams;
-    IoBusConfig bus;
+    const char *id{};
+    const char *name{};
+    const char *target{};
+    int ams{};
+    IoBusConfig bus{};
     ProjectPresetPins pins; // 进料、退料、微动；通道数由条目数推导，未列出的通道统一清空
     int switch_pin = PIN_SWITCH; // 五通总微动默认引脚，未指定时采用平台默认值
     int hall[IO_CONFIG_MAX_CHANNELS] = {

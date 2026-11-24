@@ -15,8 +15,8 @@
 
 // 日志常驻内存按平台分配；C3 需要为 WiFi、HTTP 和 TLS 握手预留堆空间
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
-constexpr uint32_t HAL_LOG_MAIN_CAPACITY = 16384;
-constexpr uint32_t HAL_LOG_BUS_CAPACITY = 32768;
+constexpr uint32_t HAL_LOG_MAIN_CAPACITY = 8192;
+constexpr uint32_t HAL_LOG_BUS_CAPACITY = 16384;
 #elif defined(ARDUINO_ARCH_ESP32)
 constexpr uint32_t HAL_LOG_MAIN_CAPACITY = 65536;
 constexpr uint32_t HAL_LOG_BUS_CAPACITY = 65536;

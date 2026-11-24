@@ -18,21 +18,8 @@ bool web_config_ha_printing();
 
 #else
 
-/**
- * 非 ESP32 平台的 Web 初始化空实现
- * RP2040 不提供 Web 管理，保持空实现以维持统一调用接口
- */
 static inline void web_config_init() {}
-/**
- * 非 ESP32 平台的 Web 轮询空实现
- * RP2040 不处理 Web 请求，保持空实现以维持主循环结构一致
- */
 static inline void web_config_run() {}
-
-/**
- * 非 ESP32 平台无法通过 HA 确认打印状态
- * @return 始终返回 false，不启用依赖 HA 状态的霍尔停转检测
- */
 static inline bool web_config_ha_printing() { return false; }
 
 #endif

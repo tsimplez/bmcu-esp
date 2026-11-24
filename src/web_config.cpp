@@ -17,6 +17,7 @@
 #include <esp_http_server.h>
 #pragma pop_macro("HTTP_ANY")
 #include <esp_random.h>
+#include <esp_heap_caps.h>
 #include <cJSON.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
@@ -39,9 +40,6 @@
 #include "PCF8575_PinMap.h"
 #include <web_page_gzip.h>
 
-// ============================================================
-// 常量
-// ============================================================
 #define AP_SSID_PREFIX  "BMCU"     // 配网热点名前缀
 #define AP_PASS         "12345678" // 配网热点密码（至少 8 位）
 #define WIFI_NS         "wifi"     // NVS 中 WiFi 凭据的命名空间
@@ -51,7 +49,6 @@
 #define STA_RETRY_MS    30000      // 连接失败后再次尝试的间隔（毫秒）
 #define LOG_PULL_MAX    16384      // 单次拉取日志的最大字节数
 
-// ESP32 内置 HTTP 服务器，监听 80 端口并提供状态、设置、日志和 OTA 接口
 static WebServer   server(80);
 // 配网热点模式下的 DNS 服务，把所有域名解析到设备自身以触发配置页
 static DNSServer   dns;
@@ -156,7 +153,7 @@ static HaEntityPage ha_entity_page;
 static SemaphoreHandle_t ha_entity_mutex = nullptr;
 
 // 在 HA 侧只筛选打印机的阶段和状态传感器，ESP32 每次接收一个小页
-static const char HA_ENTITY_TEMPLATE[] = R"HA(
+static constexpr char HA_ENTITY_TEMPLATE[] = R"HA(
 {%- set offset = offset | int(0) -%}
 {%- set sensors = states.sensor | list -%}
 {%- set candidates = sensors | selectattr('entity_id', 'match', '^sensor\\.[a-z0-9_]+_(current_stage|print_status)$') | selectattr('entity_id', 'match', '^sensor\\.[a-z0-9_]{1,120}$') | sort(attribute='entity_id') | list -%}
@@ -363,88 +360,90 @@ static bool ha_save_config(const HaConfig &config) {
     return saved;
 }
 
-// HTTPClient 的正文循环可能在空读后继续等待，由底层客户端统一终止过期连接
-class HaClient final : public WiFiClient {
-    uint32_t started = millis();
-    /**
+namespace {
+    // HTTPClient 的正文循环可能在空读后继续等待，由底层客户端统一终止过期连接
+    class HaClient final : public WiFiClient {
+        uint32_t started = millis();
+        /**
      * 检查本次请求的总期限，过期时关闭连接
      * @return 请求仍在期限内时返回 true
      */
-    bool within_deadline() {
-        if (millis() - started < HA_REQUEST_MS) return true;
-        WiFiClient::stop();
-        return false;
-    }
-public:
-    /**
+        bool within_deadline() {
+            if (millis() - started < HA_REQUEST_MS) return true;
+            WiFiClient::stop();
+            return false;
+        }
+    public:
+        /**
      * 查询请求期限内可读取的字节数
      * @return 连接过期时为 0，否则为网络缓冲字节数
      */
-    int available() override { return within_deadline() ? WiFiClient::available() : 0; }
-    /**
+        int available() override { return within_deadline() ? WiFiClient::available() : 0; }
+        /**
      * 查询请求期限内的连接状态
      * @return 连接未过期且仍有效时返回非零值
      */
-    uint8_t connected() override { return within_deadline() ? WiFiClient::connected() : 0; }
-    /**
+        uint8_t connected() override { return within_deadline() ? WiFiClient::connected() : 0; }
+        /**
      * 读取请求期限内的一个字节
      * @return 字节值，连接过期或没有数据时为 -1
      */
-    int read() override { return within_deadline() ? WiFiClient::read() : -1; }
-    /**
+        int read() override { return within_deadline() ? WiFiClient::read() : -1; }
+        /**
      * 读取请求期限内的响应片段
      * @param buffer 输出缓冲
      * @param size 缓冲容量
      * @return 实际读取字节数，连接过期时为 -1
      */
-    int read(uint8_t *buffer, size_t size) override {
-        return within_deadline() ? WiFiClient::read(buffer, size) : -1;
-    }
-};
+        int read(uint8_t *buffer, size_t size) override {
+            return within_deadline() ? WiFiClient::read(buffer, size) : -1;
+        }
+    };
 
-class HaBodyStream final : public Stream {
-public:
-    String body;
-    bool failed = false;
-    /**
+    class HaBodyStream final : public Stream {
+    public:
+        String body;
+        bool failed = false;
+        /**
      * 将响应单字节写入有界缓冲
      * @param value 待追加字节
      * @return 成功追加的字节数
      */
-    size_t write(uint8_t value) override { return write(&value, 1); }
-    /**
+        size_t write(uint8_t value) override { return write(&value, 1); }
+        /**
      * 将 HTTP 响应片段写入有界缓冲
      * @param data 响应片段
      * @param size 片段长度
      * @return 成功追加的字节数，超限或内存不足时返回 0
      */
-    size_t write(const uint8_t *data, size_t size) override {
-        if (failed || size > HA_BODY_LIMIT - body.length() || !body.concat(reinterpret_cast<const char *>(data), size)) {
-            failed = true;
-            return 0;
+        size_t write(const uint8_t *data, size_t size) override {
+            if (failed || size > HA_BODY_LIMIT - body.length() || !body.concat(reinterpret_cast<const char *>(data), size)) {
+                failed = true;
+                return 0;
+            }
+            return size;
         }
-        return size;
-    }
-    /**
+        /**
      * 查询只写缓冲可读取的字节数
      * @return 始终为 0
      */
-    int available() override { return 0; }
-    /**
+        int available() override { return 0; }
+        /**
      * 读取只写缓冲
      * @return 始终为 -1
      */
-    int read() override { return -1; }
-    /**
+        int read() override { return -1; }
+        /**
      * 查看只写缓冲的首字节
      * @return 始终为 -1
      */
-    int peek() override { return -1; }
-    /**
+        int peek() override { return -1; }
+        /**
      * 完成内存写入，无需刷新外设
      */
-    void flush() override {}
-};
+        void flush() override {}
+    };
+}
 
 /**
  * 在独立任务发起一次有界 HA REST 请求
@@ -498,7 +497,7 @@ static int ha_http(const HaConfig &config, const String &path, const char *paylo
  * @param error 输出错误原因
  * @return HTTP、JSON、实体 ID 和状态字符串全部有效时返回 true
  */
-static bool ha_read_entity(const HaConfig &config, const char *entity, char *state, size_t capacity, String &error) {
+static bool ha_read_entity(const HaConfig &config, const char *entity, char *state, const size_t capacity, String &error) {
     String body;
     const int code = ha_http(config, String("/api/states/") + entity, nullptr, body, error);
     if (code < 200 || code >= 300) return false;
@@ -539,7 +538,7 @@ static bool ha_publish_status(uint32_t generation, const HaStatus &status) {
  * @param status 输出实体快照
  * @return 两个传感器读取成功且配置代次未改变时返回 true
  */
-static bool ha_poll(const HaConfig &config, uint32_t generation, HaStatus &status) {
+static bool ha_poll(const HaConfig &config,const  uint32_t generation, HaStatus &status) {
     const uint32_t started = millis();
     String error;
     status = HaStatus();
@@ -561,7 +560,7 @@ static bool ha_poll(const HaConfig &config, uint32_t generation, HaStatus &statu
  * @param offset 本轮请求的偏移
  * @return 小页结构完整、实体类型正确且游标可以前进时返回 true
  */
-static bool ha_entity_page_valid(const String &body, uint32_t offset) {
+static bool ha_entity_page_valid(const String &body,const  uint32_t offset) {
     cJSON *json = cJSON_ParseWithOpts(body.c_str(), nullptr, true);
     const auto *total = cJSON_GetObjectItemCaseSensitive(json, "total");
     const auto *next = cJSON_GetObjectItemCaseSensitive(json, "next_offset");
@@ -606,7 +605,7 @@ static bool ha_entity_page_valid(const String &body, uint32_t offset) {
  * 锁内不进行网络操作，新连接和显式刷新作废旧响应；普通请求等待在途页完成并被取走
  * 已完成页最多保留五秒等待原客户端，避免关闭网页后阻挡其他客户端
  */
-static bool ha_queue_entity_page(uint32_t generation, uint32_t offset, bool refresh) {
+static bool ha_queue_entity_page(const uint32_t generation,const  uint32_t offset,const  bool refresh) {
     if (!ha_entity_mutex || xSemaphoreTake(ha_entity_mutex, 0) != pdTRUE) return false;
     const bool serving_other = !refresh && ha_entity_page.generation == generation && ha_entity_page.offset != offset &&
         (ha_entity_page.loading || (!ha_entity_page.delivered && (ha_entity_page.ready || ha_entity_page.error[0]) &&
@@ -631,7 +630,7 @@ static bool ha_queue_entity_page(uint32_t generation, uint32_t offset, bool refr
  * @param connection_generation 连接代次
  * 分页正文只在互斥锁内交换，不持锁等待网络；旧连接和旧页请求均不能覆盖新缓存
  */
-static void ha_discover_entities(const HaConfig &config, uint32_t generation, uint32_t connection_generation) {
+static void ha_discover_entities(const HaConfig &config,const  uint32_t generation,const  uint32_t connection_generation) {
     if (!ha_entity_mutex || xSemaphoreTake(ha_entity_mutex, 0) != pdTRUE) return;
     const bool requested = ha_entity_page.requested && ha_entity_page.generation == connection_generation;
     const uint32_t offset = ha_entity_page.offset, request = ha_entity_page.request;
@@ -760,7 +759,7 @@ static void handle_ha_get() {
  * @param count 字段数量
  * @return 所有提交字段均已识别且未重复时返回 true
  */
-static bool ha_fields_valid(const char *const *keys, size_t count) {
+static bool ha_fields_valid(const char *const *keys,const  size_t count) {
     for (int i = 0; i < server.args(); ++i) {
         const String key = server.argName(i);
         bool known = false;
@@ -798,7 +797,7 @@ static bool ha_argument_uint(const char *key, uint32_t &value) {
  * @param new_connection 是否开始新的连接与实体列表代次
  * @return 保存及回读成功时返回 true，失败时已回复错误并保留原配置
  */
-static bool ha_apply_config(const HaConfig &candidate, bool new_connection) {
+static bool ha_apply_config(const HaConfig &candidate,const  bool new_connection) {
     if (memcmp(&candidate, &ha_config, sizeof(candidate)) && !ha_save_config(candidate)) {
         server.send(500, "application/json", "{\"ok\":false,\"msg\":\"HA 保存或回读失败，原配置仍生效，请重试\"}");
         return false;
@@ -1310,7 +1309,7 @@ static void handle_web_asset(const WebAsset &asset) {
  * @return JSON 数字文本；无效时返回 null
  * 网页据此区分“未检测到/读取失败”和真实的 0 值
  */
-static String sensor_json_value(bool valid, float value, int digits) {
+static String sensor_json_value(const bool valid,const float value,const int digits) {
     return valid ? String(value, digits) : String("null");
 }
 
@@ -1480,7 +1479,7 @@ static bool parse_hall_uint(const char *key, uint32_t &value) {
  * @param value ADC 读数或统计值
  * 无效值使用 null，不能把缺失样本画成零点
  */
-static void append_hall_value(String &json, bool valid, uint16_t value) {
+static void append_hall_value(String &json,const bool valid,const uint16_t value) {
     json += valid ? String(value) : String("null");
 }
 
@@ -1641,27 +1640,29 @@ static char ws_token[33] = {};
 static QueueHandle_t ws_events = nullptr;
 static portMUX_TYPE ws_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool ws_worker_busy = false;
-struct WsSession {
-    int fd = -1;
-    uint32_t generation = 0;
-    bool closing = false;
-    bool authenticated = false;
-};
-enum class WsEventType : uint8_t { Status, Hall, Ack };
-struct WsEvent {
-    WsEventType type;
-    uint8_t slot;
-    uint32_t generation, id, epoch, cursor;
-    bool has_cursor;
-};
-struct WsClient {
-    uint32_t generation = 0, seen_ms = 0;
-    uint32_t status_id = 0, status_started = 0, status_due = 0;
-    uint32_t hall_id = 0, epoch = 0, cursor = 0, hall_due = 0;
-    uint32_t pending_seq = 0, pending_id = 0, pending_since = 0;
-    uint32_t pending_epoch = 0, pending_cursor = 0;
-    bool has_cursor = false, pending_hall = false;
-};
+namespace {
+    struct WsSession {
+        int fd = -1;
+        uint32_t generation = 0;
+        bool closing = false;
+        bool authenticated = false;
+    };
+    enum class WsEventType : uint8_t { Status, Hall, Ack };
+    struct WsEvent {
+        WsEventType type;
+        uint8_t slot;
+        uint32_t generation, id, epoch, cursor;
+        bool has_cursor;
+    };
+    struct WsClient {
+        uint32_t generation = 0, seen_ms = 0;
+        uint32_t status_id = 0, status_started = 0, status_due = 0;
+        uint32_t hall_id = 0, epoch = 0, cursor = 0, hall_due = 0;
+        uint32_t pending_seq = 0, pending_id = 0, pending_since = 0;
+        uint32_t pending_epoch = 0, pending_cursor = 0;
+        bool has_cursor = false, pending_hall = false;
+    };
+}
 struct WsSend {
     uint8_t slot;
     WsSession session;
@@ -1706,7 +1707,7 @@ static void ws_session_free(void *context) {
  * @param flags socket 发送标志
  * @return 完整发送的字节数；超时或失败返回负值，调用方关闭连接
  */
-static int ws_socket_send(httpd_handle_t handle, int fd, const char *data, size_t length, int flags) {
+static int ws_socket_send(const httpd_handle_t handle,const int fd, const char *data,const size_t length,const int flags) {
     (void)handle;
     size_t sent = 0;
     const uint32_t started = millis();
@@ -1751,7 +1752,7 @@ static void handle_ws_token() {
  * @return 会话和发送回调准备成功时返回 ESP_OK，否则关闭新连接
  * 不依赖新版 SDK 已移除的 GET 握手回调，未验证的连接不能订阅状态
  */
-static esp_err_t ws_session_open(httpd_handle_t handle, int fd) {
+static esp_err_t ws_session_open(const httpd_handle_t handle,const  int fd) {
     static uint32_t generation = 0;
     for (uint8_t slot = 0; slot < WS_CLIENTS; ++slot) {
         if (ws_sessions[slot].fd >= 0) continue;
@@ -1851,7 +1852,7 @@ static void ws_send_work(void *argument) {
  * @param payload 发送后转移所有权的正文；空正文表示关闭
  * @return 成功入队返回 true，失败后由主循环重试
  */
-static bool ws_queue_send(uint8_t slot, String &payload) {
+static bool ws_queue_send(const uint8_t slot, String &payload) {
     const WsSession session = ws_session_snapshot(slot);
     if (session.fd < 0 || session.closing || session.generation != ws_clients[slot].generation) return false;
     auto *work = new (std::nothrow) WsSend;
@@ -1876,7 +1877,7 @@ static bool ws_queue_send(uint8_t slot, String &payload) {
  * @param now 本轮主循环的毫秒时间
  * @return 当前槽仍连接且未开始关闭时返回 true
  */
-static bool ws_sync_client(uint8_t slot, uint32_t now) {
+static bool ws_sync_client(const uint8_t slot,const uint32_t now) {
     const WsSession session = ws_session_snapshot(slot);
     auto &client = ws_clients[slot];
     if (session.fd < 0 || session.closing) {
@@ -2110,7 +2111,7 @@ static void handle_settings_get() {
  * @return true 表示参数缺失或数值合法
  * 先否定 toInt() 的容错行为，避免非法字符串被当作 0 保存
  */
-static bool valid_number(const String &key, int low, int high) {
+static bool valid_number(const String &key,const  int low,const  int high) {
     if (!server.hasArg(key)) return true;
     String raw = server.arg(key);
     char *end;
@@ -2126,7 +2127,7 @@ static bool valid_number(const String &key, int low, int high) {
  * @return true 表示参数存在且引脚可用
  * 把请求中的十进制引脚号解析为整数并调用 io_config_pin_available()
  */
-static bool parse_io_pin(const String &key, int &value, bool allow_none) {
+static bool parse_io_pin(const String &key, int &value,const  bool allow_none) {
     if (!server.hasArg(key)) return false;
     String raw = server.arg(key);
     char *end = nullptr;
@@ -2144,7 +2145,7 @@ static bool parse_io_pin(const String &key, int &value, bool allow_none) {
  * @return true 表示整数格式合法且生效引脚可用
  * 未启用模式只校验存储范围，切换模式时再检查 GPIO 能力和当前总线占用
  */
-static bool parse_motor_io_pin(const String &key, int &value, bool active) {
+static bool parse_motor_io_pin(const String &key, int &value,const  bool active) {
     if (active) return parse_io_pin(key, value, true);
     if (!server.hasArg(key) || !valid_number(key, 0, 255)) return false;
     value = server.arg(key).toInt();
@@ -2967,8 +2968,8 @@ static String g_ota_notes;
 // 固件声明的字节数；0 表示清单未提供，下载时跳过长度比对
 static size_t g_ota_size = 0;
 // 自动模式按顺序尝试；代理只转发 GitHub Release 下载地址
-static const char *const OTA_SOURCE_NAMES[] = {"GitHub Pages", "GitHub 直连", "ghfast.top", "gh-proxy.com", "gh.llkk.cc"};
-static const char *const OTA_PROXY_PREFIXES[] = {"", "", "https://ghfast.top/", "https://gh-proxy.com/", "https://gh.llkk.cc/"};
+static constexpr char *const OTA_SOURCE_NAMES[] = {"GitHub Pages", "GitHub 直连", "ghfast.top", "gh-proxy.com", "gh.llkk.cc"};
+static constexpr char *const OTA_PROXY_PREFIXES[] = {"", "", "https://ghfast.top/", "https://gh-proxy.com/", "https://gh.llkk.cc/"};
 static constexpr int OTA_SOURCE_COUNT = 5;
 static int g_ota_source = -1;
 // 仅纯文件名允许在官方渠道间回退；版本、大小和 MD5 始终保持不变
@@ -3022,7 +3023,7 @@ static void ota_progress_begin() {
  * @param loaded 已处理字节数
  * @param total 总字节数；0 表示当前阶段没有可计算的百分比
  */
-static void ota_progress(const char *stage, const String &msg, size_t loaded = 0, size_t total = 0) {
+static void ota_progress(const char *stage, const String &msg, const size_t loaded = 0, const size_t total = 0) {
     if (!g_ota_streaming || !server.client().connected()) return;
     String j = "{\"event\":\"progress\",\"stage\":\"" + String(stage) + "\",\"msg\":\"" + json_escape(msg.c_str());
     j += "\",\"source\":\"" + json_escape(g_ota_progress_source.c_str()) + "\"";
@@ -3038,7 +3039,7 @@ static void ota_progress(const char *stage, const String &msg, size_t loaded = 0
  * @param stage 阶段标识
  * @param msg 当前阶段说明
  */
-static void ota_manifest_progress(bool background, const char *stage, const String &msg) {
+static void ota_manifest_progress(const bool background, const char *stage, const String &msg) {
     if (!background) {
         ota_progress(stage, msg);
         return;
@@ -3086,9 +3087,9 @@ static String ota_base() {
  * @return 对应渠道的下载目录
  * Release 固件固定到版本标签，避免 latest 在下载期间变化
  */
-static String ota_source_base(int source, const String &version = "") {
+static String ota_source_base(const int source, const String &version = "") {
     if (source == 0) return DEFAULT_OTA_URL;
-    String base = String(OTA_PROXY_PREFIXES[source]) + "https://github.com/tsimplez/bmcu-esp/releases";
+    const String base = String(OTA_PROXY_PREFIXES[source]) + "https://github.com/tsimplez/bmcu-esp/releases";
     return base + (version.length() ? "/download/v" + version : String("/latest/download"));
 }
 
@@ -3263,6 +3264,42 @@ static bool version_valid(const String &v) {
 
 // ---- HTTP ----
 /**
+ * 记录 OTA 可用于 TLS 的内部堆状态
+ * @param stage 当前检查阶段
+ * 输出内部 RAM 空闲总量和最大连续空闲块，便于区分总量不足与堆碎片
+ */
+static void ota_log_tls_heap(const char *stage) {
+    const size_t free_bytes = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    LOG_MAIN("[ota] TLS 内存（%s）: free=%lu, largest=%lu 字节", stage,
+             static_cast<unsigned long>(free_bytes), static_cast<unsigned long>(largest_block));
+}
+
+/**
+ * 在创建 HTTPS 客户端前检查内部堆余量
+ * @param url 请求地址
+ * @param err 检查失败原因
+ * @param resource 当前请求资源名称
+ * HTTPS 握手前要求至少 48 KiB 内部堆空闲且最大连续块不少于 24 KiB；HTTP 请求不受此门槛限制
+ * @return 内存满足要求或请求使用 HTTP 时返回 true
+ */
+static bool ota_tls_memory_preflight(const String &url, String &err, const char *resource) {
+    if (!url.startsWith("https://")) return true;
+
+    constexpr size_t MIN_FREE_BYTES = 48u * 1024u;
+    constexpr size_t MIN_LARGEST_BLOCK = 24u * 1024u;
+    const size_t free_bytes = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    LOG_MAIN("[ota] TLS 内存预检（%s）: free=%lu, largest=%lu 字节", resource,
+             static_cast<unsigned long>(free_bytes), static_cast<unsigned long>(largest_block));
+    if (free_bytes >= MIN_FREE_BYTES && largest_block >= MIN_LARGEST_BLOCK) return true;
+
+    err = String("内存预检未通过（空闲 ") + String(static_cast<unsigned long>(free_bytes)) +
+          " 字节，最大连续块 " + String(static_cast<unsigned long>(largest_block)) + " 字节），暂不启动 HTTPS";
+    return false;
+}
+
+/**
  * 创建 OTA HTTP 客户端
  * @param url 固件或清单地址
  * @return 新建的 WiFiClient 指针
@@ -3340,6 +3377,7 @@ static bool ota_http_open(HTTPClient &http, WiFiClient &client, const String &ur
         } else if (code < 0) {
             err = "连接失败（HTTP " + String(code) + ": " + HTTPClient::errorToString(code) + "）";
             if (url.startsWith("https://")) {
+                ota_log_tls_heap("HTTPS 请求失败后");
                 char tls_error[128] = {};
                 const int tls_code = static_cast<WiFiClientSecure &>(client).lastError(tls_error, sizeof(tls_error));
                 if (tls_code) err += "，TLS " + String(tls_code) + ": " + tls_error;
@@ -3359,7 +3397,8 @@ static bool ota_http_open(HTTPClient &http, WiFiClient &client, const String &ur
  * @return true 表示请求成功
  * 回传清单下载阶段；清单必须有长度且不超过 8 KB，避免代理错误页占满内存
  */
-static bool ota_http_get(const String &url, String &body, String &err, bool background = false) {
+static bool ota_http_get(const String &url, String &body, String &err,const bool background = false) {
+    if (!ota_tls_memory_preflight(url, err, "版本清单")) return false;
     const OtaClientHolder client(url);
     HTTPClient http;
     if (!ota_http_open(http, client.ref(), url, err, "版本清单", background)) {
@@ -3394,7 +3433,7 @@ static bool ota_http_get(const String &url, String &body, String &err, bool back
  * @return true 表示成功取得当前板型固件信息
  * 读取 manifest.json，回传解析阶段，提取目标平台的 url、md5、version、notes 和 size，并校验版本与 MD5 格式
  */
-static bool ota_fetch_manifest_from(const String &base, int source, String &err, bool background = false) {
+static bool ota_fetch_manifest_from(const String &base, const int source, String &err, const bool background = false) {
     g_ota_url = g_ota_md5 = g_ota_ver = g_ota_notes = g_ota_file = "";
     g_ota_size = 0;
     g_ota_source = -1;
@@ -3459,7 +3498,7 @@ static bool ota_fetch_manifest_from(const String &base, int source, String &err,
  * @return true 表示已取得有效清单
  * 回传当前渠道和失败原因；自动模式顺序回退，固定或自定义源只尝试一次，失败不保留旧下载信息
  */
-static bool ota_fetch_manifest(String &err, bool background = false) {
+static bool ota_fetch_manifest(String &err, const bool background = false) {
     const String base = background ? ota_check.base : ota_base();
     const int selected = ota_source_index(base);
     const int count = selected == 0 ? OTA_SOURCE_COUNT : 1;
@@ -3621,6 +3660,7 @@ static void handle_ota_check() {
  */
 static bool ota_flash_attempt(const String &url, String &err, bool &retryable) {
     retryable = false;
+    if (!ota_tls_memory_preflight(url, err, "固件下载")) return false;
     const OtaClientHolder client(url);
     HTTPClient http;
     if (!ota_http_open(http, client.ref(), url, err, "固件文件")) {

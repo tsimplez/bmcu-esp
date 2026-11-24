@@ -33,9 +33,9 @@ namespace {
     };
 }
 
-// 主板日志环形缓冲：记录业务日志，容量由平台内存预算决定
+// 主板日志环形缓冲：记录业务日志
 static LogRing<HAL_LOG_MAIN_CAPACITY> ring_main;
-// 总线日志环形缓冲：记录 BambuBus 原始收发报文，容量由平台内存预算决定
+// 总线日志环形缓冲：记录 BambuBus 原始收发报文
 static LogRing<HAL_LOG_BUS_CAPACITY>  ring_bus;
 
 namespace {
