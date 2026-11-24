@@ -261,19 +261,20 @@ static Motor shared_motor;
 static IoConfig applied_io = {};
 static int applied_channels = 0;
 
-enum class ClutchPhase : uint8_t {
-    idle,
-    releasing,
-    engaging,
-    running
-};
-
-struct ClutchDrive {
-    ClutchPhase phase = ClutchPhase::idle;
-    int channel = -1;                  // 当前独占共享电机的通道，-1 表示没有所属通道
-    int direction = 0;
-    uint32_t deadline = 0;             // 释放或吸合稳定期的截止时间
-};
+namespace {
+    enum class ClutchPhase : uint8_t {
+        idle,
+        releasing,
+        engaging,
+        running
+    };
+    struct ClutchDrive {
+        ClutchPhase phase = ClutchPhase::idle;
+        int channel = -1;                  // 当前独占共享电机的通道，-1 表示没有所属通道
+        int direction = 0;
+        uint32_t deadline = 0;             // 释放或吸合稳定期的截止时间
+    };
+}
 
 static ClutchDrive clutch_drive;
 
@@ -801,7 +802,7 @@ void BMCU_apply_pullback_timeout(const int motorNum, const uint32_t previous_tim
         return;
     }
     const uint32_t now = millis();
-    const int32_t delta = static_cast<int32_t>(m.end - now);
+    const auto delta = static_cast<int32_t>(m.end - now);
     const uint32_t left = delta > 0 ? static_cast<uint32_t>(delta) : 0;
     const uint32_t elapsed = previous_timeout_ms > left ? previous_timeout_ms - left : 0;
     const uint32_t remaining = new_timeout_ms > elapsed ? new_timeout_ms - elapsed : 0;

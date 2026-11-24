@@ -7,7 +7,7 @@ struct BambuPrepareRow
 {
     uint16_t pressure;      /**< 压力传感器值 */
     uint16_t unknow2;       /**< 未知字段2 */
-    uint8_t unknow3[12];   /**< 未知字段3（12字节） */
+    uint8_t unknow3[12];    /**< 未知字段 */
     uint32_t last1;         /**< 末尾填充字段1 */
     uint32_t last2;         /**< 末尾填充字段2 */
 };

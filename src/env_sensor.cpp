@@ -111,9 +111,8 @@ static bool aht20_init() {
     if (!aht20_read_status(&status)) return false;
     if ((status & 0x18) == 0x18) return true;
 
-    const uint8_t command[3] = {0xBE, 0x08, 0x00};
     Wire.beginTransmission(AHT20_ADDR);
-    for (uint8_t i = 0; i < sizeof(command); i++) Wire.write(command[i]);
+    for (constexpr uint8_t command[3] = {0xBE, 0x08, 0x00}; const unsigned char i : command) Wire.write(i);
     if (Wire.endTransmission() != 0) return false;
     delay(10);
     return aht20_read_status(&status) && (status & 0x18) == 0x18;

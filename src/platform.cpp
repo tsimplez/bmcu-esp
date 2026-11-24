@@ -6,7 +6,6 @@
 #endif
 
 #if defined(ARDUINO_ARCH_ESP32)
-#include <esp_system.h>
 #include <nvs.h>
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && !ARDUINO_USB_CDC_ON_BOOT
 #include <esp_log.h>

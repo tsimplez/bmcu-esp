@@ -128,9 +128,8 @@ void log_bus_clear(const int ch) {
 uint32_t log_bus_total(const int ch) {
     RingRef r{};
     if (!ring_ref(ch, r)) return 0;
-    uint32_t t;
     LOG_LOCK();
-    t = *r.total;
+    const uint32_t t = *r.total;
     LOG_UNLOCK();
     return t;
 }
@@ -218,8 +217,6 @@ void log_bus_printf(const int ch, const char *fmt, ...) {
     if (ch == LOG_CH_MAIN) hal_console_write(line, len);
 }
 
-// 手写十进制转换：hex 转储可能在中断 / 事件回调里调用，
-// 这里刻意不用 snprintf，避免在 ISR 上下文里碰到不可重入的 newlib 分配器
 /**
  * 把无符号整数格式化为十进制文本
  * @param p 输出位置

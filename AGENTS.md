@@ -17,6 +17,7 @@
 | `src/BambuBus.cpp`、`src/crc_bus.c` | 协议收发、状态机与 CRC；`RX_IRQ()`、`BambuBus_run()` |
 | `src/io_config.cpp`、`src/project_presets.cpp` | 引脚配置、冲突校验与接线预设 |
 | `src/settings_storage.cpp` | 默认设置、历史迁移、快照回滚、Flash/NVS 保存与回读校验 |
+| `src/json_utils.cpp` | ESP32 JSON 转义、字段校验与 cJSON 解析树管理 |
 | `src/i2c_bus.cpp`、`src/PCF8575_PinMap.cpp`、`src/env_sensor.cpp`、`src/hall_sensor.cpp` | I2C、扩展引脚、环境传感器与霍尔采样 |
 | `src/web_config.cpp`、`web/index.html`、`src/log_bus.cpp` | WiFi、REST API、网页、OTA 与日志 |
 | `src/version.h`、`.github/workflows/release.yml` | 固件版本与板型；标签触发构建、Release 和 OTA 发布 |

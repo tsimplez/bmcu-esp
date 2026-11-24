@@ -461,9 +461,9 @@ void io_config_append_pin_options(String &json, const bool i2c_only) {
         if (!first) json += ',';
         first = false;
         json += "{\"id\":" + String(pin) +
-                ",\"label\":\"" + io_config_pin_label(pin) +
-                "\",\"warning\":" + String(io_config_pin_has_warning(pin) ? "true" : "false") +
-                ",\"warning_text\":\"" + pin_warning_text(pin) + "\"}";
+                R"(,"label":")" + io_config_pin_label(pin) +
+                R"(","warning":)" + String(io_config_pin_has_warning(pin) ? "true" : "false") +
+                R"(,"warning_text":")" + pin_warning_text(pin) + "\"}";
     }
     json += "]";
 }
@@ -481,9 +481,9 @@ void io_config_append_hall_pin_options(String &json) {
         if (!first) json += ',';
         first = false;
         json += "{\"id\":" + String(pin) +
-                ",\"label\":\"" + io_config_pin_label(pin) +
-                "\",\"warning\":" + String(io_config_pin_has_warning(pin) ? "true" : "false") +
-                ",\"warning_text\":\"" + pin_warning_text(pin) + "\"}";
+                R"(,"label":")" + io_config_pin_label(pin) +
+                R"(","warning":)" + String(io_config_pin_has_warning(pin) ? "true" : "false") +
+                R"(,"warning_text":")" + pin_warning_text(pin) + "\"}";
     }
     json += "]";
 }
@@ -519,7 +519,6 @@ bool io_config_bus_validate(const int rx, const int tx, const int de, const int 
     if (rx == PIN_NONE && tx == PIN_NONE) return true;
 #endif
     const int pins[] = {rx, tx, de};
-    const char *roles[] = {"RX", "TX", "DE"};
     for (int i = 0; i < (mode == RS485_MODE_DE ? 3 : 2); i++) {
         const int pin = pins[i];
         bool available = is_real_gpio(pin);
@@ -529,6 +528,7 @@ bool io_config_bus_validate(const int rx, const int tx, const int de, const int 
         if (i == 1) available = available && (pin == 0 || pin == 12 || pin == 16 || pin == 28);
 #endif
         if (!available) {
+            const char *roles[] = {"RX", "TX", "DE"};
             if (error) *error = String(roles[i]) + " 必须使用支持该功能的主控 GPIO，不能使用系统保留脚或 PCF 扩展脚";
             return false;
         }

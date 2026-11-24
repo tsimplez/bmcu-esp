@@ -131,13 +131,6 @@ struct LegacyFormat {
 // 已发布标签及开发提交的真实布局；重复魔数按长度和原 CRC 区分，身份数量不决定 checksum 偏移
 // 字段顺序：魔数、长度、checksum 偏移、序列号长度、IO 长度、版本数量、旧 PCF 开关、连续编号、仅首片、停止延迟、霍尔、局域网、五通参数字节数
 constexpr LegacyFormat LEGACY_FORMATS[] = {
-    {0x53415429, 524, 140, 13, 192, 0, true,  true,  true,  false, false, false, 0}, // 8f0058d
-    {0x53415429, 536, 140, 12, 192, 1, true,  true,  true,  false, false, false, 0}, // c61efdf
-    {0x5341542A, 536, 140, 12, 192, 1, true,  true,  true,  false, false, false, 0}, // v26.10.28
-    {0x5341542A, 532, 140, 12, 192, 1, false, true,  true,  false, false, false, 0}, // 74ad5ec
-    {0x53415429, 532, 140, 12, 192, 1, false, true,  false, false, false, 0}, // v26.10.29
-    {0x5341542B, 532, 140, 12, 192, 1, false, false, false, false, false, 0}, // v26.11.02
-    {0x5341542C, 616, 140, 48, 192, 4, false, false, false, false, false, 0}, // 0ea02d2
     {0x5341542D, 624, 144, 48, 196, 4, false, false, false, true,  false, false, 0}, // v26.11.04
     {0x5341542E, 688, 144, 48, 260, 4, false, false, false, true,  false, false, 0}, // v26.11.06
     {0x5341542F, 816, 144, 48, 260, 4, false, false, false, true,  true,  false, 0}, // 50e43a8
@@ -211,7 +204,7 @@ void copy_legacy(const uint8_t *bytes, const LegacyFormat &format, SettingsData 
     const size_t serial_bytes = format.version_count == AMS_IDENTITY_COUNT ? sizeof(out.custom_serial) : CUSTOM_SERIAL_LENGTH;
     memcpy(out.custom_serial, bytes + identities, serial_bytes);
     // 最早格式的序列号含结尾 NUL，占 13 字节；其后的 IO 仍按 4 字节对齐
-    const size_t io = (identities + format.serial_size + 3u) & ~size_t(3u);
+    const size_t io = (identities + format.serial_size + 3u) & ~3u;
     // motor 和 microswitch 在全部旧布局中相同；新增输入不得继承当前默认项目的已有接线
     memcpy(&out.io_config, bytes + io, 192);
     out.io_config.switch_pin = PIN_NONE;
@@ -231,8 +224,8 @@ void copy_legacy(const uint8_t *bytes, const LegacyFormat &format, SettingsData 
     memcpy(&out.pcf_sda, bytes + buses, 20);
     const size_t versions = buses + 20 + (format.pcf_enable ? 4 : 0);
     if (format.version_count == AMS_IDENTITY_COUNT) memcpy(out.ams_version, bytes + versions, sizeof(out.ams_version));
-    else if (format.version_count == 1) for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams)
-        memcpy(out.ams_version[ams], bytes + versions, 16); // 旧协议全部 AMS 使用同一份版本
+    else if (format.version_count == 1) for (auto & ams : out.ams_version)
+        memcpy(ams, bytes + versions, 16); // 旧协议全部 AMS 使用同一份版本
     size_t extension = versions + (format.version_count == AMS_IDENTITY_COUNT ? sizeof(out.ams_version) :
                                    format.version_count == 1 ? 16u : 0u);
     if (format.hall_detection) {
@@ -352,7 +345,7 @@ bool settings_get_ams_serial(uint8_t ams, char out[AMS_SERIAL_LENGTH + 1]) {
     if (CUSTOM_SERIAL[ams][0]) {
         memcpy(out + 4, CUSTOM_SERIAL[ams], CUSTOM_SERIAL_LENGTH);
     } else {
-        static const char hex[] = "0123456789ABCDEF";
+        static constexpr char hex[] = "0123456789ABCDEF";
         const uint64_t id = hal_get_device_id();
         for (int i = 0; i < CUSTOM_SERIAL_LENGTH; ++i)
             out[4 + i] = hex[(id >> ((CUSTOM_SERIAL_LENGTH - 1 - i) * 4)) & 0x0Fu];
@@ -583,8 +576,7 @@ static void apply_settings_values(const SettingsData& data) {
         bus.rx = BUS_RX; bus.tx = BUS_TX; bus.de = BUS_DE; bus.mode = RS485_MODE;
         LOG_MAIN("[settings] BambuBus 接线无法继续使用，已调整总线字段：%s", io_error.c_str());
     }
-    const int cleared = io_config_sanitize_pins(loaded, active_channel_count(), &bus);
-    if (cleared) LOG_MAIN("[settings] 已清空 %d 个不可用或重复引脚，其余设置保留", cleared);
+    if (const int cleared = io_config_sanitize_pins(loaded, active_channel_count(), &bus)) LOG_MAIN("[settings] 已清空 %d 个不可用或重复引脚，其余设置保留", cleared);
     IO_CONFIG = loaded;
 }
 
@@ -613,7 +605,7 @@ static bool load_settings_record(SettingsData &data, bool &empty) {
         if (empty) return false;
     }
     if (length == sizeof(SettingsData)) {
-        SettingsData current;
+        SettingsData current{};
         memcpy(&current, bytes, sizeof(current));
         if (current.magic == SETTINGS_MAGIC_NUMBER && calculate_crc32(&current) == current.checksum) {
             data = current;
@@ -784,11 +776,11 @@ void settings_reset_to_defaults() {
     BUS_LOG_ENABLE = DEFAULT_BUS_LOG;
     LAN_AMS_CONFIG = DEFAULT_LAN_AMS_CONFIG;
     memset(CUSTOM_SERIAL, 0, sizeof(CUSTOM_SERIAL));
-    for (int ams = 0; ams < AMS_IDENTITY_COUNT; ++ams) {
-        AMS_VERSION[ams][0] = DEFAULT_AMS_VERSION_MAJOR;
-        AMS_VERSION[ams][1] = DEFAULT_AMS_VERSION_MINOR;
-        AMS_VERSION[ams][2] = DEFAULT_AMS_VERSION_PATCH;
-        AMS_VERSION[ams][3] = DEFAULT_AMS_VERSION_BUILD;
+    for (auto & ams : AMS_VERSION) {
+        ams[0] = DEFAULT_AMS_VERSION_MAJOR;
+        ams[1] = DEFAULT_AMS_VERSION_MINOR;
+        ams[2] = DEFAULT_AMS_VERSION_PATCH;
+        ams[3] = DEFAULT_AMS_VERSION_BUILD;
     }
     memset(OTA_URL, 0, sizeof(OTA_URL));
     memcpy(OTA_URL, DEFAULT_OTA_URL, sizeof(DEFAULT_OTA_URL));

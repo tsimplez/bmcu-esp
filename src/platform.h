@@ -239,11 +239,6 @@ extern int BUS_RX, BUS_TX, BUS_DE;
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 #include <soc/soc_caps.h>
 #endif
-#if defined(CONFIG_IDF_TARGET_ESP32C3)
-#include <soc/soc.h>
-#include <soc/usb_serial_jtag_reg.h>
-#include <soc/io_mux_reg.h>
-#endif
 
 #define BUS_SERIAL Serial1
 #define BUS_IRQ_SETUP() BUS_SERIAL.onReceive(on_uart_rx)
@@ -264,7 +259,7 @@ static inline void hal_watchdog_init() {
 #else
     esp_task_wdt_init(10, true);
 #endif
-    esp_task_wdt_add(NULL); // 把 loop 任务挂进看门狗
+    esp_task_wdt_add(nullptr); // 把 loop 任务挂进看门狗
 }
 /**
  * 喂任务看门狗
