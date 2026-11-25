@@ -12,6 +12,8 @@
 #include <esp32-hal-uart.h>
 #include <freertos/semphr.h>
 #include "PCF8575_PinMap.h"
+#include "io_config.h"
+#include "settings_storage.h"
 #include "log_bus.h"
 #if defined(BMCU_USB_CDC_AUTO)
 #include <driver/usb_serial_jtag.h>
@@ -29,6 +31,52 @@ vprintf_like_t console_sdk_output = nullptr;
 bool console_muted = false, console_reported = false;
 #if defined(BMCU_USB_CDC_AUTO)
 bool console_usb_enabled = false, console_usb_reported = false;
+constexpr int WIFI_STATUS_LED_PIN = 12;
+constexpr int WIFI_UNUSED_LED_PIN = 13;
+bool wifi_led_initialized = false;
+bool wifi_status_led_available = false, wifi_unused_led_available = false;
+bool wifi_status_led_output = false, wifi_unused_led_output = false;
+HalWifiLedState wifi_led_state = HalWifiLedState::off;
+uint32_t wifi_led_state_started = 0;
+
+/**
+ * 判断 GPIO 是否被当前接线占用
+ * @param pin 要检查的主控 GPIO
+ * @return 当前通道、总线或 I2C 配置使用该 GPIO 时返回 true
+ * 未启用通道及 RX/TX 未启用时的 DE 不视为占用
+ */
+bool wifi_led_pin_in_use(const int pin) {
+    if (io_config_uses_pin(IO_CONFIG, active_channel_count(), pin)) return true;
+    if (PCF_SDA == pin || PCF_SCL == pin) return true;
+    if (io_config_bus_enabled() &&
+        (BUS_RX == pin || BUS_TX == pin || (RS485_MODE == RS485_MODE_DE && BUS_DE == pin))) return true;
+    return false;
+}
+
+/**
+ * 在 GPIO 空闲时设置 LED 电平
+ * @param pin 要设置的 LED GPIO
+ * @param on 是否点亮高电平 LED
+ * @param available 记录该 GPIO 上一轮是否空闲
+ * @param last_output 记录该 GPIO 上一轮输出电平
+ * GPIO 被接线使用时不触碰引脚；恢复空闲时先拉低，再切为输出
+ */
+void wifi_led_write_if_available(const int pin, const bool on, bool &available, bool &last_output) {
+    if (wifi_led_pin_in_use(pin)) {
+        available = false;
+        return;
+    }
+    if (!available) {
+        digitalWrite_PCF8575(pin, LOW);
+        pinMode_PCF8575(pin, OUTPUT);
+        available = true;
+        last_output = false;
+    }
+    if (last_output != on) {
+        digitalWrite_PCF8575(pin, on ? HIGH : LOW);
+        last_output = on;
+    }
+}
 #endif
 
 /**
@@ -194,6 +242,66 @@ void hal_console_write(const char *data, size_t len) {
     if (console_enabled) Serial.write(reinterpret_cast<const uint8_t *>(data), len);
 #else
     fwrite(data, 1, len, stdout);
+#endif
+}
+
+/**
+ * 初始化合宙 ESP32-C3 的 WiFi 指示灯
+ * GPIO12 作为唯一状态灯；GPIO13 仅在未被接线占用时显式拉低，其余平台不操作灯脚
+ */
+void hal_wifi_led_init() {
+#if defined(BMCU_USB_CDC_AUTO)
+    wifi_led_initialized = true;
+    wifi_led_state = HalWifiLedState::off;
+    wifi_led_state_started = millis();
+    wifi_status_led_available = false;
+    wifi_unused_led_available = false;
+    wifi_status_led_output = false;
+    wifi_unused_led_output = false;
+    wifi_led_write_if_available(WIFI_STATUS_LED_PIN, false, wifi_status_led_available, wifi_status_led_output);
+    wifi_led_write_if_available(WIFI_UNUSED_LED_PIN, false, wifi_unused_led_available, wifi_unused_led_output);
+#endif
+}
+
+/**
+ * 按 WiFi 状态更新合宙 ESP32-C3 的板载灯
+ * @param state 当前 WiFi 状态
+ * GPIO12 空闲时显示慢闪、快闪、双闪或常亮；GPIO12 被接线占用时不点灯，GPIO13 空闲时保持熄灭
+ */
+void hal_wifi_led_run(const HalWifiLedState state) {
+#if defined(BMCU_USB_CDC_AUTO)
+    if (!wifi_led_initialized) hal_wifi_led_init();
+    const uint32_t now = millis();
+    if (state != wifi_led_state) {
+        wifi_led_state = state;
+        wifi_led_state_started = now;
+    }
+
+    bool status_led_on = false;
+    const uint32_t elapsed = now - wifi_led_state_started;
+    switch (state) {
+    case HalWifiLedState::configuring:
+        status_led_on = elapsed % 1000 < 500;
+        break;
+    case HalWifiLedState::connecting:
+        status_led_on = elapsed % 400 < 200;
+        break;
+    case HalWifiLedState::retry_wait: {
+        const uint32_t phase = elapsed % 2000;
+        status_led_on = phase < 150 || (phase >= 300 && phase < 450);
+        break;
+    }
+    case HalWifiLedState::connected:
+        status_led_on = true;
+        break;
+    case HalWifiLedState::off:
+        break;
+    }
+
+    wifi_led_write_if_available(WIFI_STATUS_LED_PIN, status_led_on, wifi_status_led_available, wifi_status_led_output);
+    wifi_led_write_if_available(WIFI_UNUSED_LED_PIN, false, wifi_unused_led_available, wifi_unused_led_output);
+#else
+    (void)state;
 #endif
 }
 

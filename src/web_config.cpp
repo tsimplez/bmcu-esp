@@ -65,6 +65,9 @@ static uint32_t connect_deadline = 0;
 static uint32_t retry_deadline = 0;
 // 当前是否运行在 AP 配网模式
 static bool     ap_mode = false;
+// 首次提交的新 WiFi 凭据失败后，短暂双闪提示再恢复配网慢闪
+static uint32_t wifi_failure_led_deadline = 0;
+static bool     wifi_failure_led_active = false;
 // 已保存的路由器 SSID（最多 63 个可见字符 + NUL）
 static char     sta_ssid[64] = {};
 // 已保存的路由器密码
@@ -1063,6 +1066,30 @@ static void forget_wifi_creds() {
 // ============================================================
 // WiFi 状态机
 // ============================================================
+/**
+ * 获取当前应显示的 WiFi 灯效
+ * @return 当前配网、连接、重试、已连接或关闭状态
+ * 首次提交的新凭据失败时短暂显示重试双闪，之后回到配网慢闪
+ */
+static HalWifiLedState wifi_indicator_state() {
+    if (WiFi.status() == WL_CONNECTED) return HalWifiLedState::connected;
+    if (wifi_state == ST_CONNECTING) return HalWifiLedState::connecting;
+    if (wifi_state == ST_RETRY_WAIT) return HalWifiLedState::retry_wait;
+    if (wifi_failure_led_active) {
+        if (static_cast<int32_t>(millis() - wifi_failure_led_deadline) < 0) return HalWifiLedState::retry_wait;
+        wifi_failure_led_active = false;
+    }
+    return ap_mode ? HalWifiLedState::configuring : HalWifiLedState::off;
+}
+
+/**
+ * 刷新当前 WiFi 状态灯
+ * 状态判断与 GPIO 驱动分层，具体板载灯脚和冲突检查由平台适配层处理
+ */
+static void wifi_indicator_run() {
+    hal_wifi_led_run(wifi_indicator_state());
+}
+
 // 切换 WiFi 模式（模式确定后 WiFi 协议栈才算初始化，此时才能关省电）
 /**
  * 切换 WiFi 工作模式
@@ -1076,9 +1103,10 @@ static void wifi_set_mode(wifi_mode_t m) {
 
 /**
  * 发起已保存 WiFi 的异步连接
- * 保留正在运行的配网热点，由主循环检查连接结果与超时，不等待路由器响应
+ * 清除上次临时失败提示并快速闪灯；保留配网热点，由主循环检查连接结果与超时，不等待路由器响应
  */
 static void start_sta_connect() {
+    wifi_failure_led_active = false;
     wifi_set_mode(ap_mode ? WIFI_AP_STA : WIFI_STA);
     WiFi.begin(sta_ssid, sta_pass);
     wifi_state = ST_CONNECTING;
@@ -2646,7 +2674,7 @@ static void handle_ha_timeout() {
 
 /**
  * 处理 WiFi 配网请求
- * 保留 AP 的同时尝试连接目标路由；成功后保存凭据并重启，失败则恢复原网络或在 AP 模式安排重试
+ * 保留 AP 的同时尝试连接目标路由并刷新连接快闪；成功后常亮、保存凭据并重启，失败则恢复原网络或提示重试
  */
 static void handle_wifi_save() {
     if (!maintenance_required()) return;
@@ -2680,15 +2708,19 @@ static void handle_wifi_save() {
 
     // 保留 AP，同时尝试连路由器：失败也不至于失联
     wifi_set_mode(WIFI_AP_STA);
+    wifi_failure_led_active = false;
     WiFi.begin(ssid.c_str(), pass.c_str());
+    hal_wifi_led_run(HalWifiLedState::connecting);
 
-    uint32_t t0 = millis();
+    const uint32_t t0 = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - t0 < STA_TIMEOUT_MS) {
         hal_watchdog_feed();
+        hal_wifi_led_run(HalWifiLedState::connecting);
         delay(100);
     }
 
     if (WiFi.status() == WL_CONNECTED) {
+        hal_wifi_led_run(HalWifiLedState::connected);
         save_wifi_creds(ssid.c_str(), pass.c_str());
         String ip = WiFi.localIP().toString();
         LOG_MAIN("[web] WiFi 连接成功，IP = %s，重启切换为 STA 模式", ip.c_str());
@@ -2706,7 +2738,13 @@ static void handle_wifi_save() {
         start_sta_connect();
     } else {
         schedule_sta_retry();
+        if (!sta_ssid[0]) {
+            wifi_failure_led_active = true;
+            wifi_failure_led_deadline = millis() + 6000;
+        }
     }
+
+    wifi_indicator_run();
 
     LOG_MAIN("[web] WiFi 连接失败: %s", ssid.c_str());
     server.send(200, "application/json",
@@ -3871,9 +3909,10 @@ static void setup_routes() {
 
 /**
  * 初始化 Web 管理服务
- * 读取 WiFi 和 HA 配置并异步联网，未配置 WiFi 时启动热点；启动 HTTP、WebSocket 和按需启用的 HA 后台读取
+ * 初始化 WiFi 状态灯，读取 WiFi 和 HA 配置并异步联网；未配置 WiFi 时启动热点并显示慢闪，再启动 Web 与 HA 服务
  */
 void web_config_init() {
+    hal_wifi_led_init();
     load_wifi_creds();
     ha_load_config();
     WiFi.persistent(false);
@@ -3884,6 +3923,7 @@ void web_config_init() {
     } else {
         start_config_ap();
     }
+    wifi_indicator_run();
 
     setup_routes();
     server.begin();
@@ -3894,7 +3934,7 @@ void web_config_init() {
 
 /**
  * 轮询 Web 与 WiFi 状态
- * 处理 STA 重连、mDNS、HTTP 与强制门户 DNS，并在主循环中生成 WebSocket 订阅快照
+ * 处理 STA 重连并按配网、连接、重试和在线状态刷新指示灯，再轮询 mDNS、HTTP、强制门户 DNS 与 WebSocket
  */
 void web_config_run() {
     if (sta_ssid[0]) {
@@ -3915,6 +3955,7 @@ void web_config_run() {
         }
     }
 
+    wifi_indicator_run();
     sync_mdns_name();
     server.handleClient();
     websocket_run();
