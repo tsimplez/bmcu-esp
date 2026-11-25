@@ -13,7 +13,7 @@
 非常欢迎大家来根据本项目做出独属于自己的 BMCU
 
 ## 烧录教程
-1. 在 [Releases](https://github.com/tsimplez/bmcu-esp/releases) 处下载适合的esp32固件
+1. 在 [Releases](https://github.com/tsimplez/bmcu-esp/releases) 下载对应固件；合宙 ESP32-C3 首次烧录选 `esp32c3_air-*.factory.bin` 完整镜像，后续网页 OTA 更新使用普通 `esp32c3_air-*.bin`
 2. 电脑使用typec连接好esp32
 3. 打开 [在线烧录网站](https://web.esphome.io)
 4. 点击连接 -> 左上角选择串行端口 -> 点击安装（在 准备首次使用 旁边） -> 选择下载好的固件安装就可以了
@@ -21,13 +21,14 @@
 
 ## 和打印机连接
 BMCU 先不和打印机连接 打印机
-1. AMS类型切换 AMS/AMS 2 Pro/AMS HT 
+1. AMS类型切换 AMS/AMS 2 Pro/AMS HT
 2. 版本需要 01.07.02.00 (不然就第一次有效，后续打印会失败(具体可以看这个 https://github.com/jarczakpawel/BMCU-C-PJARCZAK/blob/main/bmcu-vs-firmware-locks.md))
 3. 都准备好后接线, 接线为【A - A】【B - B】【GND - GND】【24v - 24v】(这个24v可以不要，用数据线供电就行)
 
 拓竹A1打印机端 4P接口线序
-![ams2.png](png/ams2.png)
-![ams1.png](png/ams1.png)
+
+<img src="png/ams2.png" alt="ams2.png" height="160">
+<img src="png/ams1.png" alt="ams1.png" height="160">
 
 ### 关于 485 模块
 有点容易坏
@@ -44,18 +45,17 @@ BMCU 先不和打印机连接 打印机
 离合型tt挤出力比较小
 
 ### 扩展说明
-- 单微动（实现自吸和耗材在线检测）
-- 单霍尔（需要搭配 home assistant (不然没办法知道当前阶段是否在打印)）
-
-需要把 离线 切换回 在线或者自动（功能使用电机堵转实现（打印机会退料在进料（只能直接离线）有概率提示堵转））
-
-- 缓冲(和五通微动一样，不过是在每个电机(电机)处放一个而已) 辅助送料减轻打印机压力(减少空打情况)
-
-- 五通微动 辅助送料减轻打印机压力(原理 五通下压，触发微动开关，短暂启动电机)
+- 通道微动（每个通道一个，实现自吸和耗材在线检测、辅助进料）
+- 缓冲微动（设置在各电机处）辅助送料，减轻打印机压力并减少空打情况
+- 五通微动（只有一个）下压会触发微动开关并短暂启动电机
 
 [适配机械键盘按键轴体 模型地址 https://makerworld.com.cn/zh/models/1911184-huan-chong-wei-dong-gua-pei-ji-jie-jian-pan-an-jia](https://makerworld.com.cn/zh/models/1911184-huan-chong-wei-dong-gua-pei-ji-jie-jian-pan-an-jia)
 
 [适配K12微动-21x6.4mm 模型地址 https://makerworld.com.cn/zh/models/1911156-huan-chong-wei-dong-gua-pei-k12wei-dong-21x6-4mm](https://makerworld.com.cn/zh/models/1911156-huan-chong-wei-dong-gua-pei-k12wei-dong-21x6-4mm)
+
+- 单霍尔（需要搭配 home assistant (不然没办法知道当前阶段是否在打印)）（本项目独有）
+
+需要把 离线 切换回 在线或者自动（功能使用电机堵转实现（打印机会退料在进料（只能直接离线）有概率提示堵转））
 
 ## 方案
 
@@ -101,7 +101,7 @@ BMCU 先不和打印机连接 打印机
 
 | I2C 总线地址 | A2  | A1 | A0 |
 |---|---|---|---|
-| 0x20 不需要动默认就是 | GND | GND | GND | 
+| 0x20 不需要动默认就是 | GND | GND | GND |
 | 0x21 | GND | GND | VCC |
 | 0x22 | GND | VCC | GND |
 | 0x23 | GND | VCC | VCC |
@@ -146,23 +146,23 @@ n20电机声音比tt(130)电机小一点，所以力也小一点（不推荐）
 ### 必须
 | 品名 | 参考图  | 数量 | 说明 |
 |---|---|---|---|
-| esp32 | ![esp32c3](png/esp32c3.jpeg) | 1 | 简约 和 经典 都可以 | 
-| RS485模块 TTL转RS485 | ![485.png](png/485.png) ![485de](png/485de.png) | 1 | 两种都可以 |
-| PCF8575 | ![PCF8575.png](png/PCF8575.png) | 2 | 一个就是4色 两个就是8色 3个12色 4个16色 |
-| DRV8833电机驱动 | ![DRV8833.png](png/DRV8833.png) | 4 | 一个控制两个电机 |
-| TT电机 1/48黑头单轴 | ![tt电机](png/tt.png) | 8 | 白头应该也可以 几色就几个 |
+| esp32 | <img src="png/esp32c3.jpeg" alt="esp32c3" height="160">  | 1 | 简约 和 经典 都可以 |
+| RS485模块 TTL转RS485 | <img src="png/485.png" alt="485" height="160"> <img src="png/485de.png" alt="485de" height="160"> | 1 | 两种都可以 |
+| PCF8575 | <img src="png/PCF8575.png" alt="PCF8575" height="160">| 2 | 一个就是4色 两个就是8色 3个12色 4个16色 |
+| DRV8833电机驱动 | <img src="png/DRV8833.png" alt="DRV8833" height="160">| 4 | 一个控制两个电机 |
+| TT电机 1/48黑头单轴 | <img src="png/tt.png" alt="tt电机" height="160">| 8 | 白头应该也可以 几色就几个 |
 | 压板弹簧外径5*长度10*线径0.4 |  | 8 | 无所谓，长了就剪 |
 | M3沉头螺丝 |  | * | 推荐每个规格都买(平时也用的到) 一种的话推荐(M3*20 长了就剪) |
 
 ### 可选
 | 品名 | 参考图  | 数量 | 说明 |
 |---|---|---|---|
-| 三脚带柄13.5mm按键微动 | ![wd.png](png/wd.png) | 8 | 可以不要 功能(可自吸和耗材在线检测) 至少一个电机一个|
-| AMS数据线（4pin公对公，原厂线序，不是延长线） | ![线](png/ams.png) | 1 | 杜邦线也不是不能用 打印机ams接口是(上左 B 上右 A 下左 GND 下右 24V)和485模块的关系是(A接A B接B) | 
-| MX3 2*2 弯针座 | ![amsm.png](png/amsm.png) | 1 | AMS数据线接口 |
-| mini 5V电源模块 | ![电源](png/dy.png) | 1 | 不用也可以 用手机数据线(type-c)接esp32 |
-| 2.54排母，要4P 5P 6P 10P 16P 可以直接买一份1x40P的自己剪断 | ![pm.png](png/pm.png) | * | 不要也可以 直接焊接到pcb上(不方便拆) 买2P和3P组合使用也可以|
-| xh2.54直针插座| ![xh.png](png/xh.png) | * | 一个电机一个 |
+| 三脚带柄13.5mm按键微动 | <img src="png/wd.png" alt="wd" height="160"> | 8 | 可以不要 功能(可自吸和耗材在线检测) 至少一个电机一个|
+| AMS数据线（4pin公对公，原厂线序，不是延长线） | <img src="png/ams.png" alt="线" height="160">| 1 | 杜邦线也不是不能用 打印机ams接口是(上左 B 上右 A 下左 GND 下右 24V)和485模块的关系是(A接A B接B) |
+| MX3 2*2 弯针座 | <img src="png/amsm.png" alt="amsm" height="160"> | 1 | AMS数据线接口 |
+| mini 5V电源模块 | <img src="png/dy.png" alt="电源" height="160">| 1 | 不用也可以 用手机数据线(type-c)接esp32 |
+| 2.54排母，要4P 5P 6P 10P 16P 可以直接买一份1x40P的自己剪断 | <img src="png/pm.png" alt="pm" height="160">  | * | 不要也可以 直接焊接到pcb上(不方便拆) 买2P和3P组合使用也可以|
+| xh2.54直针插座| <img src="png/xh.png" alt="xh" height="160"> | * | 一个电机一个 |
 | 温湿度模块|  | * | 可选|
 
 ### Ams Lite Mini 485
@@ -235,17 +235,6 @@ https://github.com/jarczakpawel/BMCU-Flasher
 ### 停止功能
 打印机退料 -> 5秒后打印机要求停止 -> 打印机进料
 似乎和 AS5600_get_distance_E _filament meters 长度有关系
-
-## 编译与烧录
-
-```bash
-# 安装 PlatformIO 后
-pio run                      # 编译（默认环境 esp32c3_air）
-pio run -e esp32s3           # 指定环境
-pio run -e esp32c3_air      # 经典款 / 简约款共用固件
-pio run -e esp32c3 -t upload # 编译并上传
-pio run -t clean             # 清理
-```
 
 ## 软件架构
 

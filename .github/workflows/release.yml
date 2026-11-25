@@ -47,7 +47,7 @@ jobs:
       - run: python -m pip install platformio
 
       - name: Build firmware
-        run: pio run -e esp32s3 -e esp32c3 -e esp32c3_air
+        run: pio run -e esp32s3 -e esp32c3_air
 
       - name: Generate OTA package
         shell: python
@@ -64,7 +64,7 @@ jobs:
           dist = Path("dist")
           dist.mkdir(exist_ok=True)
           manifest = {}
-          for target in ("esp32s3", "esp32c3", "esp32c3_air"):
+          for target in ("esp32s3", "esp32c3_air"):
               data = Path(f".pio/build/{target}/firmware.bin").read_bytes()
               if version.encode("ascii") not in data:
                   raise SystemExit(f"{target} 固件不包含版本号 {version}，请重新编译")
@@ -74,6 +74,10 @@ jobs:
                   "version": version, "notes": notes, "url": name,
                   "size": len(data), "md5": hashlib.md5(data).hexdigest(),
               }
+          factory = Path(f".pio/build/esp32c3_air/esp32c3_air-{version}.factory.bin")
+          if not factory.exists():
+              raise SystemExit(f"缺少首次烧录完整镜像：{factory}")
+          (dist / factory.name).write_bytes(factory.read_bytes())
           (dist / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
       - uses: softprops/action-gh-release@v2
@@ -84,11 +88,12 @@ jobs:
 
             - ESP32-S3：选择 `esp32s3-*.bin`
             - 通用 ESP32-C3：选择 `esp32c3-*.bin`
-            - 合宙 C3 经典款 / 简约款：共用 `esp32c3_air-*.bin`
+            - 合宙 C3 经典款 / 简约款首次烧录：选择 `esp32c3_air-*.factory.bin`
+            - 合宙 C3 经典款 / 简约款 OTA 更新：选择 `esp32c3_air-*.bin`
 
             ## 烧录步骤
 
-            1. 在下方 Assets 中下载对应的固件
+            1. 在下方 Assets 中下载对应的固件；首次烧录选择 `.factory.bin` 完整镜像，后续 OTA 更新选择普通 `.bin`
             2. 使用 Type-C 数据线将 ESP32 连接到电脑
             3. 打开 [在线烧录网站](https://web.esphome.io)
             4. 点击连接 → 在左上角选择串行端口 → 点击安装（在“准备首次使用”旁边） → 选择下载好的固件并完成安装

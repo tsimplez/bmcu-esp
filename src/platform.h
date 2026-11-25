@@ -227,6 +227,11 @@ void hal_console_prepare();
 void hal_console_begin();
 void hal_console_write(const char *data, size_t len);
 
+// ESP32 WiFi 指示灯状态；非 ESP32 平台保持为空实现
+enum class HalWifiLedState : uint8_t { off, configuring, connecting, retry_wait, connected };
+void hal_wifi_led_init();
+void hal_wifi_led_run(HalWifiLedState state);
+
 // 从持久化设置加载，首次使用 hal_default_project_preset() 的默认接线
 // BambuBus 串口 RX、TX 引脚号；RS485_MODE_RXTX 模式下 DE 不驱动
 extern int BUS_RX, BUS_TX, BUS_DE;
@@ -238,11 +243,6 @@ extern int BUS_RX, BUS_TX, BUS_DE;
 #include <esp_task_wdt.h>
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 #include <soc/soc_caps.h>
-#endif
-#if defined(CONFIG_IDF_TARGET_ESP32C3)
-#include <soc/soc.h>
-#include <soc/usb_serial_jtag_reg.h>
-#include <soc/io_mux_reg.h>
 #endif
 
 #define BUS_SERIAL Serial1
@@ -264,7 +264,7 @@ static inline void hal_watchdog_init() {
 #else
     esp_task_wdt_init(10, true);
 #endif
-    esp_task_wdt_add(NULL); // 把 loop 任务挂进看门狗
+    esp_task_wdt_add(nullptr); // 把 loop 任务挂进看门狗
 }
 /**
  * 喂任务看门狗
