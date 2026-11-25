@@ -10,10 +10,10 @@ extern "C" {
 #define BMCU_AS5600_SCL 5
 
 // AS5600相关常量
-#define AS5600_RAW_TO_DEGREES     360.0 / 4096
-#define AS5600_DEGREES_TO_RAW     4096 / 360.0
+#define AS5600_RAW_TO_DEGREES     (360.0 / 4096)
+#define AS5600_DEGREES_TO_RAW     (4096 / 360.0)
 #define AS5600_PI 3.14159265358979323846
-#define AS5600_MM_PER_CNT         -(AS5600_PI * 7.5f) / 4096.0f
+#define AS5600_MM_PER_CNT         (-(AS5600_PI * 7.5f) / 4096.0f)
 
 // AS5600模拟变量
 extern int16_t as5600_current_angle[4];

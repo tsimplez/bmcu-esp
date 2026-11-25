@@ -1312,7 +1312,7 @@ static uint8_t package_num = 0;
  * @return 每通道 2 bit 的状态位图；无效 AMS 返回 0
  * bit0 表示在线，bit1 表示通道正在运动，供打印机显示耗材状态
  */
-uint8_t get_filament_left_char(const uint8_t AMS_num) {
+static uint8_t get_filament_left_char(const uint8_t AMS_num) {
     if (AMS_num >= 4) return 0;
     uint8_t data = 0;
     for (int i = 0; i < 4; i++) {
@@ -1379,18 +1379,17 @@ static void set_prepare_response(unsigned char *out, const uint8_t ams_num, cons
     auto &ext = filament_ext[ams_num][ch];
     if (ext.motion != filament_motion_internal::before_on_use || ext.last_prepare_flag != 0x7F)
         return;
-    const size_t count = sizeof(BAMBU_PREPARE_7F_ROWS) / sizeof(BAMBU_PREPARE_7F_ROWS[0]);
-    if (ext.prepare_reply_index < count) {
-        const auto &row = BAMBU_PREPARE_7F_ROWS[ext.prepare_reply_index++];
-        out[13] = static_cast<uint8_t>(row.pressure);
-        out[14] = static_cast<uint8_t>(row.pressure >> 8);
-        out[15] = static_cast<uint8_t>(row.unknow2);
-        out[16] = static_cast<uint8_t>(row.unknow2 >> 8);
-        memcpy(out + 17, row.unknow3, sizeof(row.unknow3));
+    if (constexpr size_t count = std::size(BAMBU_PREPARE_7F_ROWS); ext.prepare_reply_index < count) {
+        const auto &[pressure, unknow2, unknow3, last1, last2] = BAMBU_PREPARE_7F_ROWS[ext.prepare_reply_index++];
+        out[13] = static_cast<uint8_t>(pressure);
+        out[14] = static_cast<uint8_t>(pressure >> 8);
+        out[15] = static_cast<uint8_t>(unknow2);
+        out[16] = static_cast<uint8_t>(unknow2 >> 8);
+        memcpy(out + 17, unknow3, sizeof(unknow3));
         // 保留参考实现实际写入的偏移，不能按普通位图/last1/last2 成员边界右移一字节
         for (uint8_t i = 0; i < 4; ++i) {
-            out[29 + i] = static_cast<uint8_t>(row.last1 >> (8 * i));
-            out[33 + i] = static_cast<uint8_t>(row.last2 >> (8 * i));
+            out[29 + i] = static_cast<uint8_t>(last1 >> (8 * i));
+            out[33 + i] = static_cast<uint8_t>(last2 >> (8 * i));
         }
     } else {
         out[13] = 0x34; out[14] = 0x1E;
@@ -1517,12 +1516,12 @@ static void send_for_Dxx(const unsigned char *buf, const int length) {
         if (aht_humidity < 0.0f) aht_humidity = 0.0f;
         if (aht_humidity > 100.0f) aht_humidity = 100.0f;
 
-        const int32_t temperature_tenths = static_cast<int32_t>(
+        const auto temperature_tenths = static_cast<int32_t>(
             aht_temperature >= 0.0f
                 ? aht_temperature * 10.0f + 0.5f
                 : aht_temperature * 10.0f - 0.5f);
-        const uint16_t temperature_raw = static_cast<uint16_t>(static_cast<int16_t>(temperature_tenths));
-        const int32_t humidity_percent = static_cast<int32_t>(aht_humidity + 0.5f);
+        const auto temperature_raw = static_cast<uint16_t>(static_cast<int16_t>(temperature_tenths));
+        const auto humidity_percent = static_cast<int32_t>(aht_humidity + 0.5f);
         Dxx_res[6] = static_cast<unsigned char>(temperature_raw & 0xFF);
         Dxx_res[7] = static_cast<unsigned char>(temperature_raw >> 8);
         Dxx_res[8] = static_cast<unsigned char>(humidity_percent);
@@ -1657,7 +1656,7 @@ static void send_for_Fxx(const unsigned char *buf, const int length) {
 
 // ==================== MC在线 ====================
 // MC 在线长包载荷模板：首字节写入 AMS 编号，其余字节作为状态占位
-unsigned char long_packge_MC_online[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+static unsigned char long_packge_MC_online[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
 /**
  * 回复 MC 在线长包
@@ -1665,7 +1664,7 @@ unsigned char long_packge_MC_online[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
  * @param length 报文长度
  * 校验 AMS 编号后复制包序号和地址，回复 MC 在线状态
  */
-void send_for_long_packge_MC_online(unsigned char *buf, int length) {
+static void send_for_long_packge_MC_online(unsigned char *buf, int length) {
     long_packge_data data{};
     BambuBus_long_package_analysis(buf, length, &printer_data_long);
 
@@ -1690,7 +1689,7 @@ void send_for_long_packge_MC_online(unsigned char *buf, int length) {
 
 // ==================== 读取耗材信息 ====================
 // 耗材信息长包载荷模板；发送前按请求填入通道、ID、名称、颜色和温度范围
-unsigned char long_packge_filament[] = {
+static unsigned char long_packge_filament[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x47, 0x46, 0x42, 0x30, 0x30, 0x00, 0x00, 0x00,
     0x41, 0x42, 0x53, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -1711,7 +1710,7 @@ unsigned char long_packge_filament[] = {
  * @param length 报文长度
  * 读取指定通道的 ID、名称、颜色和温度范围，组装长包回复打印机
  */
-void send_for_long_packge_filament(unsigned char *buf, int length) {
+static void send_for_long_packge_filament(unsigned char *buf, int length) {
     long_packge_data data{};
     BambuBus_long_package_analysis(buf, length, &printer_data_long);
 
@@ -1894,7 +1893,7 @@ static void send_for_long_packge_version(unsigned char *buf, int length) {
 
 // ==================== 设置耗材信息（短包 0xC5 0x08）====================
 // 短包设置耗材（0x08）的固定 ACK 响应，发送时再补 CRC8
-unsigned char Set_filament_res[] = {0x3D, 0xC0, 0x08, 0xB2, 0x08, 0x60, 0xB4, 0x04};
+static unsigned char Set_filament_res[] = {0x3D, 0xC0, 0x08, 0xB2, 0x08, 0x60, 0xB4, 0x04};
 
 /**
  * 处理短包设置耗材请求
@@ -1928,7 +1927,7 @@ static void send_for_Set_filament(const unsigned char *buf, const int length) {
 
 // ==================== 新增：设置耗材信息类型2（长包 0x05 0x218）====================
 // 长包设置耗材类型 2 的三字节确认载荷：[AMS 编号, 通道号, 0x00]
-unsigned char set_filament_res_type2[] = {0x00, 0x00, 0x00};
+static unsigned char set_filament_res_type2[] = {0x00, 0x00, 0x00};
 
 /**
  * 处理长包设置耗材请求
@@ -1936,7 +1935,7 @@ unsigned char set_filament_res_type2[] = {0x00, 0x00, 0x00};
  * @param length 报文长度
  * 校验载荷和启用范围后解析耗材信息，回复三字节确认；实际写入由空闲保存入口执行
  */
-void send_for_Set_filament_type2(unsigned char *buf, int length) {
+static void send_for_Set_filament_type2(unsigned char *buf, int length) {
     long_packge_data data{};
     BambuBus_long_package_analysis(buf, length, &printer_data_long);
 

@@ -48,7 +48,7 @@ public:
      * @param ch 存储容量内的通道下标，调用方应先检查是否已列出
      * @return 按进料、退料、微动排列的三个引脚
      */
-    constexpr const int *operator[](size_t ch) const { return values_[ch]; }
+    constexpr const int *operator[](const size_t ch) const { return values_[ch]; }
 
 private:
     size_t count_;

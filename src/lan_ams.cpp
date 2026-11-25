@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include <mqtt_client.h>
 #include <cJSON.h>
+#include "json_utils.h"
 #include <mbedtls/ssl.h>
 #include <esp_idf_version.h>
 #include "BMCU.h"
@@ -41,7 +42,7 @@ uint32_t step_deadline = 0, expected_ams_revision = 0;
 bool armed = false, cancel_requested = false, poll_sent = false, reset_client_requested = false;
 bool motion_fault = false, pair_logged = false;
 int wait_state = -1;
-const char *last_error = "";
+auto last_error = "";
 
 /**
  * 读取网络任务提交的打印机快照
@@ -74,10 +75,9 @@ bool paired() {
  * @return 字段存在且满足范围和精度要求时返回 true
  */
 bool read_number(const cJSON *object, const char *name, int &value, int low, int high, bool fractional = false) {
-    const auto *item = cJSON_GetObjectItemCaseSensitive(object, name);
-    if (!cJSON_IsNumber(item) || !(item->valuedouble >= low && item->valuedouble <= high) ||
-        (!fractional && item->valuedouble != item->valueint)) return false;
-    value = item->valueint;
+    double number = 0;
+    if (!Json::read_number(object, name, number, low, high, fractional)) return false;
+    value = static_cast<int>(number);
     return true;
 }
 
@@ -88,9 +88,9 @@ bool read_number(const cJSON *object, const char *name, int &value, int low, int
  * 温度、暂停和退料确认分别记录新鲜度
  */
 void receive_report(const char *data) {
-    auto *json = cJSON_ParseWithOpts(data, nullptr, true);
-    const auto *print = cJSON_GetObjectItemCaseSensitive(json, "print");
-    if (!cJSON_IsObject(print)) { cJSON_Delete(json); return; }
+    auto json = Json::parse(data, strlen(data));
+    const auto *print = Json::item(json.get(), "print");
+    if (!cJSON_IsObject(print)) return;
     auto next = read_report();
     const auto previous = next;
     const uint32_t now = millis();
@@ -109,20 +109,17 @@ void receive_report(const char *data) {
     }
     valid |= read_number(print, "hw_switch_state", next.filament, 0, 1);
     valid |= read_number(print, "print_error", next.print_error, 0, INT32_MAX);
-    const auto *state = cJSON_GetObjectItemCaseSensitive(print, "gcode_state");
-    if (cJSON_IsString(state)) {
-        next.state = !strcmp(state->valuestring, "PAUSE") ? PAUSED :
-                     !strcmp(state->valuestring, "RUNNING") ? RUNNING :
-                     (!strcmp(state->valuestring, "FINISH") || !strcmp(state->valuestring, "FAILED") ||
-                      !strcmp(state->valuestring, "IDLE")) ? ENDED : UNKNOWN;
+    if (String state; Json::read_string(print, "gcode_state", state)) {
+        next.state = state == "PAUSE" ? PAUSED :
+                     state == "RUNNING" ? RUNNING :
+                     (state == "FINISH" || state == "FAILED" || state == "IDLE") ? ENDED : UNKNOWN;
         next.state_time = now;
         valid = true;
     }
-    const auto *result = cJSON_GetObjectItemCaseSensitive(print, "result");
-    if (cJSON_IsString(result) && (!strcmp(result->valuestring, "fail") ||
-                                  !strcmp(result->valuestring, "failed"))) next.denied = true;
+    String result;
+    if (Json::read_string(print, "result", result) && (result == "fail" || result == "failed")) next.denied = true;
     if (valid) { next.received = now; ++next.revision; }
-    cJSON_Delete(json);
+    json.reset();
     portENTER_CRITICAL(&report_lock);
     shared_report = next;
     portEXIT_CRITICAL(&report_lock);
@@ -181,7 +178,7 @@ void mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
         const bool subscribed = id == MQTT_EVENT_SUBSCRIBED &&
             (!event->error_handle || event->error_handle->error_type != MQTT_ERROR_TYPE_SUBSCRIBE_FAILED) &&
             !(event->data && event->data_len > 0 && static_cast<unsigned char>(event->data[0]) >= 0x80);
-        const char *error = "MQTT 连接失败，请检查打印机 IP 和局域网设置";
+        auto error = "MQTT 连接失败，请检查打印机 IP 和局域网设置";
         if (id == MQTT_EVENT_SUBSCRIBED) error = "打印机拒绝状态订阅，请检查序列号及局域网权限";
         if (id == MQTT_EVENT_ERROR && event->error_handle &&
             event->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED &&
@@ -208,7 +205,7 @@ void mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
             if (event->retain || event->total_data_len <= 0 ||
                 static_cast<size_t>(event->total_data_len) > MAX_REPORT_SIZE ||
                 event->topic_len != static_cast<int>(strlen(report_topic)) ||
-                !event->topic || memcmp(event->topic, report_topic, event->topic_len)) return;
+                !event->topic || memcmp(event->topic, report_topic, event->topic_len) != 0) return;
             incoming_size = event->total_data_len;
             incoming = static_cast<char *>(malloc(incoming_size + 1));
         }
@@ -309,7 +306,7 @@ bool send_gcode(const char *code) {
     }
     escaped[n] = 0;
     char json[432];
-    snprintf(json, sizeof(json), "{\"print\":{\"command\":\"gcode_line\",\"sequence_id\":\"0\",\"param\":\"%s\\n\"}}", escaped);
+    snprintf(json, sizeof(json), R"({"print":{"command":"gcode_line","sequence_id":"0","param":"%s\n"}})", escaped);
     return publish(json);
 }
 
@@ -320,8 +317,7 @@ bool send_gcode(const char *code) {
  */
 void fail(const char *reason) {
     for (int ch = 0; ch < active_channel_count(); ++ch) {
-        const auto motor = BMCU_motor_status(ch);
-        if (motor.source == MOTOR_LAN || motor.queued_source == MOTOR_LAN) BMCU_stop_motor(ch);
+        if (const auto motor = BMCU_motor_status(ch); motor.source == MOTOR_LAN || motor.queued_source == MOTOR_LAN) BMCU_stop_motor(ch);
     }
     step = IDLE;
     current_channel = target_channel = -1;
@@ -403,7 +399,7 @@ void begin_change() {
     LOG_MAIN("[lan] 已请求恢复热床温度至 %d°C", previous_bed);
     if (next == current_channel) {
         advance(RESUME, 15000);
-        if (!publish("{\"print\":{\"command\":\"resume\",\"sequence_id\":\"0\"}}")) fail("恢复打印请求发送失败");
+        if (!publish(R"({"print":{"command":"resume","sequence_id":"0"}})")) fail("恢复打印请求发送失败");
         return;
     }
     expected_ams_revision = report.ams_revision;
@@ -474,7 +470,7 @@ void run_change() {
         case FEED:
             if (motor_finished(target_channel)) {
                 current_channel = target_channel;
-                if (!publish("{\"print\":{\"command\":\"resume\",\"sequence_id\":\"0\"}}")) {
+                if (!publish(R"({"print":{"command":"resume","sequence_id":"0"}})")) {
                     fail("恢复打印请求发送失败"); break;
                 }
                 advance(RESUME, 15000);
@@ -543,7 +539,7 @@ LanAmsStatus lan_ams_status() {
  * @param channel 全局通道编号，-1 表示未知
  * @return 已配对、空闲且通道可用时返回 true
  */
-bool lan_ams_request_channel(int channel) {
+bool lan_ams_request_channel(const int channel) {
     if (!lan_ams_enabled() || !paired() || lan_ams_busy() || !BMCU_can_maintain() ||
         channel < -1 || channel >= active_channel_count() ||
         (channel >= 0 && (!BMCU_channel_motor_ready(channel) || CHANNEL_MODE[channel] == CHANNEL_MODE_OFFLINE))) return false;
@@ -607,12 +603,12 @@ void lan_ams_run() {
     if (!client && WiFi.status() == WL_CONNECTED && settings_lan_config_valid(LAN_AMS_CONFIG, true) &&
         static_cast<int32_t>(now - next_connect) >= 0) connect_printer();
     if (report.connected && report.subscribed && (!poll_sent || static_cast<int32_t>(now - next_poll) >= 0)) {
-        poll_sent = publish("{\"pushing\":{\"command\":\"pushall\",\"sequence_id\":\"0\"}}");
+        poll_sent = publish(R"({"pushing":{"command":"pushall","sequence_id":"0"}})");
         next_poll = now + 5000;
     }
     if (!motion_fault && report.connected && !report.received && now - attempted_at >= REPORT_TIMEOUT_MS) {
-        const char *error = "已连接但未收到打印机状态，请检查序列号及局域网权限";
-        if (strcmp(last_error, error)) LOG_MAIN("[lan] %s", error);
+        constexpr auto error = "已连接但未收到打印机状态，请检查序列号及局域网权限";
+        if (strcmp(last_error, error) != 0) LOG_MAIN("[lan] %s", error);
         last_error = error;
     }
     if (!paired()) {

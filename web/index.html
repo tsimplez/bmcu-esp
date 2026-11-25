@@ -777,13 +777,16 @@
    */
   const toastOff = () => $('toast').classList.remove('on')
   /**
-   * 发送请求并读取文本响应
-   * @param {string} path 请求路径
+   * 请求设备接口并读取 JSON，同时保留 HTTP 响应状态
+   * @param {string} path 请求路径或完整地址
    * @param {RequestInit} [opt] fetch 请求选项
-   * @return {Promise<string>} 响应正文
-   * 按当前访问环境请求设备并把 API 响应按文本读取，由调用方决定是否解析 JSON
+   * @return {Promise<{response: Response, data: *}>} HTTP 响应和解析后的正文
+   * HTTP 错误也返回解析结果，由调用方按接口需要处理状态码和错误字段
    */
-  const api = (path, opt) => apiFetch(path, opt).then(r => r.text())
+  const apiJson = async (path, opt) => {
+    const response = await apiFetch(path, opt)
+    return {response, data: await response.json()}
+  }
   /**
    * 转义 HTML 特殊字符
    * @param {*} s 待转义内容
@@ -995,9 +998,9 @@
     const generation = dataGeneration, requestedAt = performance.now(), ac = new AbortController()
     statusAbort = ac
     const timer = setTimeout(() => ac.abort(), 5000)
-    return apiFetch('/api/status', {signal: ac.signal, cache: 'no-store'}).then(r => {
-      if (!r.ok) throw Error('状态请求失败')
-      return r.json()
+    return apiJson('/api/status', {signal: ac.signal, cache: 'no-store'}).then(({response, data}) => {
+      if (!response.ok) throw Error('状态请求失败')
+      return data
     }).then(d => {
       if (generation !== dataGeneration) return
       applyStatusPacket(d, requestedAt)
@@ -1218,8 +1221,7 @@
           const query = new URLSearchParams({offset, generation})
           if (first && refresh) query.set('refresh', '1')
           first = false
-          response = await apiFetch('/api/home-assistant/entities?' + query, {signal: controller.signal, cache: 'no-store'})
-          data = await response.json()
+          ({response, data} = await apiJson('/api/home-assistant/entities?' + query, {signal: controller.signal, cache: 'no-store'}))
         } finally {
           clearTimeout(timer)
           if (haEntitiesAbort === controller) haEntitiesAbort = null
@@ -1306,8 +1308,7 @@
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 5000)
     let loaded = false
     try {
-      const response = await apiFetch('/api/home-assistant', {signal: ac.signal, cache: 'no-store'})
-      const data = await response.json()
+      const {response, data} = await apiJson('/api/home-assistant', {signal: ac.signal, cache: 'no-store'})
       if (!response.ok) throw Error(data.msg || '读取 HA 配置失败')
       if (typeof data.enabled !== 'boolean' || typeof data.token_set !== 'boolean' || typeof data.configured !== 'boolean' ||
               typeof data.url !== 'string' || !Number.isInteger(data.generation) || data.generation < 1) throw Error('HA 配置响应不完整')
@@ -1377,10 +1378,9 @@
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 8000)
     try {
       const token = $('ha-token').value.trim(), body = new URLSearchParams({enabled: $('ha-enabled').checked ? '1' : '0', url, token})
-      const response = await apiFetch('/api/home-assistant', {
+      const {response, data} = await apiJson('/api/home-assistant', {
         method: 'POST', signal: ac.signal, headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString()
       })
-      const data = await response.json()
       if (!response.ok || !data.ok) throw Error(data.msg || '保存 HA 配置失败')
       haTokenSet = haTokenSet || !!token
       $('ha-token').value = ''
@@ -1431,10 +1431,9 @@
     try {
       const body = new URLSearchParams({generation})
       for (const picker of HA_ENTITY_PICKERS) body.set(picker.field, submitted[picker.key])
-      const response = await apiFetch('/api/home-assistant/selection', {
+      const {response, data} = await apiJson('/api/home-assistant/selection', {
         method: 'POST', signal: ac.signal, headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString()
       })
-      const data = await response.json()
       if (response.status === 409) {
         haSelectionSaving = false
         await loadHomeAssistant({preserveDrafts: true})
@@ -1645,13 +1644,12 @@
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 8000)
     try {
       const body = new URLSearchParams({channel: hallDialogChannel, pin: hallDialogPin, ...config})
-      const response = await apiFetch('/api/hall/detection', {
+      const {response, data} = await apiJson('/api/hall/detection', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: body.toString(),
         signal: ac.signal
       })
-      const data = await response.json()
       if (!response.ok || !data.ok) throw Error(data.msg || '保存失败，请重试')
       if (data.channel !== hallDialogChannel || data.pin !== hallDialogPin || !validHallConfig(data.detection)) throw Error('保存响应不完整，请重新读取或重试')
       hallConfigRevision++
@@ -1747,9 +1745,9 @@
     const query = hallEpoch === null ? '' : '?epoch=' + hallEpoch + '&cursor=' + hallCursor
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 3000)
     hallAbort = ac
-    return apiFetch('/api/hall' + query, {signal: ac.signal, cache: 'no-store'}).then(r => {
-      if (!r.ok) throw Error('霍尔读取失败')
-      return r.json()
+    return apiJson('/api/hall' + query, {signal: ac.signal, cache: 'no-store'}).then(({response, data}) => {
+      if (!response.ok) throw Error('霍尔读取失败')
+      return data
     }).then(data => {
       if (generation === dataGeneration) applyHallPacket(data, revision)
     }).catch(e => {
@@ -1849,10 +1847,10 @@
     socketTokenAbort = ac
     const timer = setTimeout(() => ac.abort(), 5000)
     try {
-      const response = await apiFetch('/api/ws-token', {signal: ac.signal, cache: 'no-store'})
+      const {response, data} = await apiJson('/api/ws-token', {signal: ac.signal, cache: 'no-store'})
       if (generation !== dataGeneration || otaBusy) return
       if (!response.ok) throw Error('读取 WebSocket 连接凭据失败')
-      const {token} = await response.json()
+      const {token} = data
       if (generation !== dataGeneration || otaBusy) return
       if (typeof token !== 'string' || !/^[0-9a-f]{32}$/.test(token)) throw Error('WebSocket 连接凭据无效')
       const url = new URL('/api/ws', API_BASE || location.href)
@@ -2336,11 +2334,10 @@
     renderMotorControls()
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 3000)
     try {
-      const r = await apiFetch('/api/motor', {
+      const {response: r, data: d} = await apiJson('/api/motor', {
         method: 'POST', signal: ac.signal, headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'motor=' + motor + '&dir=' + dir + '&duration=' + encodeURIComponent(duration)
       })
-      const d = await r.json()
       if (!r.ok || !d.ok) throw Error(d.msg || '操作失败')
       return true
     } catch (e) {
@@ -2369,7 +2366,8 @@
      * 捕获异常时在控制台输出上下文与完整异常
      */
     const poll = () => {
-      apiFetch('/api/scan').then(r => r.json()).then((list) => {
+      apiJson('/api/scan').then(({response, data: list}) => {
+        if (!response.ok) throw Error('扫描 WiFi 失败')
         if (list.scanning) {
           if (Date.now() - started > 20000) {
             $('scanlist').textContent = '扫描超时';
@@ -2432,11 +2430,10 @@
     const el = $('w-mdns')
     el.disabled = true
     try {
-      const r = await apiFetch('/api/mdns', {
+      const {response: r, data: d} = await apiJson('/api/mdns', {
         method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'mdns=' + encodeURIComponent(mdns)
       })
-      const d = await r.json()
       if (!r.ok || !d.ok) throw Error(d.msg || '保存失败')
       el.dataset.saved = mdns;
       mdnsLoaded = true
@@ -2474,9 +2471,8 @@
     toast('正在连接，请稍候（最多 15 秒）...', 15000)
     const body = 'ssid=' + encodeURIComponent(ssid) + '&pass=' + encodeURIComponent($('w-pass').value) +
             '&mdns=' + encodeURIComponent(mdns);
-    api('/api/wifi', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body})
-            .then((t) => {
-              const d = JSON.parse(t);
+    apiJson('/api/wifi', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body})
+            .then(({data: d}) => {
               if (d.ok && d.ip) startHandoff(d.ip)
               else {
                 if (handoffWin && !handoffWin.closed) handoffWin.close();
@@ -2549,7 +2545,7 @@
    * @return {Promise<void>} 请求处理完成的 Promise
    * 调用 /api/forget，并把设备返回的结果显示为提示
    */
-  const doForget = () => api('/api/forget', {method: 'POST'}).then(t => toast(JSON.parse(t).msg, 6000))
+  const doForget = () => apiJson('/api/forget', {method: 'POST'}).then(({data}) => toast(data.msg, 6000))
 
   // ---------- BambuBus 接线 ----------
   // ---------- 项目配置 ----------
@@ -2676,9 +2672,8 @@
    */
   const loadProjects = async () => {
     try {
-      const r = await apiFetch('/api/projects', {cache: 'no-store'})
+      const {response: r, data: d} = await apiJson('/api/projects', {cache: 'no-store'})
       if (!r.ok) throw Error('读取项目配置失败')
-      const d = await r.json()
       PROJECTS = d.projects || []
       const select = $('project-select');
       select.textContent = ''
@@ -2712,11 +2707,10 @@
     $('project-state').textContent = '正在保存项目配置…'
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 12000)
     try {
-      const r = await apiFetch('/api/projects', {
+      const {response: r, data: d} = await apiJson('/api/projects', {
         method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: new URLSearchParams({id: $('project-select').value}).toString(), signal: ac.signal
       })
-      const d = await r.json()
       if (!r.ok || !d.ok) throw Error(d.msg || '项目保存失败')
       $('apply-project').textContent = '正在重启…'
       $('project-state').textContent = d.msg
@@ -2913,12 +2907,11 @@
         body.set('lan_feed_ms', $('lan-feed-ms').value);
         body.set('lan_nozzle_temp', $('lan-nozzle-temp').value)
       }
-      const r = await apiFetch('/api/bus', {
+      const {response: r, data: d} = await apiJson('/api/bus', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: body.toString(), signal: ac.signal
       })
-      const d = await r.json()
       if (!r.ok || !d.ok) throw Error(d.msg || '保存失败')
       $('bus-state').textContent = d.msg;
       toast(d.msg, 12000)
@@ -2966,11 +2959,10 @@
     renderLanStatus()
     const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 5000)
     try {
-      const r = await apiFetch('/api/lan/' + action, {
+      const {response: r, data: d} = await apiJson('/api/lan/' + action, {
         method: 'POST', signal: ac.signal, headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: action === 'channel' ? new URLSearchParams({channel: $('lan-channel').value}).toString() : ''
       })
-      const d = await r.json()
       if (!r.ok || !d.ok) throw Error(d.msg || '请求失败')
       LAN_CHANNEL_DIRTY = false;
       toast(d.msg);
@@ -3079,12 +3071,11 @@
     $('pcf-sda').disabled = $('pcf-scl').disabled = true
     try {
       const body = new URLSearchParams({sda: $('pcf-sda').value, scl: $('pcf-scl').value})
-      const r = await apiFetch('/api/pcf', {
+      const {response: r, data: d} = await apiJson('/api/pcf', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: body.toString()
       })
-      const d = await r.json()
       if (!r.ok || !d.ok) throw Error(d.msg || '保存失败')
       $('pcf-state').textContent = d.msg;
       toast(d.msg, 12000)
@@ -3605,7 +3596,8 @@
    */
   const loadPara = () => {
     const revision = hallConfigRevision
-    return apiFetch('/api/settings').then(r => r.json()).then((d) => {
+    return apiJson('/api/settings').then(({response, data: d}) => {
+      if (!response.ok) throw Error('读取设置失败')
       if (revision === hallConfigRevision && Array.isArray(d.hall_detection)) d.hall_detection.forEach((config, channel) => {
         if (validHallConfig(config)) hallConfigs.set(channel, {...config, pin: d.io?.hall?.[channel] ?? 255})
       })
@@ -3646,12 +3638,11 @@
    */
   const postSettings = async (body, silent) => {
     try {
-      const r = await apiFetch('/api/settings', {
+      const {response: r, data: d} = await apiJson('/api/settings', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body
       })
-      const d = await r.json()
       if (!r.ok || !d.ok) throw Error(d.msg || '保存失败')
       if (!silent) toast(d.msg)
       refreshStatus()
@@ -3711,9 +3702,8 @@
       version.value = versionValue;
       version.dataset.saved = versionValue
       $('p-effective-serial-' + index).textContent = '已保存，正在读取…'
-      const response = await apiFetch('/api/settings')
+      const {response, data} = await apiJson('/api/settings')
       if (!response.ok) throw Error('AMS 设置已保存，完整序列号读取失败，请刷新页面')
-      const data = await response.json()
       if (!Array.isArray(data.ams_identity)) throw Error('AMS 设置已保存，请刷新页面读取完整序列号')
       renderAmsIdentities(data)
       toast('AMS ' + (index + 1) + ' 已保存')
@@ -3880,8 +3870,7 @@
       const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 5000)
       try {
         const path = '/api/ota/check' + (id === null ? (force ? '?force=1' : '') : '?id=' + id)
-        const r = await apiFetch(path, {method: id === null ? 'POST' : 'GET', signal: ac.signal, cache: 'no-store'})
-        const d = await r.json()
+        const {response: r, data: d} = await apiJson(path, {method: id === null ? 'POST' : 'GET', signal: ac.signal, cache: 'no-store'})
         if (!r.ok || !d?.ok) throw Error(d?.msg || '检查请求失败（HTTP ' + r.status + '）')
         if (id === null && d.skipped) return d
         if (!Number.isInteger(d.id) || d.id <= 0 || (id !== null && d.id !== id) || typeof d.running !== 'boolean') {
@@ -3989,9 +3978,8 @@
     while (Date.now() < deadline) {
       const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 3000)
       try {
-        const r = await apiFetch('/api/status', {signal: ac.signal, cache: 'no-store'})
+        const {response: r, data: d} = await apiJson('/api/status', {signal: ac.signal, cache: 'no-store'})
         if (r.ok) {
-          const d = await r.json()
           if (d.version && (!version || d.version === version)) {
             showOtaProgress({stage: 'done', msg: '设备已重新连接，正在刷新页面'})
             $('u-bar').value = 100
@@ -4196,8 +4184,8 @@
    * 二次确认后调用 /api/reboot，并显示设备返回的提示
    */
   const doReboot = () => {
-    if (confirm('确定重启设备？')) api('/api/reboot').then((t) => {
-      toast(JSON.parse(t).msg, 6000);
+    if (confirm('确定重启设备？')) apiJson('/api/reboot').then(({data}) => {
+      toast(data.msg, 6000);
     });
   }
   /**
@@ -4211,7 +4199,7 @@
     if (button.disabled || !confirm('确定恢复默认配置？接线、通道参数、AMS 身份和更新设置将恢复默认，WiFi 与 HA 配置会保留，设备将重启')) return
     button.disabled = true
     try {
-      const data = JSON.parse(await api('/api/settings/reset', {method: 'POST'}))
+      const {data} = await apiJson('/api/settings/reset', {method: 'POST'})
       toast(data.msg || (data.ok ? '已恢复默认配置，设备重启中' : '恢复默认配置失败，请重试'), 6000)
       setTimeout(() => location.reload(), 3500)
     } catch (e) {
@@ -4226,8 +4214,8 @@
    * 明确提示 WiFi 凭据与 HA 配置会被清空，确认后调用 /api/factory 并显示结果
    */
   const doFactory = () => {
-    if (confirm('确定恢复出厂设置？WiFi 凭据与 HA 配置也会被清空')) api('/api/factory', {method: 'POST'}).then((t) => {
-      toast(JSON.parse(t).msg, 6000);
+    if (confirm('确定恢复出厂设置？WiFi 凭据与 HA 配置也会被清空')) apiJson('/api/factory', {method: 'POST'}).then(({data}) => {
+      toast(data.msg, 6000);
     });
   }
 

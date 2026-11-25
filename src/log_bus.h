@@ -25,7 +25,7 @@ void log_bus_printf(int ch, const char *fmt, ...) __attribute__((format(printf, 
 void log_bus_hex_typed(int ch, char tag, int type, const uint8_t *data, uint16_t len);
 void log_bus_hex(int ch, char tag, const uint8_t *data, uint16_t len);
 
-// 清空某一路日志（游标同步推进，客户端不会重复读到旧数据）
+// 清空某路日志（游标同步推进，客户端不会重复读到旧数据）
 void log_bus_clear(int ch);
 
 // 当前写游标（可用于清空后同步客户端序号）

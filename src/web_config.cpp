@@ -19,6 +19,7 @@
 #include <esp_random.h>
 #include <esp_heap_caps.h>
 #include <cJSON.h>
+#include "json_utils.h"
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <lwip/sockets.h>
@@ -64,6 +65,9 @@ static uint32_t connect_deadline = 0;
 static uint32_t retry_deadline = 0;
 // 当前是否运行在 AP 配网模式
 static bool     ap_mode = false;
+// 首次提交的新 WiFi 凭据失败后，短暂双闪提示再恢复配网慢闪
+static uint32_t wifi_failure_led_deadline = 0;
+static bool     wifi_failure_led_active = false;
 // 已保存的路由器 SSID（最多 63 个可见字符 + NUL）
 static char     sta_ssid[64] = {};
 // 已保存的路由器密码
@@ -94,23 +98,6 @@ static void copy_str(char *dst, size_t cap, const char *src) {
     if (n >= cap) n = cap - 1;
     if (n) memcpy(dst, src, n);
     dst[n] = 0;
-}
-
-/**
- * 转义 JSON 字符串内容
- * @param s 原始字符串
- * @return 转义后的字符串
- * 处理双引号和反斜杠，并把控制字符替换为空格，避免破坏 JSON
- */
-static String json_escape(const char *s) {
-    String out;
-    for (; s && *s; s++) {
-        char c = *s;
-        if (c == '"' || c == '\\') { out += '\\'; out += c; }
-        else if ((uint8_t)c < 0x20) out += ' ';
-        else out += c;
-    }
-    return out;
 }
 
 // HA 配置独立存放，避免增加网络凭据时改变电机和接线记录格式
@@ -202,7 +189,7 @@ static constexpr char HA_ENTITY_TEMPLATE[] = R"HA(
 static bool ha_entity_valid(const char *entity, const char *domain) {
     if (!*entity) return true;
     const size_t prefix = strlen(domain);
-    if (strncmp(entity, domain, prefix) || !entity[prefix]) return false;
+    if (strncmp(entity, domain, prefix) != 0 || !entity[prefix]) return false;
     for (const char *p = entity + prefix; *p; ++p)
         if (!((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_')) return false;
     return true;
@@ -216,7 +203,7 @@ static bool ha_entity_valid(const char *entity, const char *domain) {
  */
 static bool ha_url_valid(const char *url) {
     if (!*url) return true;
-    if (strncmp(url, "http://", 7)) return false;
+    if (strncmp(url, "http://", 7) != 0) return false;
     const char *p = url + 7, *host = p;
     while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
            (*p >= '0' && *p <= '9') || *p == '.' || *p == '-') ++p;
@@ -501,18 +488,18 @@ static bool ha_read_entity(const HaConfig &config, const char *entity, char *sta
     String body;
     const int code = ha_http(config, String("/api/states/") + entity, nullptr, body, error);
     if (code < 200 || code >= 300) return false;
-    cJSON *json = cJSON_ParseWithOpts(body.c_str(), nullptr, true);
-    const auto *id = cJSON_GetObjectItemCaseSensitive(json, "entity_id");
-    const auto *value = cJSON_GetObjectItemCaseSensitive(json, "state");
-    bool valid = cJSON_IsString(id) && !strcmp(id->valuestring, entity) && cJSON_IsString(value) &&
-                 value->valuestring[0] && strlen(value->valuestring) < capacity;
+    const auto json = Json::parse(body.c_str(), body.length());
+    String id, value;
+    bool valid = Json::read_string(json.get(), "entity_id", id) && id == entity &&
+                 Json::read_string(json.get(), "state", value) && value.length() > 0 && value.length() < capacity;
     if (valid) {
-        for (const char *p = value->valuestring; *p; ++p)
-            if (static_cast<uint8_t>(*p) < 32) valid = false;
+        for (unsigned int i = 0; i < value.length(); ++i) {
+            const char p = value[i];
+            if (static_cast<uint8_t>(p) < 32) valid = false;
+        }
     }
-    if (valid) copy_str(state, capacity, value->valuestring);
+    if (valid) copy_str(state, capacity, value.c_str());
     else error = "HA 实体响应缺少有效状态";
-    cJSON_Delete(json);
     return valid;
 }
 
@@ -561,38 +548,37 @@ static bool ha_poll(const HaConfig &config,const  uint32_t generation, HaStatus 
  * @return 小页结构完整、实体类型正确且游标可以前进时返回 true
  */
 static bool ha_entity_page_valid(const String &body,const  uint32_t offset) {
-    cJSON *json = cJSON_ParseWithOpts(body.c_str(), nullptr, true);
-    const auto *total = cJSON_GetObjectItemCaseSensitive(json, "total");
-    const auto *next = cJSON_GetObjectItemCaseSensitive(json, "next_offset");
-    const auto *entities = cJSON_GetObjectItemCaseSensitive(json, "entities");
+    const auto json = Json::parse(body.c_str(), body.length());
+    const auto *next = Json::item(json.get(), "next_offset");
+    const auto *entities = Json::item(json.get(), "entities");
     const int count = cJSON_GetArraySize(entities);
-    bool valid = cJSON_IsNumber(total) && total->valuedouble == total->valueint &&
-                 total->valueint >= 0 && total->valueint <= 100000 && cJSON_IsArray(entities) && count <= 16;
+    uint32_t total_count = 0;
+    bool valid = Json::read_uint(json.get(), "total", total_count, 100000) && cJSON_IsArray(entities) && count <= 16;
     if (valid) {
         const uint32_t end = offset + static_cast<uint32_t>(count);
-        valid = count ? end <= static_cast<uint32_t>(total->valueint) : offset >= static_cast<uint32_t>(total->valueint);
-        valid = valid && (cJSON_IsNull(next) ? end >= static_cast<uint32_t>(total->valueint) :
-            cJSON_IsNumber(next) && next->valuedouble == next->valueint && count > 0 &&
-            next->valueint == static_cast<int32_t>(end) && next->valueint < total->valueint);
+        valid = count ? end <= total_count : offset >= total_count;
+        if (cJSON_IsNull(next)) valid = valid && end >= total_count;
+        else {
+            uint32_t next_offset = 0;
+            valid = valid && count > 0 && Json::read_uint(json.get(), "next_offset", next_offset, total_count) &&
+                    next_offset == end && next_offset < total_count;
+        }
     }
     const cJSON *row = nullptr;
     cJSON_ArrayForEach(row, entities) {
-        const auto *id = cJSON_GetObjectItemCaseSensitive(row, "entity_id");
-        const auto *kind = cJSON_GetObjectItemCaseSensitive(row, "kind");
-        if (!cJSON_IsString(id) || !id->valuestring[0] || strlen(id->valuestring) >= 128 ||
-            !cJSON_IsString(kind)) { valid = false; break; }
-        if ((strcmp(kind->valuestring, "stage") && strcmp(kind->valuestring, "status")) ||
-            !ha_entity_valid(id->valuestring, "sensor.")) {
+        String id, kind;
+        if (!Json::read_string(row, "entity_id", id) || id.isEmpty() || id.length() >= 128 ||
+            !Json::read_string(row, "kind", kind)) { valid = false; break; }
+        if ((kind != "stage" && kind != "status") || !ha_entity_valid(id.c_str(), "sensor.")) {
             valid = false;
             break;
         }
         const char *fields[] = {"name", "state", "printer"};
         for (const char *field : fields) {
-            const auto *value = cJSON_GetObjectItemCaseSensitive(row, field);
-            if (!cJSON_IsString(value) || strlen(value->valuestring) > 192) valid = false;
+            String value;
+            if (!Json::read_string(row, field, value) || value.length() > 192) valid = false;
         }
     }
-    cJSON_Delete(json);
     return valid;
 }
 
@@ -642,11 +628,11 @@ static void ha_discover_entities(const HaConfig &config,const  uint32_t generati
     bool valid = false;
     if (WiFi.status() != WL_CONNECTED) error = "WiFi 未连接，请恢复后刷新实体列表";
     else {
-        cJSON *payload = cJSON_CreateObject();
-        cJSON *variables = cJSON_AddObjectToObject(payload, "variables");
-        const bool built = cJSON_AddStringToObject(payload, "template", HA_ENTITY_TEMPLATE) &&
+        Json::Document payload(cJSON_CreateObject(), &cJSON_Delete);
+        cJSON *variables = cJSON_AddObjectToObject(payload.get(), "variables");
+        const bool built = cJSON_AddStringToObject(payload.get(), "template", HA_ENTITY_TEMPLATE) &&
                            cJSON_AddNumberToObject(variables, "offset", offset);
-        char *encoded = built ? cJSON_PrintUnformatted(payload) : nullptr;
+        char *encoded = built ? cJSON_PrintUnformatted(payload.get()) : nullptr;
         if (!encoded) error = "内存不足，无法准备实体查询";
         else {
             const int code = ha_http(config, "/api/template", encoded, body, error);
@@ -656,7 +642,6 @@ static void ha_discover_entities(const HaConfig &config,const  uint32_t generati
             } else if (code == 403) error = "发现实体需要 HA 管理员的长期访问令牌（403）";
         }
         cJSON_free(encoded);
-        cJSON_Delete(payload);
     }
     bool published = false;
     if (xSemaphoreTake(ha_entity_mutex, portMAX_DELAY) == pdTRUE) {
@@ -692,11 +677,10 @@ static void ha_worker(void *arg) {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(100));
         HaConfig config;
-        uint32_t generation, connection_generation;
         portENTER_CRITICAL(&ha_lock);
         config = ha_config;
-        generation = ha_generation;
-        connection_generation = ha_connection_generation;
+        const uint32_t generation = ha_generation;
+        const uint32_t connection_generation = ha_connection_generation;
         portEXIT_CRITICAL(&ha_lock);
         if (seen_generation != generation) { seen_generation = generation; next_poll = 0; }
         if (!ha_configured(config)) continue;
@@ -746,9 +730,9 @@ static void handle_ha_get() {
         ",\"configured\":" + (ha_configured(ha_config) ? "true" : "false") +
         ",\"selected\":" + (ha_entities_selected(ha_config) ? "true" : "false") +
         ",\"generation\":" + String(ha_connection_generation) +
-        ",\"url\":\"" + json_escape(ha_config.url) + "\",\"stage_entity\":\"" + ha_config.stage_entity +
-        "\",\"status_entity\":\"" + ha_config.status_entity +
-        "\",\"token_set\":" + (ha_config.token[0] ? "true" : "false") + "}";
+        R"(,"url":")" + Json::escape(ha_config.url) + R"(","stage_entity":")" + ha_config.stage_entity +
+        R"(","status_entity":")" + ha_config.status_entity +
+        R"(","token_set":)" + (ha_config.token[0] ? "true" : "false") + "}";
     server.sendHeader("Cache-Control", "no-store");
     server.send(200, "application/json", json);
 }
@@ -798,7 +782,7 @@ static bool ha_argument_uint(const char *key, uint32_t &value) {
  * @return 保存及回读成功时返回 true，失败时已回复错误并保留原配置
  */
 static bool ha_apply_config(const HaConfig &candidate,const  bool new_connection) {
-    if (memcmp(&candidate, &ha_config, sizeof(candidate)) && !ha_save_config(candidate)) {
+    if (memcmp(&candidate, &ha_config, sizeof(candidate)) != 0 && !ha_save_config(candidate)) {
         server.send(500, "application/json", "{\"ok\":false,\"msg\":\"HA 保存或回读失败，原配置仍生效，请重试\"}");
         return false;
     }
@@ -846,7 +830,7 @@ static void handle_ha_save() {
     if (!ha_apply_config(candidate, true)) return;
     ha_queue_entity_page(ha_connection_generation, 0, true);
     LOG_MAIN("[ha] 连接信息已保存，正在验证连接和发现实体");
-    server.send(200, "application/json", String("{\"ok\":true,\"generation\":") + String(ha_connection_generation) +
+    server.send(200, "application/json", String(R"({"ok":true,"generation":)") + String(ha_connection_generation) +
                 ",\"msg\":\"连接信息已保存，正在加载实体列表\"}");
 }
 
@@ -913,8 +897,8 @@ static void handle_ha_entities() {
     const bool ready = matching && ha_entity_page.ready;
     String json = String("{\"generation\":") + String(generation) + ",\"offset\":" + String(offset) +
         ",\"loading\":" + (!matching || ha_entity_page.loading ? "true" : "false") +
-        ",\"ready\":" + (ready ? "true" : "false") + ",\"error\":\"" + json_escape(matching ? ha_entity_page.error : "") + "\",";
-    json += ready ? ha_entity_page.body.substring(1) : String("\"total\":0,\"next_offset\":null,\"entities\":[]}");
+        ",\"ready\":" + (ready ? "true" : "false") + R"(,"error":")" + Json::escape(matching ? ha_entity_page.error : "") + "\",";
+    json += ready ? ha_entity_page.body.substring(1) : String(R"("total":0,"next_offset":null,"entities":[]})");
     if (matching && !ha_entity_page.loading) ha_entity_page.delivered = true;
     xSemaphoreGive(ha_entity_mutex);
     server.send(200, "application/json", json);
@@ -952,12 +936,12 @@ static void append_ha_status(String &json) {
     const uint32_t age = millis() - status.received;
     const bool connected = enabled && WiFi.status() == WL_CONNECTED && status.connected;
     const bool fresh = connected && status.sampled && age < HA_FRESH_MS;
-    json += String(",\"home_assistant\":{\"configured\":") + (configured ? "true" : "false") +
+    json += String(R"(,"home_assistant":{"configured":)") + (configured ? "true" : "false") +
         ",\"selected\":" + (selected ? "true" : "false") +
         ",\"enabled\":" + (enabled ? "true" : "false") + ",\"connected\":" + (connected ? "true" : "false") +
         ",\"fresh\":" + (fresh ? "true" : "false") + ",\"age_ms\":" + (status.sampled ? String(age) : String(-1)) +
-        ",\"stage\":\"" + json_escape(status.stage) + "\",\"print_status\":\"" + json_escape(status.print_status) +
-        "\",\"error\":\"" + json_escape(status.error) + "\"}";
+        R"(,"stage":")" + Json::escape(status.stage) + R"(","print_status":")" + Json::escape(status.print_status) +
+        R"(","error":")" + Json::escape(status.error) + "\"}";
 }
 
 /**
@@ -1003,7 +987,7 @@ static bool normalize_mdns_name(const String &raw, String &out) {
  * 取芯片 64 位唯一 ID 的低 24 位格式化为 6 位大写十六进制，拼成 BMCU_XXXXXX
  */
 static const char *build_ap_ssid() {
-    const uint32_t suffix = static_cast<uint32_t>(hal_get_device_id() & 0xFFFFFFULL);
+    const auto suffix = static_cast<uint32_t>(hal_get_device_id() & 0xFFFFFFULL);
     snprintf(ap_ssid, sizeof(ap_ssid), "%s_%06lX", AP_SSID_PREFIX,
              static_cast<unsigned long>(suffix));
     return ap_ssid;
@@ -1079,6 +1063,30 @@ static void forget_wifi_creds() {
 // ============================================================
 // WiFi 状态机
 // ============================================================
+/**
+ * 获取当前应显示的 WiFi 灯效
+ * @return 当前配网、连接、重试、已连接或关闭状态
+ * 首次提交的新凭据失败时短暂显示重试双闪，之后回到配网慢闪
+ */
+static HalWifiLedState wifi_indicator_state() {
+    if (WiFi.status() == WL_CONNECTED) return HalWifiLedState::connected;
+    if (wifi_state == ST_CONNECTING) return HalWifiLedState::connecting;
+    if (wifi_state == ST_RETRY_WAIT) return HalWifiLedState::retry_wait;
+    if (wifi_failure_led_active) {
+        if (static_cast<int32_t>(millis() - wifi_failure_led_deadline) < 0) return HalWifiLedState::retry_wait;
+        wifi_failure_led_active = false;
+    }
+    return ap_mode ? HalWifiLedState::configuring : HalWifiLedState::off;
+}
+
+/**
+ * 刷新当前 WiFi 状态灯
+ * 状态判断与 GPIO 驱动分层，具体板载灯脚和冲突检查由平台适配层处理
+ */
+static void wifi_indicator_run() {
+    hal_wifi_led_run(wifi_indicator_state());
+}
+
 // 切换 WiFi 模式（模式确定后 WiFi 协议栈才算初始化，此时才能关省电）
 /**
  * 切换 WiFi 工作模式
@@ -1092,9 +1100,10 @@ static void wifi_set_mode(wifi_mode_t m) {
 
 /**
  * 发起已保存 WiFi 的异步连接
- * 保留正在运行的配网热点，由主循环检查连接结果与超时，不等待路由器响应
+ * 清除上次临时失败提示并快速闪灯；保留配网热点，由主循环检查连接结果与超时，不等待路由器响应
  */
 static void start_sta_connect() {
+    wifi_failure_led_active = false;
     wifi_set_mode(ap_mode ? WIFI_AP_STA : WIFI_STA);
     WiFi.begin(sta_ssid, sta_pass);
     wifi_state = ST_CONNECTING;
@@ -1129,8 +1138,7 @@ static void start_config_ap() {
     WiFi.softAP(ssid, AP_PASS);
     dns.start(53, "*", WiFi.softAPIP());
     ap_mode = true;
-    LOG_MAIN("[web] 未连接 WiFi，配网热点 '%s' 已开启：连上后访问 http://%s/",
-             ssid, WiFi.softAPIP().toString().c_str());
+    LOG_MAIN("[web] 未连接 WiFi，配网热点 '%s' 已开启：连上后访问 http://%s/", ssid, WiFi.softAPIP().toString().c_str());
 }
 
 /**
@@ -1145,7 +1153,7 @@ static void sync_mdns_name() {
 
     static uint32_t last_check = 0;
     const uint32_t now = millis();
-    if (static_cast<uint32_t>(now - last_check) < 1000) return;
+    if (now - last_check < 1000) return;
     last_check = now;
 
     const bool advertise = ha_controls_enabled();
@@ -1218,7 +1226,7 @@ static bool maintenance_required() {
  * 根据候选接线校验兼容性，预览包含进退料、微动和霍尔，不受当前项目的引脚占用影响
  */
 static void handle_projects_get() {
-    String j = "{\"current\":\"" + String(project_preset_match(settings_snapshot())) + "\",\"projects\":[";
+    String j = R"({"current":")" + String(project_preset_match(settings_snapshot())) + R"(","projects":[)";
     bool first = true;
     for (const auto &preset : PROJECT_PRESETS) {
         if (strcmp(preset.target, hal_project_target()) != 0) continue;
@@ -1226,14 +1234,14 @@ static void handle_projects_get() {
         const bool available = project_preset_validate(preset, &error);
         if (!first) j += ',';
         first = false;
-        j += "{\"id\":\"" + json_escape(preset.id) + "\",\"name\":\"" + json_escape(preset.name) +
-             "\",\"available\":" + String(available ? "true" : "false") +
-             ",\"reason\":\"" + json_escape(error.c_str()) + "\",\"ams\":" + String(preset.ams) +
+        j += R"({"id":")" + Json::escape(preset.id) + R"(","name":")" + Json::escape(preset.name) +
+             R"(","available":)" + String(available ? "true" : "false") +
+             R"(,"reason":")" + Json::escape(error.c_str()) + R"(","ams":)" + String(preset.ams) +
              ",\"rs485\":" + String(preset.bus.mode) + ",\"rx\":" + String(preset.bus.rx) +
              ",\"tx\":" + String(preset.bus.tx) + ",\"de\":" + String(preset.bus.de) +
              ",\"sda\":" + String(preset.bus.sda) + ",\"scl\":" + String(preset.bus.scl) +
              ",\"switch_pin\":" + String(preset.switch_pin) + ",\"pins\":[";
-        IoConfig io;
+        IoConfig io{};
         project_preset_io(preset, io);
         const int channels = preset.ams >= 1 && preset.ams <= IO_CONFIG_MAX_CHANNELS / 4 ? preset.ams * 4 : 0;
         for (int ch = 0; ch < channels; ++ch) {
@@ -1261,8 +1269,7 @@ static void handle_project_save() {
     }
     String error;
     if (!project_preset_validate(*preset, &error)) {
-        server.send(400, "application/json",
-                    String("{\"ok\":false,\"msg\":\"") + json_escape(error.c_str()) + "\"}");
+        server.send(400, "application/json", Json::message(false, error.c_str()));
         return;
     }
     if (!maintenance_required()) return;
@@ -1326,18 +1333,18 @@ static String status_json() {
 
     String j;
     if (!j.reserve(3200)) return String();
-    j  = "{\"mode\":\"" + String(ap_mode ? "AP" : "STA") + "\"";
-    j += ",\"ip\":\"" + ip.toString() + "\"";
-    j += ",\"ssid\":\"" + json_escape(ap_mode ? "" : sta_ssid) + "\"";
-    j += ",\"mdns\":\"" + json_escape(mdns_name) + "\"";
-    j += ",\"mdns_active\":\"" + json_escape(mdns_active_name) + "\"";
+    j  = R"({"mode":")" + String(ap_mode ? "AP" : "STA") + "\"";
+    j += R"(,"ip":")" + ip.toString() + "\"";
+    j += R"(,"ssid":")" + Json::escape(ap_mode ? "" : sta_ssid) + "\"";
+    j += R"(,"mdns":")" + Json::escape(mdns_name) + "\"";
+    j += R"(,"mdns_active":")" + Json::escape(mdns_active_name) + "\"";
     j += ",\"rssi\":" + String(ap_mode ? 0 : WiFi.RSSI());
-    j += ",\"mac\":\"" + WiFi.macAddress() + "\"";
+    j += R"(,"mac":")" + WiFi.macAddress() + "\"";
     j += ",\"uptime\":" + String(millis() / 1000);
     j += ",\"heap\":" + String(ESP.getFreeHeap());
     j += ",\"heap_total\":" + String(ESP.getHeapSize());
-    j += ",\"chip\":\"" + String(ESP.getChipModel()) + "\"";
-    j += ",\"project\":\"" + String(project_preset_match(settings_snapshot())) + "\"";
+    j += R"(,"chip":")" + String(ESP.getChipModel()) + "\"";
+    j += R"(,"project":")" + String(project_preset_match(settings_snapshot())) + "\"";
     j += ",\"rs485\":" + String(RS485_MODE);
     j += ",\"buslog\":" + String(BUS_LOG_ENABLE);
     j += ",\"ams\":" + String(AMS_COUNT);
@@ -1348,19 +1355,19 @@ static String status_json() {
     j += ",\"maxams\":" + String(BMCU_max_ams_count());
     j += ",\"printer\":" + String(BambuBus_printer_status());
     append_ha_status(j);
-    const auto lan = lan_ams_status();
-    j += ",\"lan_ams\":{\"enabled\":" + String(lan_ams_enabled() ? "true" : "false") +
-         ",\"connected\":" + String(lan.connected ? "true" : "false") +
-         ",\"paired\":" + String(lan.paired ? "true" : "false") +
-         ",\"busy\":" + String(lan.busy ? "true" : "false") +
-         ",\"fault\":" + String(lan.fault ? "true" : "false") +
-         ",\"current_channel\":" + String(lan.current_channel) +
-         ",\"target_channel\":" + String(lan.target_channel) +
-         ",\"age_ms\":" + String(lan.age_ms == UINT32_MAX ? -1 : static_cast<int32_t>(lan.age_ms)) +
-         ",\"state\":\"" + json_escape(lan.state) + "\",\"error\":\"" + json_escape(lan.error) + "\"}";
+    const auto [connected, paired, busy, fault, current_channel, target_channel, age_ms, state, error] = lan_ams_status();
+    j += R"(,"lan_ams":{"enabled":)" + String(lan_ams_enabled() ? "true" : "false") +
+         ",\"connected\":" + String(connected ? "true" : "false") +
+         ",\"paired\":" + String(paired ? "true" : "false") +
+         ",\"busy\":" + String(busy ? "true" : "false") +
+         ",\"fault\":" + String(fault ? "true" : "false") +
+         ",\"current_channel\":" + String(current_channel) +
+         ",\"target_channel\":" + String(target_channel) +
+         ",\"age_ms\":" + String(age_ms == UINT32_MAX ? -1 : static_cast<int32_t>(age_ms)) +
+         R"(,"state":")" + Json::escape(state) + R"(","error":")" + Json::escape(error) + "\"}";
     const auto current = BambuBus_current_channel_status();
     j += ",\"current_channel\":" + String(current.channel) +
-         ",\"current_channel_state\":\"" + String(current.state) + "\"";
+         R"(,"current_channel_state":")" + String(current.state) + "\"";
     const auto pause = BambuBus_pause_test_status();
     j += ",\"pause_test\":{\"available\":" + String(pause.available ? "true" : "false") +
          ",\"active\":" + String(pause.active ? "true" : "false") +
@@ -1378,16 +1385,16 @@ static String status_json() {
     j += ",\"motor_limit\":" + String(BMCU_motor_limit());
     j += ",\"clutch_enabled\":" + String(IO_CONFIG.clutch_enabled ? "true" : "false");
     j += ",\"motor_running\":" + String(BMCU_running_count());
-    j += ",\"total_switch\":{\"pin\":" + String(IO_CONFIG.switch_pin) +
+    j += R"(,"total_switch":{"pin":)" + String(IO_CONFIG.switch_pin) +
          ",\"active_level\":" + String(TOTAL_SWITCH_ACTIVE_LEVEL) +
          ",\"pressed\":" + String(BMCU_total_switch_state()) + "}";
     j += ",\"motors\":[";
     for (int i = 0; i < BMCU_motor_count(); i++) {
         if (i) j += ',';
-        auto m = BMCU_motor_status(i);
-        j += "{\"dir\":" + String(m.direction) + ",\"source\":" + String((int)m.source) +
-             ",\"remaining_ms\":" + String(m.remaining_ms) + ",\"queue_position\":" + String(m.queue_position) +
-             ",\"queued_dir\":" + String(m.queued_direction) + ",\"queued_source\":" + String(m.queued_source) + "}";
+        auto [direction, source, remaining_ms, queue_position, queued_direction, queued_source] = BMCU_motor_status(i);
+        j += "{\"dir\":" + String(direction) + ",\"source\":" + String(static_cast<int>(source)) +
+             ",\"remaining_ms\":" + String(remaining_ms) + ",\"queue_position\":" + String(queue_position) +
+             ",\"queued_dir\":" + String(queued_direction) + ",\"queued_source\":" + String(queued_source) + "}";
     }
     j += ']';
     // 每个通道的微动开关状态：1=有料 0=无料 -1=该通道没有微动开关
@@ -1415,26 +1422,26 @@ static String status_json() {
     j += ",\"maintenance\":" + String(BMCU_can_maintain() ? "true" : "false");
     j += ",\"manual\":" + String(BMCU_manual_active() ? "true" : "false");
     j += ",\"cli\":" + String(WiFi.softAPgetStationNum());
-    j += ",\"version\":\"" + String(FW_VERSION) + "\"";
-    j += ",\"target\":\"" + String(FW_TARGET) + "\"";
-    j += ",\"build\":\"" + String(FW_BUILD) + "\"";
-    j += ",\"otaurl\":\"" + json_escape(OTA_URL) + "\"";
+    j += R"(,"version":")" + String(FW_VERSION) + "\"";
+    j += R"(,"target":")" + String(FW_TARGET) + "\"";
+    j += R"(,"build":")" + String(FW_BUILD) + "\"";
+    j += R"(,"otaurl":")" + Json::escape(OTA_URL) + "\"";
     j += ",\"otanotify\":" + String(OTA_NOTIFY);
     j += ",\"otasize\":" + String(ESP.getSketchSize());
-    const EnvSensorStatus &env = env_sensor_status();
-    j += ",\"i2c\":{\"configured\":" + String(i2c_bus_configured() ? "true" : "false") +
+    const auto &[aht20_online, aht20_valid, bmp280_online, bmp280_valid, temperature_c, humidity_pct, bmp_temperature_c, pressure_hpa] = env_sensor_status();
+    j += R"(,"i2c":{"configured":)" + String(i2c_bus_configured() ? "true" : "false") +
          ",\"pcf\":" + String(PCF8575_is_online() ? "true" : "false") + ",\"pcf_devices\":[";
     for (uint8_t device = 0; device < PCF8575_DEVICE_COUNT; ++device) {
         if (device) j += ',';
         j += "{\"address\":" + String(PCF8575_ADDR + device) +
              ",\"online\":" + String(PCF8575_is_online(device) ? "true" : "false") + "}";
     }
-    j += "],\"aht20\":" + String(env.aht20_online ? "true" : "false") +
-         ",\"bmp280\":" + String(env.bmp280_online ? "true" : "false") + "}";
-    j += ",\"env\":{\"aht_temp\":" + sensor_json_value(env.aht20_online && env.aht20_valid, env.temperature_c, 2) +
-         ",\"humidity\":" + sensor_json_value(env.aht20_online && env.aht20_valid, env.humidity_pct, 2) +
-         ",\"bmp_temp\":" + sensor_json_value(env.bmp280_online && env.bmp280_valid, env.bmp_temperature_c, 2) +
-         ",\"pressure\":" + sensor_json_value(env.bmp280_online && env.bmp280_valid, env.pressure_hpa, 2) + "}";
+    j += "],\"aht20\":" + String(aht20_online ? "true" : "false") +
+         ",\"bmp280\":" + String(bmp280_online ? "true" : "false") + "}";
+    j += R"(,"env":{"aht_temp":)" + sensor_json_value(aht20_online && aht20_valid, temperature_c, 2) +
+         ",\"humidity\":" + sensor_json_value(aht20_online && aht20_valid, humidity_pct, 2) +
+         ",\"bmp_temp\":" + sensor_json_value(bmp280_online && bmp280_valid, bmp_temperature_c, 2) +
+         ",\"pressure\":" + sensor_json_value(bmp280_online && bmp280_valid, pressure_hpa, 2) + "}";
     j += "}";
     return j;
 }
@@ -1464,7 +1471,7 @@ static bool parse_hall_uint(const char *key, uint32_t &value) {
     for (size_t i = 0; i < raw.length(); ++i) {
         const char c = raw[i];
         if (c < '0' || c > '9') return false;
-        const uint32_t digit = static_cast<uint32_t>(c - '0');
+        const auto digit = static_cast<uint32_t>(c - '0');
         if (parsed > (UINT32_MAX - digit) / 10u) return false;
         parsed = parsed * 10u + digit;
     }
@@ -1528,7 +1535,7 @@ static void handle_hall_detection_save() {
                  static_cast<unsigned>(channel + 1), static_cast<unsigned>(config.lower), static_cast<unsigned>(config.upper),
                  static_cast<unsigned long>(config.timeout_s));
     }
-    String j = "{\"ok\":true,\"channel\":" + String(channel) + ",\"pin\":" + String(pin) + ",\"detection\":{";
+    String j = R"({"ok":true,"channel":)" + String(channel) + ",\"pin\":" + String(pin) + ",\"detection\":{";
     append_hall_detection_config(j, config);
     j += "}}";
     server.send(200, "application/json", j);
@@ -1573,8 +1580,8 @@ static String hall_json(bool has_cursor, uint32_t requested_epoch, uint32_t requ
         ",\"more\":" + String(remaining > count ? "true" : "false") +
         ",\"interval_ms\":" + String(HALL_HISTORY_INTERVAL_MS) +
         ",\"now_ms\":" + String(info.now_ms) +
-        ",\"event\":{\"sequence\":" + String(event.sequence) + ",\"channel\":" + String(event.channel) +
-        ",\"type\":\"" + String(event.type) + "\"},\"channels\":[";
+        R"(,"event":{"sequence":)" + String(event.sequence) + ",\"channel\":" + String(event.channel) +
+        R"(,"type":")" + String(event.type) + R"("},"channels":[)";
     for (int channel = 0; channel < info.channels; ++channel) {
         if (channel) j += ',';
         const auto &status = channels[channel];
@@ -1590,7 +1597,7 @@ static String hall_json(bool has_cursor, uint32_t requested_epoch, uint32_t requ
         const bool monitored = detection.channel == channel;
         const char *state = monitored ? detection.state :
             current.channel == channel && strcmp(current.state, "pending") == 0 ? "pending" : "inactive";
-        j += ",\"state\":\"" + String(state) + "\",\"idle_ms\":" + String(monitored ? detection.idle_ms : 0u) + "}";
+        j += R"(,"state":")" + String(state) + R"(","idle_ms":)" + String(monitored ? detection.idle_ms : 0u) + "}";
         j += ",\"points\":[";
         if (status.configured) {
             for (uint32_t offset = 0; offset < count; ++offset) {
@@ -1662,12 +1669,12 @@ namespace {
         uint32_t pending_epoch = 0, pending_cursor = 0;
         bool has_cursor = false, pending_hall = false;
     };
+    struct WsSend {
+        uint8_t slot{};
+        WsSession session;
+        String payload;
+    };
 }
-struct WsSend {
-    uint8_t slot;
-    WsSession session;
-    String payload;
-};
 static WsSession ws_sessions[WS_CLIENTS];
 static WsClient ws_clients[WS_CLIENTS];
 static String ws_status_cache;
@@ -1679,7 +1686,7 @@ static bool ws_status_dirty = true;
  * @param slot 固定客户端槽号
  * @return 包含描述符和连接代次的快照
  */
-static WsSession ws_session_snapshot(uint8_t slot) {
+static WsSession ws_session_snapshot(const uint8_t slot) {
     portENTER_CRITICAL(&ws_lock);
     const WsSession session = ws_sessions[slot];
     portEXIT_CRITICAL(&ws_lock);
@@ -1728,10 +1735,7 @@ static int ws_socket_send(const httpd_handle_t handle,const int fd, const char *
  * @return 字段为 0..UINT32_MAX 整数时返回 true
  */
 static bool ws_read_uint(const cJSON *json, const char *name, uint32_t &value) {
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, name);
-    if (!cJSON_IsNumber(item) || !(item->valuedouble >= 0 && item->valuedouble <= UINT32_MAX)) return false;
-    value = static_cast<uint32_t>(item->valuedouble);
-    return item->valuedouble == value;
+    return Json::read_uint(json, name, value);
 }
 
 /**
@@ -1741,7 +1745,7 @@ static bool ws_read_uint(const cJSON *json, const char *name, uint32_t &value) {
 static void handle_ws_token() {
     server.sendHeader("Cache-Control", "no-store");
     server.send(ws_server ? 200 : 503, "application/json", ws_server
-                ? String("{\"token\":\"") + ws_token + "\"}"
+                ? String(R"({"token":")") + ws_token + "\"}"
                 : String("{\"ok\":false,\"msg\":\"WebSocket 尚未启动\"}"));
 }
 
@@ -1754,16 +1758,16 @@ static void handle_ws_token() {
  */
 static esp_err_t ws_session_open(const httpd_handle_t handle,const  int fd) {
     static uint32_t generation = 0;
-    for (uint8_t slot = 0; slot < WS_CLIENTS; ++slot) {
-        if (ws_sessions[slot].fd >= 0) continue;
+    for (auto & ws_session : ws_sessions) {
+        if (ws_session.fd >= 0) continue;
         if (++generation == 0) ++generation;
-        const timeval timeout = {0, 100000};
+        constexpr timeval timeout = {.tv_sec = 0, .tv_usec = 100000};
         if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0 ||
             httpd_sess_set_send_override(handle, fd, ws_socket_send) != ESP_OK) return ESP_FAIL;
         portENTER_CRITICAL(&ws_lock);
-        ws_sessions[slot] = {fd, generation, false, false};
+        ws_session = {fd, generation, false, false};
         portEXIT_CRITICAL(&ws_lock);
-        httpd_sess_set_ctx(handle, fd, &ws_sessions[slot], ws_session_free);
+        httpd_sess_set_ctx(handle, fd, &ws_session, ws_session_free);
         return ESP_OK;
     }
     return ESP_FAIL;
@@ -1785,14 +1789,12 @@ static esp_err_t handle_ws(httpd_req_t *request) {
     char payload[193] = {};
     frame.payload = reinterpret_cast<uint8_t *>(payload);
     if (httpd_ws_recv_frame(request, &frame, sizeof(payload) - 1) != ESP_OK) return ESP_FAIL;
-    cJSON *json = cJSON_ParseWithLengthOpts(payload, frame.len + 1, nullptr, true);
-    const cJSON *type = cJSON_GetObjectItemCaseSensitive(json, "type");
-    bool valid = cJSON_IsObject(json) && cJSON_IsString(type);
+    auto json = Json::parse(payload, frame.len);
+    String type;
+    bool valid = Json::read_string(json.get(), "type", type);
     if (!session->authenticated) {
-        const cJSON *token = cJSON_GetObjectItemCaseSensitive(json, "token");
-        valid = valid && strcmp(type->valuestring, "hello") == 0 && cJSON_IsString(token) &&
-                strcmp(token->valuestring, ws_token) == 0;
-        cJSON_Delete(json);
+        String token;
+        valid = valid && type == "hello" && Json::read_string(json.get(), "token", token) && token == ws_token;
         if (!valid) return ESP_FAIL;
         portENTER_CRITICAL(&ws_lock);
         session->authenticated = true;
@@ -1802,20 +1804,20 @@ static esp_err_t handle_ws(httpd_req_t *request) {
     WsEvent event = {};
     event.slot = static_cast<uint8_t>(session - ws_sessions);
     event.generation = session->generation;
-    if (valid && strcmp(type->valuestring, "ack") == 0) {
+    if (valid && type == "ack") {
         event.type = WsEventType::Ack;
-        valid = ws_read_uint(json, "seq", event.id) && event.id != 0;
-    } else if (valid && strcmp(type->valuestring, "status") == 0) {
+        valid = ws_read_uint(json.get(), "seq", event.id) && event.id != 0;
+    } else if (valid && type == "status") {
         event.type = WsEventType::Status;
-        valid = ws_read_uint(json, "id", event.id) && event.id != 0;
-    } else if (valid && strcmp(type->valuestring, "hall") == 0) {
+        valid = ws_read_uint(json.get(), "id", event.id) && event.id != 0;
+    } else if (valid && type == "hall") {
         event.type = WsEventType::Hall;
-        event.has_cursor = cJSON_HasObjectItem(json, "cursor");
-        valid = ws_read_uint(json, "id", event.id) &&
-                event.has_cursor == cJSON_HasObjectItem(json, "epoch") &&
-                (!event.has_cursor || (ws_read_uint(json, "epoch", event.epoch) && ws_read_uint(json, "cursor", event.cursor)));
+        event.has_cursor = Json::item(json.get(), "cursor") != nullptr;
+        valid = ws_read_uint(json.get(), "id", event.id) &&
+                event.has_cursor == (Json::item(json.get(), "epoch") != nullptr) &&
+                (!event.has_cursor || (ws_read_uint(json.get(), "epoch", event.epoch) && ws_read_uint(json.get(), "cursor", event.cursor)));
     } else valid = false;
-    cJSON_Delete(json);
+    json.reset();
     return valid && xQueueSend(ws_events, &event, 0) == pdTRUE ? ESP_OK : ESP_FAIL;
 }
 
@@ -1900,7 +1902,7 @@ static bool ws_sync_client(const uint8_t slot,const uint32_t now) {
 static void websocket_run() {
     if (!ws_server) return;
     const uint32_t now = millis();
-    WsEvent event;
+    WsEvent event{};
     for (uint8_t received = 0; received < 16 && xQueueReceive(ws_events, &event, 0) == pdTRUE; ++received) {
         if (!ws_sync_client(event.slot, now)) continue;
         auto &client = ws_clients[event.slot];
@@ -1968,7 +1970,7 @@ static void websocket_run() {
         }
         if (++sequence == 0) ++sequence;
         const uint32_t id = status ? client.status_id : client.hall_id;
-        payload = "{\"type\":\"" + String(status ? "status" : "hall") + "\",\"id\":" + String(id) +
+        payload = R"({"type":")" + String(status ? "status" : "hall") + R"(","id":)" + String(id) +
                   ",\"seq\":" + String(sequence);
         if (status) payload += ",\"elapsed_ms\":" + String(ws_status_ms - client.status_started);
         payload += ",\"data\":";
@@ -2026,7 +2028,7 @@ static void websocket_init() {
  * 输出时长、五通压下电平、AMS 身份、通道模式、霍尔检测、局域网参数、两种电机接线及可选引脚；返回已保存的访问码供设置页直接显示
  */
 static void handle_settings_get() {
-    String j = "{\"rs485\":" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
+    String j = R"({"rs485":)" + String(RS485_MODE) + ",\"buslog\":" + String(BUS_LOG_ENABLE) +
                ",\"ams\":" + String(AMS_COUNT) + ",\"manual_ms\":" + String(MANUAL_PULSE_MS) +
                ",\"auto_ms\":" + String(AUTO_LOAD_MS) +
                ",\"feed_stop_delay_ms\":" + String(FEED_STOP_DELAY_MS) +
@@ -2040,11 +2042,11 @@ static void handle_settings_get() {
         if (ams) j += ',';
         char serial[AMS_SERIAL_LENGTH + 1] = {};
         settings_get_ams_serial(ams, serial);
-        j += "{\"index\":" + String(ams) + ",\"serial\":\"" + json_escape(CUSTOM_SERIAL[ams]) +
-             "\",\"effective_serial\":\"" + String(serial) + "\",\"ams_version\":\"" +
+        j += "{\"index\":" + String(ams) + R"(,"serial":")" + Json::escape(CUSTOM_SERIAL[ams]) +
+             R"(","effective_serial":")" + String(serial) + R"(","ams_version":")" +
              String(AMS_VERSION[ams][0]) + "." + String(AMS_VERSION[ams][1]) + "." +
              String(AMS_VERSION[ams][2]) + "." + String(AMS_VERSION[ams][3]) +
-             "\",\"enabled\":" + String(ams < AMS_COUNT ? "true" : "false") + "}";
+             R"(","enabled":)" + String(ams < AMS_COUNT ? "true" : "false") + "}";
     }
     j += "],\"to\":[";
     for (int i = 0; i < BMCU_motor_count(); i++) { if (i) j += ','; j += String(PULLBACK_TIMEOUT[i]); }
@@ -2057,13 +2059,13 @@ static void handle_settings_get() {
         append_hall_detection_config(j, HALL_DETECTION[i]);
         j += '}';
     }
-    j += "],\"otaurl\":\"" + json_escape(OTA_URL) + "\",\"otanotify\":" + String(OTA_NOTIFY);
-    j += ",\"lan_ams\":{\"printer_ip\":\"" + json_escape(LAN_AMS_CONFIG.printer_ip) +
-         "\",\"serial\":\"" + json_escape(LAN_AMS_CONFIG.serial) +
-         "\",\"access_code\":\"" + json_escape(LAN_AMS_CONFIG.access_code) +
-         "\",\"feed_ms\":" + String(LAN_AMS_CONFIG.feed_ms) +
+    j += R"(],"otaurl":")" + Json::escape(OTA_URL) + R"(","otanotify":)" + String(OTA_NOTIFY);
+    j += R"(,"lan_ams":{"printer_ip":")" + Json::escape(LAN_AMS_CONFIG.printer_ip) +
+         R"(","serial":")" + Json::escape(LAN_AMS_CONFIG.serial) +
+         R"(","access_code":")" + Json::escape(LAN_AMS_CONFIG.access_code) +
+         R"(","feed_ms":)" + String(LAN_AMS_CONFIG.feed_ms) +
          ",\"nozzle_temp\":" + String(LAN_AMS_CONFIG.nozzle_temp) + "}";
-    j += ",\"io\":{\"motor\":[";
+    j += R"(,"io":{"motor":[)";
     for (int i = 0; i < IO_CONFIG_MAX_CHANNELS; i++) {
         if (i) j += ',';
         j += "[" + String(IO_CONFIG.motor[i][0]) + "," + String(IO_CONFIG.motor[i][1]) + "]";
@@ -2091,10 +2093,10 @@ static void handle_settings_get() {
     io_config_append_hall_pin_options(j);
     j += ",\"switch_pin\":" + String(IO_CONFIG.switch_pin) + ",\"pins\":";
     io_config_append_pin_options(j);
-    j += "},\"pcf\":{\"configured\":" + String(i2c_bus_configured() ? "true" : "false") +
+    j += R"(},"pcf":{"configured":)" + String(i2c_bus_configured() ? "true" : "false") +
          ",\"sda\":" + String(PCF_SDA) + ",\"scl\":" + String(PCF_SCL) + ",\"pins\":";
     io_config_append_pin_options(j, true);
-    j += "},\"bus\":{\"rx\":" + String(BUS_RX) + ",\"tx\":" + String(BUS_TX) +
+    j += R"(},"bus":{"rx":)" + String(BUS_RX) + ",\"tx\":" + String(BUS_TX) +
          ",\"de\":" + String(BUS_DE) + ",\"pins\":";
     io_config_append_pin_options(j, true);
     j += "}}";
@@ -2113,9 +2115,9 @@ static void handle_settings_get() {
  */
 static bool valid_number(const String &key,const  int low,const  int high) {
     if (!server.hasArg(key)) return true;
-    String raw = server.arg(key);
+    const String raw = server.arg(key);
     char *end;
-    long value = strtol(raw.c_str(), &end, 10);
+    const long value = strtol(raw.c_str(), &end, 10);
     return end != raw.c_str() && !*end && value >= low && value <= high;
 }
 
@@ -2129,9 +2131,9 @@ static bool valid_number(const String &key,const  int low,const  int high) {
  */
 static bool parse_io_pin(const String &key, int &value,const  bool allow_none) {
     if (!server.hasArg(key)) return false;
-    String raw = server.arg(key);
+    const String raw = server.arg(key);
     char *end = nullptr;
-    long parsed = strtol(raw.c_str(), &end, 10);
+    const long parsed = strtol(raw.c_str(), &end, 10);
     if (end == raw.c_str() || *end || parsed < 0 || parsed > 255) return false;
     value = static_cast<int>(parsed);
     return io_config_pin_available(value, allow_none);
@@ -2207,8 +2209,7 @@ static void handle_pcf_save() {
     if (wiring_ok) wiring_ok = io_config_validate(IO_CONFIG, active_channel_count(), &error);
     if (!wiring_ok) {
         settings_restore_snapshot(previous);
-        server.send(400, "application/json",
-                    String("{\"ok\":false,\"msg\":\"") + json_escape(error.c_str()) + "\"}");
+        server.send(400, "application/json", Json::message(false, error.c_str()));
         return;
     }
     if (!settings_save_to_flash()) {
@@ -2227,8 +2228,7 @@ static void handle_pcf_save() {
                  PCF_SDA, PCF_SCL, cleared);
     else
         LOG_MAIN("[web] I2C 总线已关闭，清空引脚数=%d，重启生效", cleared);
-    server.send(200, "application/json",
-                String("{\"ok\":true,\"msg\":\"") + json_escape(msg.c_str()) + "\"}");
+    server.send(200, "application/json", Json::message(true, msg.c_str()));
     delay(300);
     ESP.restart();
 }
@@ -2256,7 +2256,7 @@ static void handle_bus_save() {
     const int de = !lan && mode == RS485_MODE_DE ? server.arg("de").toInt() : BUS_DE;
     String error;
     if (!io_config_bus_validate(rx, tx, de, mode, PCF_SDA, PCF_SCL, IO_CONFIG, active_channel_count(), &error)) {
-        server.send(400, "application/json", String("{\"ok\":false,\"msg\":\"") + json_escape(error.c_str()) + "\"}");
+        server.send(400, "application/json", Json::message(false, error.c_str()));
         return;
     }
     SettingsData candidate = settings_snapshot();
@@ -2348,7 +2348,6 @@ static void handle_settings_save() {
         return;
     }
     const int identity_index = identity_requested ? server.arg("ams_index").toInt() : 0;
-    int buslog_before = BUS_LOG_ENABLE;
     const SettingsData previous = settings_snapshot();
     bool timeout_changed[IO_CONFIG_MAX_CHANNELS] = {};
     uint32_t timeout_previous_ms[IO_CONFIG_MAX_CHANNELS] = {};
@@ -2433,8 +2432,7 @@ static void handle_settings_save() {
         }
     }
     if (server.hasArg("io_switch")) {
-        int pin = PIN_NONE;
-        if (parse_io_pin("io_switch", pin, true)) candidate_io.switch_pin = pin;
+        if (int pin = PIN_NONE; parse_io_pin("io_switch", pin, true)) candidate_io.switch_pin = pin;
         else valid = false;
     }
     for (int i = 0; i < candidate_channels; i++) {
@@ -2472,8 +2470,7 @@ static void handle_settings_save() {
         String error_message = io_error.length() ? io_error : String("参数无效，请检查设置项");
         if (!version_valid) error_message = "AMS 版本必须为 A.B.C.D，四段均在 0..255";
         else if (!serial_valid) error_message = "序列号后缀必须为空或 12 位大写十六进制字符（0-9、A-F）";
-        server.send(400, "application/json",
-                    String("{\"ok\":false,\"msg\":\"") + json_escape(error_message.c_str()) + "\"}");
+        server.send(400, "application/json", Json::message(false, error_message.c_str()));
         return;
     }
     // 减少 AMS 时保留剩余通道的运动，停用通道由应用配置时停止并移出队列
@@ -2510,8 +2507,7 @@ static void handle_settings_save() {
     for (int i = 0; i < candidate_channels; i++) {
         String kt = "to" + String(i), kc = "cm" + String(i);
         if (server.hasArg(kt)) {
-            int v = server.arg(kt).toInt();
-            if (v >= 3 && v <= 30) {
+            if (int v = server.arg(kt).toInt(); v >= 3 && v <= 30) {
                 if (v != PULLBACK_TIMEOUT[i]) {
                     timeout_changed[i] = true;
                     timeout_previous_ms[i] = static_cast<uint32_t>(PULLBACK_TIMEOUT[i]) * 1000u;
@@ -2520,8 +2516,7 @@ static void handle_settings_save() {
             }
         }
         if (server.hasArg(kc)) {
-            int v = server.arg(kc).toInt();
-            if (v >= 0 && v <= 2) CHANNEL_MODE[i] = v;
+            if (int v = server.arg(kc).toInt(); v >= 0 && v <= 2) CHANNEL_MODE[i] = v;
         }
     }
     if (server.hasArg("otaurl")) {
@@ -2543,7 +2538,8 @@ static void handle_settings_save() {
         if (timeout_changed[i]) BMCU_apply_pullback_timeout(i, timeout_previous_ms[i]);
     }
     LOG_MAIN("[web] 设置已保存");
-    if (BUS_LOG_ENABLE != buslog_before) {
+    int bus_log_before = BUS_LOG_ENABLE;
+    if (BUS_LOG_ENABLE != bus_log_before) {
         LOG_MAIN("[web] BambuBus 原始报文日志已%s", BUS_LOG_ENABLE ? "启用" : "关闭");
     }
     settings_log_all();
@@ -2592,7 +2588,7 @@ static void handle_manual_motor() {
                 error = "通道 " + String(channel + 1) + " 离合的 " + io_config_pin_label(IO_CONFIG.clutch[channel]) +
                         " 所属 PCF8575 已离线，无法确认离合释放，请检查扩展模块接线和供电";
         if (!error.length()) error = "该通道暂不可用，请重新读取设置和设备状态后重试";
-        server.send(409, "application/json", String("{\"ok\":false,\"msg\":\"") + json_escape(error.c_str()) + "\"}");
+        server.send(409, "application/json", Json::message(false, error.c_str()));
         return;
     }
     if (!BMCU_manual_pulse(motor, dir, duration)) {
@@ -2618,7 +2614,7 @@ static bool require_ha_controls() {
  */
 static void handle_ha_channels() {
     if (!require_ha_controls()) return;
-    String body = "{\"id\":\"" + ha_device_id() + "\",\"channels\":[";
+    String body = R"({"id":")" + ha_device_id() + R"(","channels":[)";
     for (int ch = 0; ch < active_channel_count(); ++ch) {
         if (ch) body += ',';
         body += "{\"timeout\":" + String(PULLBACK_TIMEOUT[ch]) + ",\"ready\":" +
@@ -2680,7 +2676,7 @@ static void handle_pause_test() {
 
 /**
  * 处理 WiFi 配网请求
- * 保留 AP 的同时尝试连接目标路由；成功后保存凭据并重启，失败则恢复原网络或在 AP 模式安排重试
+ * 保留 AP 的同时尝试连接目标路由并刷新连接快闪；成功后常亮、保存凭据并重启，失败则恢复原网络或提示重试
  */
 static void handle_wifi_save() {
     if (!maintenance_required()) return;
@@ -2714,21 +2710,25 @@ static void handle_wifi_save() {
 
     // 保留 AP，同时尝试连路由器：失败也不至于失联
     wifi_set_mode(WIFI_AP_STA);
+    wifi_failure_led_active = false;
     WiFi.begin(ssid.c_str(), pass.c_str());
+    hal_wifi_led_run(HalWifiLedState::connecting);
 
-    uint32_t t0 = millis();
+    const uint32_t t0 = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - t0 < STA_TIMEOUT_MS) {
         hal_watchdog_feed();
+        hal_wifi_led_run(HalWifiLedState::connecting);
         delay(100);
     }
 
     if (WiFi.status() == WL_CONNECTED) {
+        hal_wifi_led_run(HalWifiLedState::connected);
         save_wifi_creds(ssid.c_str(), pass.c_str());
         String ip = WiFi.localIP().toString();
         LOG_MAIN("[web] WiFi 连接成功，IP = %s，重启切换为 STA 模式", ip.c_str());
         // 页面拿到 ip 后会去轮询这个地址，能连上才跳转，所以这里必须把 ip 回给前端
         server.send(200, "application/json",
-                    "{\"ok\":true,\"ip\":\"" + ip + "\",\"msg\":\"配网成功，设备即将重启\"}");
+                    R"({"ok":true,"ip":")" + ip + "\",\"msg\":\"配网成功，设备即将重启\"}");
         delay(1000);
         ESP.restart();
         return;
@@ -2740,7 +2740,13 @@ static void handle_wifi_save() {
         start_sta_connect();
     } else {
         schedule_sta_retry();
+        if (!sta_ssid[0]) {
+            wifi_failure_led_active = true;
+            wifi_failure_led_deadline = millis() + 6000;
+        }
     }
+
+    wifi_indicator_run();
 
     LOG_MAIN("[web] WiFi 连接失败: %s", ssid.c_str());
     server.send(200, "application/json",
@@ -2770,8 +2776,8 @@ static void handle_mdns_save() {
         ? (started ? "mDNS 名称已保存，正在检测重名，请查看下方当前访问地址" : "mDNS 名称已保存，但服务启动失败，请重启设备")
         : "mDNS 名称已保存，联网后生效";
     server.send(200, "application/json",
-                "{\"ok\":true,\"mdns\":\"" + normalized + "\",\"mdns_active\":\"" + json_escape(mdns_active_name) + "\",\"url\":\"" + url +
-                "\",\"msg\":\"" + msg + "\"}");
+                R"({"ok":true,"mdns":")" + normalized + R"(","mdns_active":")" + Json::escape(mdns_active_name) + R"(","url":")" + url +
+                R"(","msg":")" + msg + "\"}");
 }
 
 /**
@@ -2801,7 +2807,7 @@ static void handle_scan() {
     String j = "[";
     for (int i = 0; i < n; i++) {
         if (i) j += ',';
-        j += "{\"ssid\":\"" + json_escape(WiFi.SSID(i).c_str()) + "\"";
+        j += R"({"ssid":")" + Json::escape(WiFi.SSID(i).c_str()) + "\"";
         j += ",\"rssi\":" + String(WiFi.RSSI(i));
         j += ",\"enc\":" + String(WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? 0 : 1) + "}";
     }
@@ -2833,8 +2839,8 @@ static void handle_log() {
         const bool reset = server.hasArg("boot") && server.arg("boot") != boot_id;
         const unsigned clear_mask = server.hasArg("clear_mask") ? server.arg("clear_mask").toInt() & 3 : 0;
         uint32_t seq[2] = {
-            reset ? 0U : static_cast<uint32_t>(strtoul(server.arg("main_seq").c_str(), nullptr, 10)),
-            reset ? 0U : static_cast<uint32_t>(strtoul(server.arg("bus_seq").c_str(), nullptr, 10))
+            reset ? 0U : strtoul(server.arg("main_seq").c_str(), nullptr, 10),
+            reset ? 0U : strtoul(server.arg("bus_seq").c_str(), nullptr, 10)
         };
         for (int channel = 0; channel < LOG_CH_COUNT; channel++) {
             if (clear_mask & (1U << channel)) {
@@ -2912,7 +2918,7 @@ static void handle_reboot() {
  */
 static void handle_factory_reset() {
     if (!maintenance_required()) return;
-    const HaConfig defaults;
+    constexpr HaConfig defaults;
     if (!ha_save_config(defaults)) {
         server.send(500, "application/json", "{\"ok\":false,\"msg\":\"HA 配置清除失败，请重试\"}");
         return;
@@ -3025,8 +3031,8 @@ static void ota_progress_begin() {
  */
 static void ota_progress(const char *stage, const String &msg, const size_t loaded = 0, const size_t total = 0) {
     if (!g_ota_streaming || !server.client().connected()) return;
-    String j = "{\"event\":\"progress\",\"stage\":\"" + String(stage) + "\",\"msg\":\"" + json_escape(msg.c_str());
-    j += "\",\"source\":\"" + json_escape(g_ota_progress_source.c_str()) + "\"";
+    String j = R"({"event":"progress","stage":")" + String(stage) + R"(","msg":")" + Json::escape(msg.c_str());
+    j += R"(","source":")" + Json::escape(g_ota_progress_source.c_str()) + "\"";
     j += ",\"loaded\":" + String(static_cast<unsigned long>(loaded));
     j += ",\"total\":" + String(static_cast<unsigned long>(total)) + "}\n";
     server.sendContent(j);
@@ -3044,8 +3050,8 @@ static void ota_manifest_progress(const bool background, const char *stage, cons
         ota_progress(stage, msg);
         return;
     }
-    String progress = "{\"stage\":\"" + String(stage) + "\",\"msg\":\"" + json_escape(msg.c_str());
-    progress += "\",\"source\":\"" + json_escape(g_ota_progress_source.c_str()) + "\"}";
+    String progress = R"({"stage":")" + String(stage) + R"(","msg":")" + Json::escape(msg.c_str());
+    progress += R"(","source":")" + Json::escape(g_ota_progress_source.c_str()) + "\"}";
     xSemaphoreTake(ota_check_mutex, portMAX_DELAY);
     ota_check.progress = std::move(progress);
     xSemaphoreGive(ota_check_mutex);
@@ -3059,7 +3065,7 @@ static void ota_manifest_progress(const bool background, const char *stage, cons
  */
 static void ota_send_result(const int status, const String &data) {
     if (g_ota_streaming) {
-        server.sendContent("{\"event\":\"result\",\"data\":" + data + "}\n");
+        server.sendContent(R"({"event":"result","data":)" + data + "}\n");
         server.sendContent("");
     } else {
         server.send(status, "application/json", data);
@@ -3103,122 +3109,6 @@ static int ota_source_index(const String &base) {
     for (int i = 0; i < OTA_SOURCE_COUNT; ++i)
         if (base == ota_source_base(i)) return i;
     return -1;
-}
-
-// ---- 够用就好的迷你 JSON 取值，不引第三方库 ----
-/**
- * 跳过 JSON 空白字符
- * @param s JSON 字符串
- * @param i 当前解析位置
- * 推进索引越过空格、制表符、回车和换行
- */
-static void json_ws(const String &s, int &i) {
-    while (i < static_cast<int>(s.length()) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n')) i++;
-}
-
-/**
- * 解析 JSON 字符串值
- * @param s JSON 字符串
- * @param i 当前解析位置
- * @param out 输出的字符串
- * @return true 表示解析成功
- * 处理常见转义字符，直到遇到结束引号
- */
-static bool json_read_string(const String &s, int &i, String &out) {
-    if (i >= static_cast<int>(s.length()) || s[i] != '"') return false;
-    i++;
-    out = "";
-    while (i < static_cast<int>(s.length())) {
-        char c = s[i++];
-        if (c == '\\' && i < static_cast<int>(s.length())) {
-            char e = s[i++];
-            out += (e == 'n') ? '\n' : (e == 't') ? '\t' : e;
-        } else if (c == '"') {
-            return true;
-        } else {
-            out += c;
-        }
-    }
-    return false;
-}
-
-// 取 "key": 后面的值，字符串或裸标量都能取
-/**
- * 读取 JSON 键对应的原始值
- * @param s JSON 字符串
- * @param key 键名
- * @param out 输出值
- * @return true 表示找到并成功读取
- * 支持带引号字符串和裸标量，裸标量会去掉尾部空白
- */
-static bool json_get_raw(const String &s, const char *key, String &out) {
-    String pat = "\"" + String(key) + "\"";
-    int p = s.indexOf(pat);
-    if (p < 0) return false;
-
-    int i = p + static_cast<int>(pat.length());
-    json_ws(s, i);
-    if (i >= static_cast<int>(s.length()) || s[i] != ':') return false;
-    i++;
-    json_ws(s, i);
-
-    if (i < static_cast<int>(s.length()) && s[i] == '"') return json_read_string(s, i, out);
-
-    out = "";
-    while (i < static_cast<int>(s.length()) && s[i] != ',' && s[i] != '}' && s[i] != '\n') out += s[i++];
-    out.trim();
-    return out.length() > 0;
-}
-
-/**
- * 读取 JSON 键对应的值
- * @param s JSON 字符串
- * @param key 键名
- * @param out 输出值
- * @return true 表示找到并成功读取
- * 先清空输出，再复用 json_get_raw()
- */
-static bool json_get(const String &s, const char *key, String &out) {
-    out = "";
-    return json_get_raw(s, key, out);
-}
-
-// 取出 "key": { ... } 那个对象（含大括号），用来读某个目标平台的固件信息
-/**
- * 提取 JSON 子对象文本
- * @param s JSON 字符串
- * @param key 键名
- * @param out 输出的对象文本（含大括号）
- * @return true 表示找到完整对象
- * 按大括号深度和字符串状态扫描，避免把嵌套对象截断
- */
-static bool json_get_object(const String &s, const char *key, String &out) {
-    String pat = "\"" + String(key) + "\"";
-    int p = s.indexOf(pat);
-    if (p < 0) return false;
-
-    int i = p + static_cast<int>(pat.length());
-    json_ws(s, i);
-    if (i >= static_cast<int>(s.length()) || s[i] != ':') return false;
-    i++;
-    json_ws(s, i);
-    if (i >= static_cast<int>(s.length()) || s[i] != '{') return false;
-
-    int depth = 0;
-    const int start = i;
-    bool in_str = false;
-    for (; i < static_cast<int>(s.length()); i++) {
-        const char c = s[i];
-        if (in_str) {
-            if (c == '\\') i++;
-            else if (c == '"') in_str = false;
-            continue;
-        }
-        if (c == '"') in_str = true;
-        else if (c == '{') depth++;
-        else if (c == '}' && --depth == 0) { out = s.substring(start, i + 1); return true; }
-    }
-    return false;
 }
 
 // a 比 b 新返回 true（按 . 分段比数字，1.0.10 > 1.0.9）
@@ -3338,7 +3228,7 @@ namespace {
          * @return 底层 WiFiClient 引用
          * 供 HTTPClient.begin() 使用
          */
-        WiFiClient &ref() const { return *_client; }
+        [[nodiscard]] WiFiClient &ref() const { return *_client; }
 
     private:
         WiFiClient *_client;
@@ -3379,8 +3269,7 @@ static bool ota_http_open(HTTPClient &http, WiFiClient &client, const String &ur
             if (url.startsWith("https://")) {
                 ota_log_tls_heap("HTTPS 请求失败后");
                 char tls_error[128] = {};
-                const int tls_code = static_cast<WiFiClientSecure &>(client).lastError(tls_error, sizeof(tls_error));
-                if (tls_code) err += "，TLS " + String(tls_code) + ": " + tls_error;
+                if (const int tls_code = static_cast<WiFiClientSecure &>(client).lastError(tls_error, sizeof(tls_error))) err += "，TLS " + String(tls_code) + ": " + tls_error;
             }
         } else err = "服务器返回 HTTP " + String(code);
         return false;
@@ -3441,16 +3330,21 @@ static bool ota_fetch_manifest_from(const String &base, const int source, String
     if (!ota_http_get(base + "/manifest.json", body, err, background)) return false;
     ota_manifest_progress(background, "manifest", "正在解析版本清单并核对板型");
 
-    String obj;
-    if (!json_get_object(body, FW_TARGET, obj)) {
+    const auto manifest = Json::parse(body.c_str(), body.length());
+    const cJSON *target = Json::item(manifest.get(), FW_TARGET);
+    if (!cJSON_IsObject(target)) {
         err = "清单里没有 " + String(FW_TARGET) + " 对应的固件";
         return false;
     }
 
-    json_get(obj, "url", g_ota_url);
-    json_get(obj, "md5", g_ota_md5);
-    json_get(obj, "version", g_ota_ver);
-    json_get(obj, "notes", g_ota_notes);
+    Json::read_string(target, "url", g_ota_url);
+    Json::read_string(target, "md5", g_ota_md5);
+    Json::read_string(target, "version", g_ota_ver);
+    const cJSON *notes = Json::item(target, "notes");
+    if (notes && !Json::read_string(target, "notes", g_ota_notes)) {
+        err = "当前板型清单中的 notes 无效";
+        return false;
+    }
     if (!version_valid(g_ota_ver)) {
         err = "当前板型清单的 version 无效，应为 YY.MM.DD[.修订号]";
         return false;
@@ -3470,8 +3364,12 @@ static bool ota_fetch_manifest_from(const String &base, const int source, String
         }
     }
 
-    String sz;
-    if (json_get_raw(obj, "size", sz)) g_ota_size = static_cast<size_t>(strtoul(sz.c_str(), nullptr, 10));
+    uint32_t size = 0;
+    if (Json::item(target, "size") && !Json::read_uint(target, "size", size)) {
+        err = "当前板型清单中的 size 无效";
+        return false;
+    }
+    g_ota_size = size;
 
     g_ota_url.trim();
     if (source >= 0 && g_ota_url.length() && g_ota_url.indexOf('/') < 0 &&
@@ -3532,7 +3430,7 @@ static bool ota_fetch_manifest(String &err, const bool background = false) {
  * 统一网页接口的错误响应格式
  */
 static String ota_json_err(const String &msg) {
-    return "{\"ok\":false,\"msg\":\"" + json_escape(msg.c_str()) + "\"}";
+    return Json::message(false, msg.c_str());
 }
 
 /**
@@ -3565,15 +3463,15 @@ static void ota_check_worker(void *arg) {
             const bool has = version_newer(g_ota_ver, String(FW_VERSION));
             result.reserve(320);
             result = "{\"ok\":true";
-            result += ",\"current\":\"" + String(FW_VERSION) + "\"";
-            result += ",\"target\":\"" + String(FW_TARGET) + "\"";
-            result += ",\"source\":\"" + String(g_ota_source >= 0 ? OTA_SOURCE_NAMES[g_ota_source] : "自定义") + "\"";
-            result += ",\"latest\":\"" + json_escape(g_ota_ver.c_str()) + "\"";
+            result += R"(,"current":")" + String(FW_VERSION) + "\"";
+            result += R"(,"target":")" + String(FW_TARGET) + "\"";
+            result += R"(,"source":")" + String(g_ota_source >= 0 ? OTA_SOURCE_NAMES[g_ota_source] : "自定义") + "\"";
+            result += R"(,"latest":")" + Json::escape(g_ota_ver.c_str()) + "\"";
             result += ",\"has_update\":" + String(has ? "true" : "false");
-            result += ",\"notes\":\"" + json_escape(g_ota_notes.c_str()) + "\"";
+            result += R"(,"notes":")" + Json::escape(g_ota_notes.c_str()) + "\"";
             result += ",\"size\":" + String(static_cast<unsigned long>(g_ota_size));
-            result += ",\"md5\":\"" + json_escape(g_ota_md5.c_str()) + "\"";
-            result += ",\"url\":\"" + json_escape(g_ota_url.c_str()) + "\"}";
+            result += R"(,"md5":")" + Json::escape(g_ota_md5.c_str()) + "\"";
+            result += R"(,"url":")" + Json::escape(g_ota_url.c_str()) + "\"}";
             LOG_MAIN("[ota] 检查更新: 本机 %s, 服务器 %s, %s", FW_VERSION, g_ota_ver.c_str(),
                      has ? "有新版" : "已是最新");
         }
@@ -3599,7 +3497,7 @@ static void ota_check_send_status() {
                        (server.method() != HTTP_GET || server.arg("id") == String(ota_check.id));
     String response;
     if (valid) {
-        response = "{\"ok\":true,\"id\":" + String(ota_check.id);
+        response = R"({"ok":true,"id":)" + String(ota_check.id);
         response += ",\"running\":" + String(ota_check.running ? "true" : "false");
         response += ",\"progress\":" + ota_check.progress;
         response += ",\"result\":" + (ota_check.result.length() ? ota_check.result : String("null")) + "}";
@@ -3835,7 +3733,7 @@ static void handle_ota_pull() {
     LOG_MAIN("[ota] 更新成功（%lu ms），重启", static_cast<unsigned long>(millis() - t0));
     ota_progress("reboot", "固件校验通过，准备重启设备");
     ota_send_result(200,
-                "{\"ok\":true,\"version\":\"" + json_escape(g_ota_ver.c_str()) + "\",\"msg\":\"已更新到 " + json_escape(g_ota_ver.c_str()) +
+                R"({"ok":true,"version":")" + Json::escape(g_ota_ver.c_str()) + "\",\"msg\":\"已更新到 " + Json::escape(g_ota_ver.c_str()) +
                     "，设备即将重启\"}");
     delay(1000);
     ESP.restart();
@@ -3940,8 +3838,7 @@ static void handle_not_found() {
 static bool handle_local_preview_cors(WebServer &request, Middleware::Callback next) {
     if (!request.uri().startsWith("/api/")) return next();
     const String origin = request.header("Origin");
-    const String local_origin = "http://localhost";
-    if (origin != local_origin) {
+    if (const String local_origin = "http://localhost"; origin != local_origin) {
         if (!origin.startsWith(local_origin + ":")) return next();
         const String port = origin.substring(local_origin.length() + 1);
         if (port.isEmpty() || port.length() > 5) return next();
@@ -3972,8 +3869,8 @@ static void setup_routes() {
     server.addMiddleware(handle_local_preview_cors);
     server.on("/", HTTP_GET, handle_root);
     server.on("/index.html", HTTP_GET, handle_root);
-    for (size_t i = 0; i < sizeof(WEB_ASSETS) / sizeof(WEB_ASSETS[0]); ++i) {
-        const WebAsset *asset = &WEB_ASSETS[i];
+    for (const auto & i : WEB_ASSETS) {
+        const WebAsset *asset = &i;
         server.on(asset->path, HTTP_GET, [asset]() { handle_web_asset(*asset); });
     }
     server.on("/api/status", HTTP_GET, handle_status);
@@ -4015,9 +3912,10 @@ static void setup_routes() {
 
 /**
  * 初始化 Web 管理服务
- * 读取 WiFi 和 HA 配置并异步联网，未配置 WiFi 时启动热点；启动 HTTP、WebSocket 和按需启用的 HA 后台读取
+ * 初始化 WiFi 状态灯，读取 WiFi 和 HA 配置并异步联网；未配置 WiFi 时启动热点并显示慢闪，再启动 Web 与 HA 服务
  */
 void web_config_init() {
+    hal_wifi_led_init();
     load_wifi_creds();
     ha_load_config();
     WiFi.persistent(false);
@@ -4028,6 +3926,7 @@ void web_config_init() {
     } else {
         start_config_ap();
     }
+    wifi_indicator_run();
 
     setup_routes();
     server.begin();
@@ -4038,7 +3937,7 @@ void web_config_init() {
 
 /**
  * 轮询 Web 与 WiFi 状态
- * 处理 STA 重连、mDNS、HTTP 与强制门户 DNS，并在主循环中生成 WebSocket 订阅快照
+ * 处理 STA 重连并按配网、连接、重试和在线状态刷新指示灯，再轮询 mDNS、HTTP、强制门户 DNS 与 WebSocket
  */
 void web_config_run() {
     if (sta_ssid[0]) {
@@ -4059,6 +3958,7 @@ void web_config_run() {
         }
     }
 
+    wifi_indicator_run();
     sync_mdns_name();
     server.handleClient();
     websocket_run();

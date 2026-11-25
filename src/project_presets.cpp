@@ -41,7 +41,7 @@ bool project_preset_validate(const ProjectPreset &preset, String *error) {
         if (error) *error = "项目的 SDA/SCL 必须同时配置或同时留空";
         return false;
     }
-    IoConfig io;
+    IoConfig io{};
     project_preset_io(preset, io);
     return io_config_bus_validate(bus.rx, bus.tx, bus.de, bus.mode, bus.sda, bus.scl,
                                   io, preset.ams * 4, error) &&
@@ -92,7 +92,7 @@ const char *project_preset_match(const SettingsData &settings) {
             settings.bus_tx != preset.bus.tx || settings.pcf_sda != preset.bus.sda ||
             settings.pcf_scl != preset.bus.scl ||
             (preset.bus.mode == RS485_MODE_DE && settings.bus_de != preset.bus.de)) continue;
-        IoConfig io;
+        IoConfig io{};
         project_preset_io(preset, io);
         if (memcmp(&io, &settings.io_config, offsetof(IoConfig, clutch_enabled)) == 0) return preset.id;
     }
