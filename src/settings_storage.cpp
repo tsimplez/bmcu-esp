@@ -131,11 +131,6 @@ struct LegacyFormat {
 // 已发布标签及开发提交的真实布局；重复魔数按长度和原 CRC 区分，身份数量不决定 checksum 偏移
 // 字段顺序：魔数、长度、checksum 偏移、序列号长度、IO 长度、版本数量、旧 PCF 开关、连续编号、仅首片、停止延迟、霍尔、局域网、五通参数字节数
 constexpr LegacyFormat LEGACY_FORMATS[] = {
-    {0x5341542D, 624, 144, 48, 196, 4, false, false, false, true,  false, false, 0}, // v26.11.04
-    {0x5341542E, 688, 144, 48, 260, 4, false, false, false, true,  false, false, 0}, // v26.11.06
-    {0x5341542F, 816, 144, 48, 260, 4, false, false, false, true,  true,  false, 0}, // 50e43a8
-    {0x53415430, 884, 144, 48, 260, 4, false, false, false, true,  true,  true,  0}, // v26.11.14 / v26.11.14.1
-    {0x53415431, 892, 144, 48, 260, 4, false, false, false, true,  true,  true,  8}, // 五通电平及进料时长
     {0x53415432, 980, 144, 48, 348, 4, false, false, false, true,  true,  true,  8}, // 五通电平及进料时长
     {0x53415433, 984, 144, 48, 348, 4, false, false, false, true,  true,  true, 12}  // 含五通持续压下超时，增加项目名前
 };

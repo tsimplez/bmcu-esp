@@ -7,13 +7,13 @@
 
 #if defined(ARDUINO_ARCH_ESP32)
 #include <nvs.h>
+#include "PCF8575_PinMap.h"
+#include "io_config.h"
+#include "settings_storage.h"
 #if defined(CONFIG_IDF_TARGET_ESP32C3) && !ARDUINO_USB_CDC_ON_BOOT
 #include <esp_log.h>
 #include <esp32-hal-uart.h>
 #include <freertos/semphr.h>
-#include "PCF8575_PinMap.h"
-#include "io_config.h"
-#include "settings_storage.h"
 #include "log_bus.h"
 #if defined(BMCU_USB_CDC_AUTO)
 #include <driver/usb_serial_jtag.h>
@@ -24,18 +24,23 @@
 namespace {
 #if defined(ARDUINO_ARCH_ESP32)
 bool console_enabled = false;
-#if defined(CONFIG_IDF_TARGET_ESP32C3) && !ARDUINO_USB_CDC_ON_BOOT
-StaticSemaphore_t console_mutex_storage;
-SemaphoreHandle_t console_mutex = nullptr;
-vprintf_like_t console_sdk_output = nullptr;
-bool console_muted = false, console_reported = false;
-#if defined(BMCU_USB_CDC_AUTO)
-bool console_usb_enabled = false, console_usb_reported = false;
+#if defined(ARDUINO_AirM2M_CORE_ESP32C3)
 constexpr int WIFI_STATUS_LED_PIN = 12;
 constexpr int WIFI_UNUSED_LED_PIN = 13;
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+constexpr int WIFI_STATUS_LED_PIN = 48;
+#elif defined(LED_BUILTIN)
+constexpr int WIFI_STATUS_LED_PIN = LED_BUILTIN;
+#else
+constexpr int WIFI_STATUS_LED_PIN = PIN_NONE;
+#endif
 bool wifi_led_initialized = false;
-bool wifi_status_led_available = false, wifi_unused_led_available = false;
-bool wifi_status_led_output = false, wifi_unused_led_output = false;
+bool wifi_status_led_available = false;
+bool wifi_status_led_output = false;
+#if defined(ARDUINO_AirM2M_CORE_ESP32C3)
+bool wifi_unused_led_available = false;
+bool wifi_unused_led_output = false;
+#endif
 HalWifiLedState wifi_led_state = HalWifiLedState::off;
 uint32_t wifi_led_state_started = 0;
 
@@ -46,6 +51,7 @@ uint32_t wifi_led_state_started = 0;
  * 未启用通道及 RX/TX 未启用时的 DE 不视为占用
  */
 bool wifi_led_pin_in_use(const int pin) {
+    if (pin == PIN_NONE) return false;
     if (io_config_uses_pin(IO_CONFIG, active_channel_count(), pin)) return true;
     if (PCF_SDA == pin || PCF_SCL == pin) return true;
     if (io_config_bus_enabled() &&
@@ -62,7 +68,7 @@ bool wifi_led_pin_in_use(const int pin) {
  * GPIO 被接线使用时不触碰引脚；恢复空闲时先拉低，再切为输出
  */
 void wifi_led_write_if_available(const int pin, const bool on, bool &available, bool &last_output) {
-    if (wifi_led_pin_in_use(pin)) {
+    if (pin == PIN_NONE || wifi_led_pin_in_use(pin)) {
         available = false;
         return;
     }
@@ -77,6 +83,13 @@ void wifi_led_write_if_available(const int pin, const bool on, bool &available, 
         last_output = on;
     }
 }
+#if defined(CONFIG_IDF_TARGET_ESP32C3) && !ARDUINO_USB_CDC_ON_BOOT
+StaticSemaphore_t console_mutex_storage;
+SemaphoreHandle_t console_mutex = nullptr;
+vprintf_like_t console_sdk_output = nullptr;
+bool console_muted = false, console_reported = false;
+#if defined(BMCU_USB_CDC_AUTO)
+bool console_usb_enabled = false, console_usb_reported = false;
 #endif
 
 /**
@@ -246,30 +259,32 @@ void hal_console_write(const char *data, size_t len) {
 }
 
 /**
- * 初始化合宙 ESP32-C3 的 WiFi 指示灯
- * GPIO12 作为唯一状态灯；GPIO13 仅在未被接线占用时显式拉低，其余平台不操作灯脚
+ * 初始化支持平台的 WiFi 指示灯
+ * 所有 ESP32 使用普通高电平 IO；合宙 C3 使用 GPIO12 并熄灭空闲的 GPIO13，S3 使用 GPIO48，其他板型使用 LED_BUILTIN
  */
 void hal_wifi_led_init() {
-#if defined(BMCU_USB_CDC_AUTO)
+#if defined(ARDUINO_ARCH_ESP32)
     wifi_led_initialized = true;
     wifi_led_state = HalWifiLedState::off;
     wifi_led_state_started = millis();
     wifi_status_led_available = false;
-    wifi_unused_led_available = false;
     wifi_status_led_output = false;
+#if defined(ARDUINO_AirM2M_CORE_ESP32C3)
+    wifi_unused_led_available = false;
     wifi_unused_led_output = false;
-    wifi_led_write_if_available(WIFI_STATUS_LED_PIN, false, wifi_status_led_available, wifi_status_led_output);
     wifi_led_write_if_available(WIFI_UNUSED_LED_PIN, false, wifi_unused_led_available, wifi_unused_led_output);
+#endif
+    wifi_led_write_if_available(WIFI_STATUS_LED_PIN, false, wifi_status_led_available, wifi_status_led_output);
 #endif
 }
 
 /**
- * 按 WiFi 状态更新合宙 ESP32-C3 的板载灯
+ * 按 WiFi 状态更新当前 ESP32 板型的 WiFi 指示灯
  * @param state 当前 WiFi 状态
- * GPIO12 空闲时显示慢闪、快闪、双闪或常亮；GPIO12 被接线占用时不点灯，GPIO13 空闲时保持熄灭
+ * 所有 ESP32 共用配网慢闪、连接快闪、失败双闪和连接常亮；C3 Air 使用 GPIO12，S3 使用 GPIO48，其他板型使用 LED_BUILTIN，被接线占用时不驱动
  */
 void hal_wifi_led_run(const HalWifiLedState state) {
-#if defined(BMCU_USB_CDC_AUTO)
+#if defined(ARDUINO_ARCH_ESP32)
     if (!wifi_led_initialized) hal_wifi_led_init();
     const uint32_t now = millis();
     if (state != wifi_led_state) {
@@ -299,7 +314,9 @@ void hal_wifi_led_run(const HalWifiLedState state) {
     }
 
     wifi_led_write_if_available(WIFI_STATUS_LED_PIN, status_led_on, wifi_status_led_available, wifi_status_led_output);
+#if defined(ARDUINO_AirM2M_CORE_ESP32C3)
     wifi_led_write_if_available(WIFI_UNUSED_LED_PIN, false, wifi_unused_led_available, wifi_unused_led_output);
+#endif
 #else
     (void)state;
 #endif

@@ -227,7 +227,7 @@ void hal_console_prepare();
 void hal_console_begin();
 void hal_console_write(const char *data, size_t len);
 
-// 合宙 ESP32-C3 的 WiFi 指示灯状态；其他平台保持为空实现
+// ESP32 WiFi 指示灯状态；非 ESP32 平台保持为空实现
 enum class HalWifiLedState : uint8_t { off, configuring, connecting, retry_wait, connected };
 void hal_wifi_led_init();
 void hal_wifi_led_run(HalWifiLedState state);
